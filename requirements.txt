@@ -1,0 +1,15 @@
+Flask
+Flask-SQLAlchemy
+Flask-Login
+Werkzeug
+python-dotenv
+scanpy
+anndata
+numpy
+pandas
+scikit-learn
+hnswlib
+plotly
+markdown
+pytest
+scanpy

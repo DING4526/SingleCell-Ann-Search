@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}首页 - 单细胞 ANN 检索系统{% endblock %}
+{% block content %}
+<div class="row">
+    <div class="col-lg-8 mx-auto">
+        <div class="text-center mb-4">
+            <h1>单细胞 ANN 检索系统</h1>
+            <p class="lead text-muted">基于高维向量的单细胞近似最近邻检索平台</p>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">系统简介</h5>
+                <p>本系统读取 <code>.h5ad</code> 单细胞数据，提取 PCA 降维向量，
+                使用 HNSWLIB 构建近似最近邻索引，支持 Top-K 相似细胞检索与交互式可视化。</p>
+                <p>主要功能：</p>
+                <ul>
+                    <li>上传并处理 <code>.h5ad</code> 单细胞数据集</li>
+                    <li>构建 HNSW 近似最近邻索引</li>
+                    <li>按细胞索引号查询相似细胞</li>
+                    <li>在 UMAP/PCA 散点图上可视化检索结果</li>
+                    <li>对比 ANN 与精确检索的 Recall@K 和耗时</li>
+                    <li>支持按细胞类型过滤检索结果</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="row g-3 mb-4">
+            <div class="col-md-4">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h2 class="card-title">{{ dataset_count }}</h2>
+                        <p class="card-text text-muted">数据集</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h2 class="card-title">{{ index_count }}</h2>
+                        <p class="card-text text-muted">已构建索引</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h2 class="card-title">{{ query_count }}</h2>
+                        <p class="card-text text-muted">查询次数</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-center gap-3">
+            <a href="{{ url_for('datasets.list_datasets') }}" class="btn btn-primary btn-lg">管理数据集</a>
+            <a href="{{ url_for('search.search') }}" class="btn btn-success btn-lg">开始检索</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

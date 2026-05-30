@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}登录 - 单细胞 ANN 检索系统{% endblock %}
+{% block content %}
+<div class="row">
+    <div class="col-md-4 mx-auto">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title text-center mb-4">登录</h4>
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">用户名</label>
+                        <input type="text" class="form-control" id="username" name="username" required autofocus>
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">密码</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">登录</button>
+                </form>
+                <p class="text-center mt-3 mb-0">
+                    还没有账号？<a href="{{ url_for('auth.register') }}">立即注册</a>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

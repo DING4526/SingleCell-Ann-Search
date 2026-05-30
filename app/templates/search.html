@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}检索 - 单细胞 ANN 检索系统{% endblock %}
+{% block content %}
+<h2 class="mb-4">细胞检索</h2>
+
+{% if not datasets %}
+<div class="alert alert-warning">
+    暂无可用的已索引数据集。请先<a href="{{ url_for('datasets.list_datasets') }}">上传并构建索引</a>。
+</div>
+{% else %}
+
+<!-- 检索表单 -->
+<div class="card mb-4">
+    <div class="card-header">检索参数</div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('search.search') }}">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">数据集</label>
+                    <select name="dataset_id" id="datasetSelect" class="form-select" required>
+                        {% for ds in datasets %}
+                        <option value="{{ ds.id }}" {% if ds.id == selected_dataset_id %}selected{% endif %}>
+                            {{ ds.name }}（{{ ds.n_cells }} 个细胞）
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">索引</label>
+                    <select name="index_id" id="indexSelect" class="form-select" required>
+                        {% for ds_id, idxs in index_options.items() %}
+                            {% for idx in idxs %}
+                            <option value="{{ idx.id }}" data-dataset="{{ ds_id }}"
+                                    {% if idx.id == selected_index_id %}selected{% endif %}>
+                                {{ idx.metric }} (M={{ idx.M }})
+                            </option>
+                            {% endfor %}
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">查询细胞索引</label>
+                    <input type="number" name="query_cell_index" class="form-control" value="0" min="0" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Top-K</label>
+                    <input type="number" name="top_k" class="form-control" value="10" min="1" max="100">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">细胞类型过滤</label>
+                    <select name="filter_cell_type" class="form-select">
+                        <option value="">全部</option>
+                        {% for ct in cell_types %}
+                        <option value="{{ ct }}">{{ ct }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="mt-3">
+                <button type="submit" class="btn btn-primary">检索</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 检索结果 -->
+{% if result_data %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between">
+        <span>检索结果</span>
+        <span class="badge bg-info">查询耗时: {{ result_data.query_time_ms }} ms</span>
+    </div>
+    <div class="card-body">
+        <p class="text-muted">
+            查询细胞索引: <strong>{{ result_data.query_cell_index }}</strong> |
+            Top-K: <strong>{{ result_data.top_k }}</strong> |
+            返回: <strong>{{ result_data.results|length }}</strong> 条结果
+            {% if result_data.filter_cell_type %}
+            | 过滤条件: <strong>{{ result_data.filter_cell_type }}</strong>
+            {% endif %}
+        </p>
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>排名</th>
+                        <th>细胞索引</th>
+                        <th>细胞名称</th>
+                        <th>距离</th>
+                        <th>细胞类型</th>
+                        <th>疾病</th>
+                        <th>年龄组</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in result_data.results %}
+                    <tr>
+                        <td>{{ r.rank }}</td>
+                        <td>{{ r.cell_index }}</td>
+                        <td>{{ r.cell_name }}</td>
+                        <td>{{ r.distance }}</td>
+                        <td>{{ r.cell_type }}</td>
+                        <td>{{ r.disease }}</td>
+                        <td>{{ r.age_group }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 散点图 -->
+{% if scatter_html %}
+<div class="card mb-4">
+    <div class="card-header">检索可视化</div>
+    <div class="card-body">
+        {{ scatter_html|safe }}
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+<!-- 性能评估 -->
+<div class="card mb-4">
+    <div class="card-header">性能评估</div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('search.evaluate') }}">
+            <input type="hidden" name="dataset_id" value="{{ selected_dataset_id or datasets[0].id }}">
+            <input type="hidden" name="index_id" value="{{ selected_index_id or 0 }}">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label">数据集</label>
+                    <select name="dataset_id" class="form-select">
+                        {% for ds in datasets %}
+                        <option value="{{ ds.id }}" {% if ds.id == selected_dataset_id %}selected{% endif %}>
+                            {{ ds.name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">索引</label>
+                    <select name="index_id" class="form-select">
+                        {% for ds_id, idxs in index_options.items() %}
+                            {% for idx in idxs %}
+                            <option value="{{ idx.id }}" data-dataset="{{ ds_id }}"
+                                    {% if idx.id == selected_index_id %}selected{% endif %}>
+                                {{ idx.metric }} (M={{ idx.M }})
+                            </option>
+                            {% endfor %}
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">采样数量</label>
+                    <input type="number" name="sample_size" class="form-control" value="10" min="1" max="50">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Top-K</label>
+                    <input type="number" name="eval_top_k" class="form-control" value="10" min="1" max="100">
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-warning w-100">运行评估</button>
+                </div>
+            </div>
+        </form>
+
+        {% if eval_metrics %}
+        <div class="mt-4">
+            <h6>评估结果（{{ eval_metrics.sample_size }} 个样本）</h6>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h4>{{ "%.2f%%"|format(eval_metrics.avg_recall_at_k * 100) }}</h4>
+                            <small class="text-muted">Recall@{{ eval_metrics.top_k }}</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h4>{{ "%.4f"|format(eval_metrics.avg_ann_time_ms) }} ms</h4>
+                            <small class="text-muted">ANN 平均耗时</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h4>{{ "%.4f"|format(eval_metrics.avg_exact_time_ms) }} ms</h4>
+                            <small class="text-muted">精确检索平均耗时</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h4>{{ "%.1f"|format(eval_metrics.speedup) }}x</h4>
+                            <small class="text-muted">加速比</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% if eval_bar_html %}
+            <div class="mt-3">
+                {{ eval_bar_html|safe }}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% endif %}
+{% endblock %}
