@@ -104,6 +104,9 @@ html[data-theme="dark"] {
     --outline-primary-border: rgba(125, 211, 252, 0.78);
     --outline-primary-bg-hover: rgba(56, 189, 248, 0.22);
     --outline-primary-text-hover: #f2f8ff;
+    --glass-card-bg: rgba(255, 255, 255, 0.12);
+    --glass-card-border: rgba(255, 255, 255, 0.2);
+    --glass-card-text: #eef4ff;
 }
 
 html[data-theme="light"] {
@@ -167,6 +170,9 @@ html[data-theme="light"] {
     --outline-primary-border: rgba(65, 126, 125, 0.5);
     --outline-primary-bg-hover: rgba(102, 203, 200, 0.18);
     --outline-primary-text-hover: #23595d;
+    --glass-card-bg: rgba(225, 239, 255, 0.9);
+    --glass-card-border: rgba(119, 145, 214, 0.32);
+    --glass-card-text: #2c4169;
 }
 
 body {
@@ -481,9 +487,13 @@ a:hover {
 }
 
 .glass-card {
-    background: rgba(255, 255, 255, 0.12);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    color: #eef4ff;
+    background: var(--glass-card-bg);
+    border: 1px solid var(--glass-card-border);
+    color: var(--glass-card-text);
+}
+
+.text-muted {
+    color: var(--muted-color) !important;
 }
 
 .card .plotly-graph-div {
