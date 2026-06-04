@@ -1,79 +1,141 @@
 {% extends "base.html" %}
 {% block title %}{{ dataset.name }} - 单细胞 ANN 检索系统{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h2>{{ dataset.name }}</h2>
-    <form method="POST" action="{{ url_for('datasets.delete', dataset_id=dataset.id) }}"
-          onsubmit="return confirm('确定要删除该数据集及其所有关联数据吗？');">
-        <button type="submit" class="btn btn-outline-danger btn-sm">删除数据集</button>
-    </form>
+<section class="page-hero mb-4">
+    <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+        <div>
+            <h2 class="page-title mb-2">{{ dataset.name }}</h2>
+            {% if dataset.description %}
+            <p class="page-subtitle mb-0">{{ dataset.description }}</p>
+            {% else %}
+            <p class="page-subtitle mb-0">查看数据集处理状态、索引参数与可视化分布。</p>
+            {% endif %}
+        </div>
+        <form method="POST" action="{{ url_for('datasets.delete', dataset_id=dataset.id) }}"
+              onsubmit="return confirm('确定要删除该数据集及其所有关联数据吗？');">
+            <button type="submit" class="btn btn-outline-danger btn-sm">删除数据集</button>
+        </form>
+    </div>
+</section>
+
+<div class="row g-3 mb-4">
+    <div class="col-xl-3 col-md-6">
+        <div class="metric-card text-center h-100">
+            <p class="metric-label mb-1">当前状态</p>
+            {% if dataset.status == 'uploaded' %}
+                <span class="badge status-badge status-uploaded">已上传</span>
+            {% elif dataset.status == 'processed' %}
+                <span class="badge status-badge status-processed">已处理</span>
+            {% elif dataset.status == 'indexed' %}
+                <span class="badge status-badge status-indexed">已建索引</span>
+            {% elif dataset.status == 'error' %}
+                <span class="badge status-badge status-error">处理错误</span>
+            {% else %}
+                <span class="badge status-badge status-uploaded">{{ dataset.status }}</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="metric-card text-center h-100">
+            <p class="metric-label mb-1">细胞数</p>
+            <h4 class="mb-0">{{ dataset.n_cells or 'N/A' }}</h4>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="metric-card text-center h-100">
+            <p class="metric-label mb-1">基因数</p>
+            <h4 class="mb-0">{{ dataset.n_genes or 'N/A' }}</h4>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="metric-card text-center h-100">
+            <p class="metric-label mb-1">PCA 维度</p>
+            <h4 class="mb-0">{{ dataset.vector_dim or 'N/A' }}</h4>
+        </div>
+    </div>
 </div>
 
-{% if dataset.description %}
-<p class="text-muted">{{ dataset.description }}</p>
-{% endif %}
-
-<!-- 数据集信息 -->
-<div class="card mb-4">
-    <div class="card-header">数据集信息</div>
+<div class="card ui-card mb-4">
+    <div class="card-header ui-card-header">数据集信息与操作</div>
     <div class="card-body">
-        <div class="row">
-            <div class="col-md-6">
+        <div class="row g-3">
+            <div class="col-lg-6">
                 <table class="table table-sm">
-                    <tr><td class="fw-bold">状态</td>
+                    <tr>
+                        <td class="fw-bold">状态</td>
                         <td>
                             {% if dataset.status == 'uploaded' %}
-                                <span class="badge bg-secondary">已上传</span>
+                                <span class="badge status-badge status-uploaded">已上传</span>
                             {% elif dataset.status == 'processed' %}
-                                <span class="badge bg-info">已处理</span>
+                                <span class="badge status-badge status-processed">已处理</span>
                             {% elif dataset.status == 'indexed' %}
-                                <span class="badge bg-success">已建索引</span>
+                                <span class="badge status-badge status-indexed">已建索引</span>
                             {% elif dataset.status == 'error' %}
-                                <span class="badge bg-danger">错误</span>
+                                <span class="badge status-badge status-error">处理错误</span>
+                            {% else %}
+                                <span class="badge status-badge status-uploaded">{{ dataset.status }}</span>
                             {% endif %}
                         </td>
                     </tr>
                     <tr><td class="fw-bold">细胞数</td><td>{{ dataset.n_cells or 'N/A' }}</td></tr>
                     <tr><td class="fw-bold">基因数</td><td>{{ dataset.n_genes or 'N/A' }}</td></tr>
-                    <tr><td class="fw-bold">向量维度</td><td>{{ dataset.vector_dim or 'N/A' }}</td></tr>
-                    <tr><td class="fw-bold">创建时间</td><td>{{ dataset.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td></tr>
                 </table>
             </div>
-            <div class="col-md-6">
-                {% if dataset.error_message %}
-                    <div class="alert alert-danger">{{ dataset.error_message }}</div>
+            <div class="col-lg-6">
+                <table class="table table-sm">
+                    <tr><td class="fw-bold">向量维度</td><td>{{ dataset.vector_dim or 'N/A' }}</td></tr>
+                    <tr><td class="fw-bold">创建时间</td><td>{{ dataset.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td></tr>
+                    <tr><td class="fw-bold">索引数量</td><td>{{ indexes|length }}</td></tr>
+                </table>
+            </div>
+        </div>
+        {% if dataset.error_message %}
+            <div class="alert alert-danger mt-2">{{ dataset.error_message }}</div>
+        {% endif %}
+        <hr>
+        <div class="action-inline-row d-flex flex-wrap gap-2 justify-content-between align-items-center">
+            <small class="text-muted mb-0 flex-grow-1">提示：处理完成后可在下方构建 HNSW 索引，用于检索页面 Top-K 相似细胞查询。</small>
+            <div class="d-flex flex-wrap gap-2 justify-content-end ms-auto">
+                {% if dataset.status == 'uploaded' %}
+                    <form method="POST" action="{{ url_for('datasets.process', dataset_id=dataset.id) }}">
+                        <button type="submit" class="btn btn-primary btn-cta">处理数据集</button>
+                    </form>
                 {% endif %}
-                <div class="d-grid gap-2">
-                    {% if dataset.status == 'uploaded' %}
-                        <form method="POST" action="{{ url_for('datasets.process', dataset_id=dataset.id) }}">
-                            <button type="submit" class="btn btn-primary w-100">处理数据集</button>
-                        </form>
-                    {% endif %}
-                    {% if dataset.status in ['processed', 'indexed'] %}
-                        <form method="POST" action="{{ url_for('datasets.process', dataset_id=dataset.id) }}">
-                            <button type="submit" class="btn btn-outline-primary w-100">重新处理</button>
-                        </form>
-                    {% endif %}
-                </div>
+                {% if dataset.status in ['processed', 'indexed'] %}
+                    <form method="POST" action="{{ url_for('datasets.process', dataset_id=dataset.id) }}">
+                        <button type="submit" class="btn btn-outline-primary">重新处理并覆盖向量缓存</button>
+                    </form>
+                {% endif %}
             </div>
         </div>
     </div>
 </div>
 
-<!-- 统计信息 -->
 {% if stats %}
-<div class="card mb-4">
-    <div class="card-header">细胞统计</div>
+<div class="card ui-card mb-4">
+    <div class="card-header ui-card-header">细胞统计</div>
     <div class="card-body">
-        <div class="row">
+        <div class="row g-3">
             {% for key, items in stats.items() %}
-            <div class="col-md-4">
-                <h6>{{ key | replace('_', ' ') | title }}</h6>
-                <table class="table table-sm table-bordered">
+            <div class="col-lg-4 col-md-6">
+                <div class="stats-block h-100">
+                <h6 class="mb-3">
+                    {% if key == 'cell_type' %}
+                    细胞类型分布
+                    {% elif key == 'disease' %}
+                    疾病分布
+                    {% elif key == 'age_group' %}
+                    年龄组分布
+                    {% else %}
+                    {{ key | replace('_', ' ') | title }}
+                    {% endif %}
+                </h6>
+                <table class="table table-sm table-bordered mb-0">
                     {% for name, count in items[:10] %}
                     <tr><td>{{ name }}</td><td class="text-end">{{ count }}</td></tr>
                     {% endfor %}
                 </table>
+                </div>
             </div>
             {% endfor %}
         </div>
@@ -81,62 +143,66 @@
 </div>
 {% endif %}
 
-<!-- HNSW 索引 -->
 {% if dataset.status in ['processed', 'indexed'] %}
-<div class="card mb-4">
-    <div class="card-header">HNSW 索引</div>
+<div class="card ui-card mb-4">
+    <div class="card-header ui-card-header">HNSW 索引</div>
     <div class="card-body">
         {% if indexes %}
-        <table class="table table-sm">
-            <thead>
-                <tr>
-                    <th>距离度量</th>
-                    <th>M</th>
-                    <th>ef_construction</th>
-                    <th>ef_search</th>
-                    <th>构建耗时 (ms)</th>
-                    <th>状态</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for idx in indexes %}
-                <tr>
-                    <td>{{ idx.metric }}</td>
-                    <td>{{ idx.M }}</td>
-                    <td>{{ idx.ef_construction }}</td>
-                    <td>{{ idx.ef_search }}</td>
-                    <td>{{ "%.1f"|format(idx.build_time_ms or 0) }}</td>
-                    <td><span class="badge bg-success">{{ idx.status }}</span></td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <div class="table-responsive ui-table-wrap mb-3">
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr>
+                        <th>距离度量</th>
+                        <th>M</th>
+                        <th>ef_construction</th>
+                        <th>ef_search</th>
+                        <th>构建耗时 (ms)</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for idx in indexes %}
+                    <tr>
+                        <td>{{ idx.metric|upper }}</td>
+                        <td>{{ idx.M }}</td>
+                        <td>{{ idx.ef_construction }}</td>
+                        <td>{{ idx.ef_search }}</td>
+                        <td>{{ "%.1f"|format(idx.build_time_ms or 0) }}</td>
+                        <td><span class="badge status-badge status-indexed">{{ idx.status }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info mb-3">当前暂无已构建索引，请使用下方表单创建。</div>
         {% endif %}
 
-        <h6 class="mt-3">构建新索引</h6>
+        <h6 class="mb-3">构建新索引</h6>
+        <p class="text-muted small mb-3">参数说明：`M` 控制图连接度，`ef_construction` 影响建图质量，`ef_search` 影响查询精度与耗时。</p>
         <form method="POST" action="{{ url_for('datasets.build_index', dataset_id=dataset.id) }}">
             <div class="row g-2 align-items-end">
-                <div class="col-md-2">
+                <div class="col-lg-2 col-md-6">
                     <label class="form-label">距离度量</label>
-                    <select name="metric" class="form-select form-select-sm">
+                    <select name="metric" class="form-select form-select-sm ui-select">
                         <option value="l2">L2</option>
                         <option value="cosine">Cosine</option>
                     </select>
                 </div>
-                <div class="col-md-2">
+                <div class="col-lg-2 col-md-6">
                     <label class="form-label">M</label>
-                    <input type="number" name="M" class="form-control form-control-sm" value="16" min="4" max="128">
+                    <input type="number" name="M" class="form-control form-control-sm ui-input" value="16" min="4" max="128">
                 </div>
-                <div class="col-md-2">
+                <div class="col-lg-3 col-md-6">
                     <label class="form-label">ef_construction</label>
-                    <input type="number" name="ef_construction" class="form-control form-control-sm" value="200" min="10">
+                    <input type="number" name="ef_construction" class="form-control form-control-sm ui-input" value="200" min="10">
                 </div>
-                <div class="col-md-2">
+                <div class="col-lg-3 col-md-6">
                     <label class="form-label">ef_search</label>
-                    <input type="number" name="ef_search" class="form-control form-control-sm" value="100" min="10">
+                    <input type="number" name="ef_search" class="form-control form-control-sm ui-input" value="100" min="10">
                 </div>
-                <div class="col-md-2">
-                    <button type="submit" class="btn btn-success btn-sm w-100">构建索引</button>
+                <div class="col-lg-2 col-md-6">
+                    <button type="submit" class="btn btn-success btn-sm w-100 btn-cta">构建索引</button>
                 </div>
             </div>
         </form>
@@ -144,12 +210,14 @@
 </div>
 {% endif %}
 
-<!-- 可视化 -->
 {% if scatter_html %}
-<div class="card mb-4">
-    <div class="card-header">数据可视化</div>
+<div class="card ui-card mb-4">
+    <div class="card-header ui-card-header">数据可视化</div>
     <div class="card-body">
-        {{ scatter_html|safe }}
+        <p class="text-muted mb-3">图中展示数据集整体细胞分布，可用于课堂讲解不同细胞群体结构。</p>
+        <div class="plotly-theme-adaptive">
+            {{ scatter_html|safe }}
+        </div>
     </div>
 </div>
 {% endif %}
