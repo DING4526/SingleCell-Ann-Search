@@ -1,38 +1,23 @@
 import json
 import pathlib
 import numpy as np
+import pandas as pd
 import scanpy as sc
+import plotly.express as px
 import plotly.graph_objects as go
 from flask import current_app
 from app.models import Dataset, Cell
 from app.extensions import db
 
+# ------------------ 配色 & 风格 ------------------
 DARK_COLOR_CYCLE = [
-    "#28c7c0",
-    "#4dd4ff",
-    "#7c8cff",
-    "#b487ff",
-    "#ff8fd8",
-    "#ffb86b",
-    "#f9f871",
-    "#9bef83",
-    "#5eead4",
-    "#60a5fa",
-    "#f472b6",
+    "#28c7c0", "#4dd4ff", "#7c8cff", "#b487ff", "#ff8fd8",
+    "#ffb86b", "#f9f871", "#9bef83", "#5eead4", "#60a5fa", "#f472b6",
 ]
 
 LIGHT_COLOR_CYCLE = [
-    "#66cbc8",
-    "#69d9c0",
-    "#7ee5b0",
-    "#a0ee9b",
-    "#caf584",
-    "#f9f871",
-    "#417e7d",
-    "#324b4b",
-    "#95b1b0",
-    "#6b7396",
-    "#9fa6cc",
+    "#66cbc8", "#69d9c0", "#7ee5b0", "#a0ee9b", "#caf584",
+    "#f9f871", "#417e7d", "#324b4b", "#95b1b0", "#6b7396", "#9fa6cc",
 ]
 
 CHART_BG = "#050b16"
@@ -42,28 +27,32 @@ FONT_COLOR = "#e3f0ff"
 
 
 def _get_coords(dataset: Dataset):
-    """从 h5ad 中获取 2D 坐标（优先 UMAP，否则用 PCA 前两维）。"""
+    """获取 2D 坐标（优先 UMAP，否则 PCA 前两维）。"""
     adata = sc.read_h5ad(dataset.file_path)
     if "X_umap" in adata.obsm:
-        coords = np.array(adata.obsm["X_umap"])
-        coord_label = "UMAP"
+        return np.array(adata.obsm["X_umap"]), "UMAP", adata
     elif "X_pca" in adata.obsm:
-        coords = np.array(adata.obsm["X_pca"])[:, :2]
-        coord_label = "PCA"
-    else:
-        return None, None, None
-    return coords, coord_label, adata
+        return np.array(adata.obsm["X_pca"])[:, :2], "PCA", adata
+    return None, None, None
 
 
 def _build_color_map(labels: list[str], use_dark_cycle: bool = True) -> dict[str, str]:
     """为分类标签构建稳定颜色映射。"""
-    unique_labels = sorted(set(labels))
     palette = DARK_COLOR_CYCLE if use_dark_cycle else LIGHT_COLOR_CYCLE
+    unique_labels = sorted(set(labels))
     return {label: palette[i % len(palette)] for i, label in enumerate(unique_labels)}
 
 
+def _muted_color(hex_color: str, alpha: float = 0.28, darken: float = 0.62) -> str:
+    """压暗并透明化背景颜色。"""
+    hex_color = hex_color.lstrip("#")
+    r = int(int(hex_color[0:2], 16) * darken)
+    g = int(int(hex_color[2:4], 16) * darken)
+    b = int(int(hex_color[4:6], 16) * darken)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def _apply_dark_layout(fig: go.Figure, title: str, xaxis_title: str, yaxis_title: str, height: int = 620):
-    """统一深色图表风格，便于课堂投影展示。"""
     fig.update_layout(
         title=title,
         template="plotly_dark",
@@ -72,156 +61,178 @@ def _apply_dark_layout(fig: go.Figure, title: str, xaxis_title: str, yaxis_title
         font=dict(color=FONT_COLOR, size=12),
         height=height,
         margin=dict(l=18, r=18, t=58, b=70),
-        xaxis=dict(
-            title=xaxis_title,
-            gridcolor=GRID_COLOR,
-            zeroline=False,
-            showline=True,
-            linecolor="rgba(144, 180, 233, 0.22)",
-        ),
-        yaxis=dict(
-            title=yaxis_title,
-            gridcolor=GRID_COLOR,
-            zeroline=False,
-            showline=True,
-            linecolor="rgba(144, 180, 233, 0.22)",
-        ),
+        xaxis=dict(title=xaxis_title, gridcolor=GRID_COLOR, zeroline=False, showline=True,
+                   linecolor="rgba(144, 180, 233, 0.22)"),
+        yaxis=dict(title=yaxis_title, gridcolor=GRID_COLOR, zeroline=False, showline=True,
+                   linecolor="rgba(144, 180, 233, 0.22)"),
         legend=dict(
-            orientation="h",
-            y=-0.18,
-            x=0,
+            orientation="h", y=-0.18, x=0,
             bgcolor="rgba(12, 22, 40, 0.55)",
             bordercolor="rgba(148, 180, 228, 0.22)",
             borderwidth=1,
-            font=dict(size=11),
+            font=dict(size=11)
         ),
     )
 
 
-def dataset_scatter_html(dataset_id: int) -> str:
-    """生成全量细胞散点图，按 cell_type 着色。"""
-    dataset = db.session.get(Dataset, dataset_id)
-    if not dataset:
-        return "<p>数据集不存在</p>"
-
-    coords, coord_label, adata = _get_coords(dataset)
-    if coords is None:
-        return "<p>无可用的 UMAP 或 PCA 坐标</p>"
-
-    cells = Cell.query.filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
-    if not cells:
-        return "<p>暂无细胞元信息可视化</p>"
-
-    cell_types = [c.cell_type or "未知" for c in cells]
-    cell_indices = [c.cell_index for c in cells]
-    color_map = _build_color_map(cell_types, use_dark_cycle=True)
-    fig = go.Figure()
-
-    for cell_type in sorted(set(cell_types)):
-        type_indices = [i for i, value in enumerate(cell_types) if value == cell_type]
-        fig.add_trace(
-            go.Scatter(
-                x=coords[type_indices, 0],
-                y=coords[type_indices, 1],
-                mode="markers",
-                marker=dict(
-                    size=5.2,
-                    color=color_map[cell_type],
-                    opacity=0.93,
-                ),
-                name=f"{cell_type} ({len(type_indices)})",
-                customdata=[cell_indices[i] for i in type_indices],
-                hovertemplate="cell_index: %{customdata}<extra></extra>",
-            )
-        )
-
-    _apply_dark_layout(
-        fig,
-        title=f"{dataset.name} · {coord_label} 预览",
-        xaxis_title=f"{coord_label}1",
-        yaxis_title=f"{coord_label}2",
-        height=640,
-    )
-    return fig.to_html(full_html=False, include_plotlyjs="cdn")
-
-
-# ---------------------------------------------------------------------------
-# JSON 版本：供 AJAX 接口返回，前端用 Plotly.react 渲染，避免 innerHTML 不执行脚本
-# ---------------------------------------------------------------------------
-
 def _fig_to_plotly_json(fig: go.Figure) -> dict:
-    """将 Plotly Figure 序列化为可 JSON 传输的 dict（data + layout）。"""
     raw = json.loads(fig.to_json())
     return {"data": raw.get("data", []), "layout": raw.get("layout", {})}
 
 
-def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indices: list) -> dict:
-    """生成检索结果散点图的 Plotly JSON，供 /api/search 返回后前端用 Plotly.react 渲染。"""
+# ------------------ 数据集详情页缓存 ------------------
+def generate_scatter_cache(dataset_id: int) -> str:
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        raise ValueError(f"Dataset {dataset_id} 不存在")
+
+    coords, coord_label, adata = _get_coords(dataset)
+    if coords is None:
+        raise ValueError("无可用坐标")
+
+    cells = db.session.query(Cell.cell_index, Cell.cell_type).filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
+    if not cells:
+        raise ValueError("无细胞信息")
+
+    usable_count = min(len(cells), coords.shape[0])
+    cells = cells[:usable_count]
+    coords = coords[:usable_count, :]
+
+    cell_types = [c.cell_type or "未知" for c in cells]
+    cell_indices = [c.cell_index for c in cells]
+    color_map = _build_color_map(cell_types, use_dark_cycle=True)
+
+    fig = px.scatter(
+        x=coords[:, 0], y=coords[:, 1],
+        color=cell_types,
+        color_discrete_map=color_map,
+        labels={"x": f"{coord_label}1", "y": f"{coord_label}2", "color": "细胞类型"},
+        hover_data={"cell_index": cell_indices},
+        render_mode="webgl",
+    )
+
+    _apply_dark_layout(fig, title=f"{dataset.name} · {coord_label} 预览", xaxis_title=f"{coord_label}1", yaxis_title=f"{coord_label}2", height=640)
+    fig.update_traces(marker=dict(size=3.2, opacity=0.38), selector=dict(mode="markers"))
+
+    plot_json = _fig_to_plotly_json(fig)
+
+    cache_dir = pathlib.Path(current_app.config["CACHE_DIR"])
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"scatter_v2_{dataset_id}.json"
+    cache_path = cache_dir / filename
+
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(plot_json, f, ensure_ascii=False)
+
+    dataset.scatter_cache_path = filename
+    db.session.commit()
+    return str(cache_path)
+
+
+# ------------------ 检索结果散点图 ------------------
+def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indices: list, max_background_points: int = 100_000) -> dict:
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         raise ValueError("数据集不存在")
 
     coords, coord_label, adata = _get_coords(dataset)
     if coords is None:
-        raise ValueError("无可用的 UMAP 或 PCA 坐标")
+        raise ValueError("无可用坐标")
 
-    cells = Cell.query.filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
+    cells = db.session.query(Cell.cell_index, Cell.cell_type).filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
     if not cells:
-        raise ValueError("暂无细胞元信息，无法绘图")
+        raise ValueError("无细胞信息")
+
+    usable_count = min(len(cells), coords.shape[0])
+    cells = cells[:usable_count]
+    coords = coords[:usable_count, :]
 
     cell_indices = [c.cell_index for c in cells]
-    result_set = set(result_cell_indices)
-    highlight = []
-    for i in range(len(cells)):
-        if cell_indices[i] == query_cell_index:
-            highlight.append("Query")
-        elif cell_indices[i] in result_set:
-            highlight.append("Result")
-        else:
-            highlight.append("Other")
+    cell_types = [c.cell_type or "未知" for c in cells]
+    color_map = _build_color_map(cell_types, use_dark_cycle=True)
+    pos_by_cell_index = {ci: i for i, ci in enumerate(cell_indices)}
 
-    fig = go.Figure()
+    result_set = set([ci for ci in result_cell_indices if ci in pos_by_cell_index])
+    query_pos = pos_by_cell_index.get(query_cell_index)
+    if query_pos is None:
+        raise ValueError("查询细胞不在数据集中")
 
-    # 背景点：单一 trace，低透明度，无 hover
-    other_indices = [i for i, h in enumerate(highlight) if h == "Other"]
-    if other_indices:
-        fig.add_trace(go.Scatter(
-            x=coords[other_indices, 0].tolist(), y=coords[other_indices, 1].tolist(),
-            mode="markers",
-            marker=dict(size=3.6, color="rgba(150,185,235,0.25)", opacity=0.5),
-            name="其他", showlegend=False, hoverinfo="skip",
-        ))
+    # 背景点
+    background_positions = [i for i, ci in enumerate(cell_indices) if ci != query_cell_index and ci not in result_set]
+    if len(background_positions) > max_background_points:
+        rng = np.random.default_rng(seed=dataset_id)
+        background_positions = sorted(rng.choice(background_positions, size=max_background_points, replace=False).tolist())
 
-    # 结果细胞：单一 trace，明亮色
-    result_indices = [i for i, h in enumerate(highlight) if h == "Result"]
-    if result_indices:
-        fig.add_trace(go.Scatter(
-            x=coords[result_indices, 0].tolist(), y=coords[result_indices, 1].tolist(),
-            mode="markers",
-            marker=dict(size=9.2, color="#69d9c0", opacity=0.98),
-            name="相似细胞",
-            customdata=[cell_indices[i] for i in result_indices],
-            hovertemplate="cell_index: %{customdata}<extra></extra>",
-        ))
+    bg_df = pd.DataFrame({
+        "x": coords[background_positions, 0],
+        "y": coords[background_positions, 1],
+        "cell_type": [cell_types[i] for i in background_positions],
+        "cell_index": [cell_indices[i] for i in background_positions],
+    })
 
-    # 查询细胞：星形高亮
-    query_pos = next((i for i, ci in enumerate(cell_indices) if ci == query_cell_index), 0)
-    fig.add_trace(go.Scatter(
+    # 背景低亮 PX
+    muted_color_map = {ct: _muted_color(color) for ct, color in color_map.items()}
+    fig = px.scatter(
+        bg_df,
+        x="x", y="y",
+        color="cell_type",
+        color_discrete_map=muted_color_map,
+        custom_data=["cell_index", "cell_type"],
+        render_mode="webgl",
+    )
+    fig.update_traces(marker=dict(size=3.2, opacity=1.0), hovertemplate="cell_type: %{customdata[1]}<br>cell_index: %{customdata[0]}<extra></extra>")
+
+    # 结果点高亮
+    result_positions = [pos_by_cell_index[ci] for ci in result_set if ci != query_cell_index]
+    if result_positions:
+        result_info_rows = db.session.query(Cell.cell_index, Cell.cell_name, Cell.cell_type, Cell.disease, Cell.age_group)\
+            .filter(Cell.dataset_id == dataset_id, Cell.cell_index.in_([cell_indices[i] for i in result_positions])).all()
+        result_info_map = {r.cell_index: r for r in result_info_rows}
+
+        result_x, result_y, result_customdata = [], [], []
+        for pos in result_positions:
+            ci = cell_indices[pos]
+            row = result_info_map.get(ci)
+            if not row: continue
+            result_x.append(float(coords[pos, 0]))
+            result_y.append(float(coords[pos, 1]))
+            result_customdata.append([row.cell_index, row.cell_name or "N/A", row.cell_type or "未知", row.disease or "N/A", row.age_group or "N/A"])
+
+        if result_x:
+            fig.add_trace(go.Scattergl(
+                x=result_x, y=result_y,
+                mode="markers",
+                marker=dict(size=8, color="#69d9c0", opacity=0.98, line=dict(width=1.2, color="rgba(255,255,255,0.65)")),
+                name="相似细胞",
+                customdata=result_customdata,
+                hovertemplate="cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>age_group: %{customdata[4]}<extra></extra>",
+            ))
+
+    # 查询点星形突出
+    query_info = db.session.query(Cell.cell_index, Cell.cell_name, Cell.cell_type, Cell.disease, Cell.age_group)\
+        .filter(Cell.dataset_id == dataset_id, Cell.cell_index == query_cell_index).first()
+    query_customdata = [[
+        query_info.cell_index if query_info else query_cell_index,
+        query_info.cell_name if query_info and query_info.cell_name else "N/A",
+        query_info.cell_type if query_info and query_info.cell_type else "未知",
+        query_info.disease if query_info and query_info.disease else "N/A",
+        query_info.age_group if query_info and query_info.age_group else "N/A"
+    ]]
+    fig.add_trace(go.Scattergl(
         x=[float(coords[query_pos, 0])], y=[float(coords[query_pos, 1])],
         mode="markers",
-        marker=dict(size=16, color="#f9f871", symbol="star", line=dict(width=2.4, color="#ffd166")),
+        marker=dict(size=16, color="#f9f871", symbol="star", line=dict(width=2.4, color="#ffd166"), opacity=1.0),
         name="查询细胞",
-        customdata=[query_cell_index],
-        hovertemplate="查询细胞<br>cell_index: %{customdata}<extra></extra>",
+        customdata=query_customdata,
+        hovertemplate="查询细胞<br>cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>age_group: %{customdata[4]}<extra></extra>",
     ))
 
-    _apply_dark_layout(fig, title=f"检索结果高亮 · {coord_label} 视图",
-                       xaxis_title=f"{coord_label}1", yaxis_title=f"{coord_label}2", height=640)
+    _apply_dark_layout(fig, title=f"检索结果高亮 · {coord_label} 视图", xaxis_title=f"{coord_label}1", yaxis_title=f"{coord_label}2", height=640)
     return _fig_to_plotly_json(fig)
 
 
+# ------------------ 检索性能柱状图 ------------------
 def eval_bar_json(metrics: dict) -> dict:
-    """生成性能对比柱状图的 Plotly JSON，供 /api/evaluate 返回后前端用 Plotly.react 渲染。"""
     categories = ["ANN 耗时 (ms)", "精确检索耗时 (ms)"]
     values = [metrics["avg_ann_time_ms"], metrics["avg_exact_time_ms"]]
     fig = go.Figure()
@@ -241,88 +252,8 @@ def eval_bar_json(metrics: dict) -> dict:
         height=320, bargap=0.5, bargroupgap=0.15,
         margin=dict(l=20, r=20, t=70, b=40),
         annotations=[dict(
-            text=(
-                f"Recall@{metrics.get('top_k', 'K')}: {metrics['avg_recall_at_k']:.2%}"
-                f"  |  加速比: {metrics['speedup']:.1f}x"
-            ),
-            xref="paper", yref="paper", x=0.5, y=1.08,
-            showarrow=False, font=dict(size=14),
+            text=(f"Recall@{metrics.get('top_k', 'K')}: {metrics['avg_recall_at_k']:.2%}  |  加速比: {metrics['speedup']:.1f}x"),
+            xref="paper", yref="paper", x=0.5, y=1.08, showarrow=False, font=dict(size=14),
         )],
     )
     return _fig_to_plotly_json(fig)
-
-
-# ---------------------------------------------------------------------------
-# 散点图缓存：生成一次、写入磁盘，供 /api/datasets/<id>/scatter 直接读取
-# ---------------------------------------------------------------------------
-
-def generate_scatter_cache(dataset_id: int) -> str:
-    """
-    生成数据集全量细胞散点图的 Plotly JSON，写入缓存文件。
-
-    缓存文件名：scatter_v2_<dataset_id>.json，存放在 CACHE_DIR 下。
-    同时将文件名（非完整路径）更新到 dataset.scatter_cache_path。
-    返回缓存文件的完整路径。
-    """
-    dataset = db.session.get(Dataset, dataset_id)
-    if not dataset:
-        raise ValueError(f"数据集 {dataset_id} 不存在")
-
-    coords, coord_label, adata = _get_coords(dataset)
-    if coords is None:
-        raise ValueError("无可用的 UMAP 或 PCA 坐标，无法生成散点图缓存")
-
-    cells = Cell.query.filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
-    if not cells:
-        raise ValueError("暂无细胞元信息，无法生成散点图缓存")
-
-    cell_types = [c.cell_type or "未知" for c in cells]
-    cell_indices = [c.cell_index for c in cells]
-    color_map = _build_color_map(cell_types, use_dark_cycle=True)
-    fig = go.Figure()
-
-    for cell_type in sorted(set(cell_types)):
-        type_indices = [i for i, v in enumerate(cell_types) if v == cell_type]
-        fig.add_trace(
-            go.Scatter(
-                x=coords[type_indices, 0].tolist(),
-                y=coords[type_indices, 1].tolist(),
-                mode="markers",
-                marker=dict(
-                    size=5.2,
-                    color=color_map[cell_type],
-                    opacity=0.93,
-                ),
-                name=f"{cell_type} ({len(type_indices)})",
-                customdata=[cell_indices[i] for i in type_indices],
-                hovertemplate="cell_index: %{customdata}<extra></extra>",
-            )
-        )
-
-    _apply_dark_layout(
-        fig,
-        title=f"{dataset.name} · {coord_label} 预览",
-        xaxis_title=f"{coord_label}1",
-        yaxis_title=f"{coord_label}2",
-        height=640,
-    )
-
-    plot_json = _fig_to_plotly_json(fig)
-
-    cache_dir = pathlib.Path(current_app.config["CACHE_DIR"])
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"scatter_v2_{dataset_id}.json"
-    cache_path = cache_dir / filename
-
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(plot_json, f, ensure_ascii=False)
-
-    # 清理旧版缓存文件（如有）
-    old_path = cache_dir / f"scatter_{dataset_id}.json"
-    if old_path.exists():
-        old_path.unlink()
-
-    dataset.scatter_cache_path = filename
-    db.session.commit()
-
-    return str(cache_path)
