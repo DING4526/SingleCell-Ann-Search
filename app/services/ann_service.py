@@ -14,31 +14,50 @@ def build_hnsw_index(
     M: int = 16,
     ef_construction: int = 200,
     ef_search: int = 100,
+    progress_cb=None,
 ) -> AnnIndex:
-    """为数据集构建 HNSW 索引并保存到磁盘。"""
+    """为数据集构建 HNSW 索引并保存到磁盘。
+
+    Args:
+        dataset_id: 数据集 ID
+        metric: 距离度量，'l2' 或 'cosine'
+        M: HNSW 参数 M
+        ef_construction: 建图 ef
+        ef_search: 查询 ef
+        progress_cb: 可选的进度回调 progress_cb(progress: int, message: str)
+    """
+    def _cb(p, msg):
+        if progress_cb:
+            progress_cb(p, msg)
+
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset or dataset.status not in ("processed", "indexed"):
         raise ValueError("数据集需要先处理才能构建索引")
 
+    _cb(10, "正在加载向量缓存...")
     vectors = load_vectors(dataset)
     n_cells, dim = vectors.shape
 
+    _cb(25, "正在初始化 HNSW 索引结构...")
     space = "cosine" if metric == "cosine" else "l2"
     index = hnswlib.Index(space=space, dim=dim)
     index.init_index(max_elements=n_cells, ef_construction=ef_construction, M=M)
     index.set_ef(ef_search)
 
+    _cb(40, f"正在向索引添加 {n_cells} 个向量...")
     t0 = time.time()
     # 使用 cell_index（0..n-1）作为 hnswlib 的 label
     labels = np.arange(n_cells, dtype=np.int64)
     index.add_items(vectors, labels)
     build_time_ms = (time.time() - t0) * 1000
 
+    _cb(75, "向量添加完成，正在保存索引文件...")
     # 保存索引文件
     index_filename = f"dataset_{dataset_id}_{metric}.bin"
     index_path_full = pathlib.Path(current_app.config["INDEX_DIR"]) / index_filename
     index.save_index(str(index_path_full))
 
+    _cb(90, "正在更新数据库记录...")
     # 保存或更新 AnnIndex 数据库记录
     ann_index = AnnIndex.query.filter_by(dataset_id=dataset_id, metric=metric).first()
     if ann_index:
@@ -64,6 +83,7 @@ def build_hnsw_index(
     dataset.status = "indexed"
     db.session.commit()
 
+    _cb(100, "索引构建完成。")
     return ann_index
 
 

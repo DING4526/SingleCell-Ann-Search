@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ dataset.name }} - 单细胞 ANN 检索系统{% endblock %}
 {% block content %}
-<section class="page-hero mb-4">
+<section class="page-hero mb-4" id="pageHero" data-dataset-id="{{ dataset.id }}">
     <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
         <div>
             <h2 class="page-title mb-2">{{ dataset.name }}</h2>
@@ -18,10 +18,12 @@
     </div>
 </section>
 
-<div class="row g-3 mb-4">
+<!-- 状态卡片 -->
+<div class="row g-3 mb-4" id="statsRow">
     <div class="col-xl-3 col-md-6">
         <div class="metric-card text-center h-100">
             <p class="metric-label mb-1">当前状态</p>
+            <span id="dsStatusBadge">
             {% if dataset.status == 'uploaded' %}
                 <span class="badge status-badge status-uploaded">已上传</span>
             {% elif dataset.status == 'processed' %}
@@ -33,24 +35,25 @@
             {% else %}
                 <span class="badge status-badge status-uploaded">{{ dataset.status }}</span>
             {% endif %}
+            </span>
         </div>
     </div>
     <div class="col-xl-3 col-md-6">
         <div class="metric-card text-center h-100">
             <p class="metric-label mb-1">细胞数</p>
-            <h4 class="mb-0">{{ dataset.n_cells or 'N/A' }}</h4>
+            <h4 class="mb-0" id="dsNCells">{{ dataset.n_cells or 'N/A' }}</h4>
         </div>
     </div>
     <div class="col-xl-3 col-md-6">
         <div class="metric-card text-center h-100">
             <p class="metric-label mb-1">基因数</p>
-            <h4 class="mb-0">{{ dataset.n_genes or 'N/A' }}</h4>
+            <h4 class="mb-0" id="dsNGenes">{{ dataset.n_genes or 'N/A' }}</h4>
         </div>
     </div>
     <div class="col-xl-3 col-md-6">
         <div class="metric-card text-center h-100">
             <p class="metric-label mb-1">PCA 维度</p>
-            <h4 class="mb-0">{{ dataset.vector_dim or 'N/A' }}</h4>
+            <h4 class="mb-0" id="dsVectorDim">{{ dataset.vector_dim or 'N/A' }}</h4>
         </div>
     </div>
 </div>
@@ -63,7 +66,7 @@
                 <table class="table table-sm">
                     <tr>
                         <td class="fw-bold">状态</td>
-                        <td>
+                        <td id="dsStatusText">
                             {% if dataset.status == 'uploaded' %}
                                 <span class="badge status-badge status-uploaded">已上传</span>
                             {% elif dataset.status == 'processed' %}
@@ -77,37 +80,43 @@
                             {% endif %}
                         </td>
                     </tr>
-                    <tr><td class="fw-bold">细胞数</td><td>{{ dataset.n_cells or 'N/A' }}</td></tr>
-                    <tr><td class="fw-bold">基因数</td><td>{{ dataset.n_genes or 'N/A' }}</td></tr>
+                    <tr><td class="fw-bold">细胞数</td><td id="dsNCells2">{{ dataset.n_cells or 'N/A' }}</td></tr>
+                    <tr><td class="fw-bold">基因数</td><td id="dsNGenes2">{{ dataset.n_genes or 'N/A' }}</td></tr>
                 </table>
             </div>
             <div class="col-lg-6">
                 <table class="table table-sm">
-                    <tr><td class="fw-bold">向量维度</td><td>{{ dataset.vector_dim or 'N/A' }}</td></tr>
+                    <tr><td class="fw-bold">向量维度</td><td id="dsVectorDim2">{{ dataset.vector_dim or 'N/A' }}</td></tr>
                     <tr><td class="fw-bold">创建时间</td><td>{{ dataset.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td></tr>
-                    <tr><td class="fw-bold">索引数量</td><td>{{ indexes|length }}</td></tr>
+                    <tr><td class="fw-bold">索引数量</td><td id="dsIndexCount">{{ indexes|length }}</td></tr>
                 </table>
             </div>
         </div>
         {% if dataset.error_message %}
-            <div class="alert alert-danger mt-2">{{ dataset.error_message }}</div>
+            <div class="alert alert-danger mt-2" id="dsErrorMsg">{{ dataset.error_message }}</div>
+        {% else %}
+            <div id="dsErrorMsg" style="display:none;"></div>
         {% endif %}
         <hr>
-        <div class="action-inline-row d-flex flex-wrap gap-2 justify-content-between align-items-center">
-            <small class="text-muted mb-0 flex-grow-1">提示：处理完成后可在下方构建 HNSW 索引，用于检索页面 Top-K 相似细胞查询。</small>
-            <div class="d-flex flex-wrap gap-2 justify-content-end ms-auto">
-                {% if dataset.status == 'uploaded' %}
-                    <form method="POST" action="{{ url_for('datasets.process', dataset_id=dataset.id) }}">
-                        <button type="submit" class="btn btn-primary btn-cta">处理数据集</button>
-                    </form>
-                {% endif %}
-                {% if dataset.status in ['processed', 'indexed'] %}
-                    <form method="POST" action="{{ url_for('datasets.process', dataset_id=dataset.id) }}">
-                        <button type="submit" class="btn btn-outline-primary">重新处理并覆盖向量缓存</button>
-                    </form>
-                {% endif %}
+        <small class="text-muted mb-2 d-block">提示：处理完成后可在下方构建 HNSW 索引，用于检索页面 Top-K 相似细胞查询。</small>
+
+        <!-- 处理数据集表单 -->
+        <form id="processForm" action="{{ url_for('api.api_process', dataset_id=dataset.id) }}"
+              class="d-inline-block me-2">
+            <button type="submit" id="processBtn" class="btn btn-primary btn-cta"
+                    {% if dataset.status not in ['uploaded', 'processed', 'indexed', 'error'] %}disabled{% endif %}>
+                {% if dataset.status == 'uploaded' %}处理数据集{% else %}重新处理并覆盖向量缓存{% endif %}
+            </button>
+        </form>
+
+        <!-- 处理进度区域 -->
+        <div id="processProgressWrap" class="mt-3" style="display:none;">
+            <div class="progress mb-1" style="height:18px;">
+                <div id="processProgressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width:0%;" aria-valuemin="0" aria-valuemax="100">0%</div>
             </div>
         </div>
+        <div id="processMessage" class="alert mt-2" style="display:none;"></div>
     </div>
 </div>
 
@@ -143,13 +152,15 @@
 </div>
 {% endif %}
 
-{% if dataset.status in ['processed', 'indexed'] %}
-<div class="card ui-card mb-4">
+<!-- HNSW 索引区域（始终渲染，通过 JS 控制显示） -->
+<div class="card ui-card mb-4" id="indexSection"
+     {% if dataset.status not in ['processed', 'indexed'] %}style="display:none;"{% endif %}>
     <div class="card-header ui-card-header">HNSW 索引</div>
     <div class="card-body">
+        <div id="indexTableWrap">
         {% if indexes %}
         <div class="table-responsive ui-table-wrap mb-3">
-            <table class="table table-sm align-middle">
+            <table class="table table-sm align-middle" id="indexTable">
                 <thead>
                     <tr>
                         <th>距离度量</th>
@@ -160,7 +171,7 @@
                         <th>状态</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody id="indexTbody">
                     {% for idx in indexes %}
                     <tr>
                         <td>{{ idx.metric|upper }}</td>
@@ -175,12 +186,13 @@
             </table>
         </div>
         {% else %}
-        <div class="alert alert-info mb-3">当前暂无已构建索引，请使用下方表单创建。</div>
+        <div class="alert alert-info mb-3" id="noIndexAlert">当前暂无已构建索引，请使用下方表单创建。</div>
         {% endif %}
+        </div>
 
         <h6 class="mb-3">构建新索引</h6>
         <p class="text-muted small mb-3">参数说明：`M` 控制图连接度，`ef_construction` 影响建图质量，`ef_search` 影响查询精度与耗时。</p>
-        <form method="POST" action="{{ url_for('datasets.build_index', dataset_id=dataset.id) }}">
+        <form id="buildIndexForm" action="{{ url_for('api.api_build_index', dataset_id=dataset.id) }}">
             <div class="row g-2 align-items-end">
                 <div class="col-lg-2 col-md-6">
                     <label class="form-label">距离度量</label>
@@ -202,13 +214,21 @@
                     <input type="number" name="ef_search" class="form-control form-control-sm ui-input" value="100" min="10">
                 </div>
                 <div class="col-lg-2 col-md-6">
-                    <button type="submit" class="btn btn-success btn-sm w-100 btn-cta">构建索引</button>
+                    <button type="submit" id="buildIndexBtn" class="btn btn-success btn-sm w-100 btn-cta">构建索引</button>
                 </div>
             </div>
         </form>
+
+        <!-- 构建索引进度区域 -->
+        <div id="buildIndexProgressWrap" class="mt-3" style="display:none;">
+            <div class="progress mb-1" style="height:18px;">
+                <div id="buildIndexProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+                     role="progressbar" style="width:0%;" aria-valuemin="0" aria-valuemax="100">0%</div>
+            </div>
+        </div>
+        <div id="buildIndexMessage" class="alert mt-2" style="display:none;"></div>
     </div>
 </div>
-{% endif %}
 
 {% if scatter_html %}
 <div class="card ui-card mb-4">
@@ -221,4 +241,143 @@
     </div>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
+<script>
+var DATASET_ID = parseInt(document.getElementById('pageHero').getAttribute('data-dataset-id'), 10);
+
+/* 根据状态字符串生成 badge HTML */
+function statusBadgeHtml(status) {
+    var map = {
+        uploaded: ['status-uploaded', '已上传'],
+        processed: ['status-processed', '已处理'],
+        indexed: ['status-indexed', '已建索引'],
+        error: ['status-error', '处理错误'],
+    };
+    var info = map[status] || ['status-uploaded', status];
+    return '<span class="badge status-badge ' + info[0] + '">' + info[1] + '</span>';
+}
+
+/* 从 API 拉取数据集最新状态，局部更新 DOM */
+function refreshDatasetStatus() {
+    fetch('/api/datasets/' + DATASET_ID + '/status', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (!data.ok) return;
+            var badge = statusBadgeHtml(data.status);
+            var el;
+            el = document.getElementById('dsStatusBadge'); if (el) el.innerHTML = badge;
+            el = document.getElementById('dsStatusText'); if (el) el.innerHTML = badge;
+            el = document.getElementById('dsNCells'); if (el) el.textContent = data.n_cells || 'N/A';
+            el = document.getElementById('dsNCells2'); if (el) el.textContent = data.n_cells || 'N/A';
+            el = document.getElementById('dsNGenes'); if (el) el.textContent = data.n_genes || 'N/A';
+            el = document.getElementById('dsNGenes2'); if (el) el.textContent = data.n_genes || 'N/A';
+            el = document.getElementById('dsVectorDim'); if (el) el.textContent = data.vector_dim || 'N/A';
+            el = document.getElementById('dsVectorDim2'); if (el) el.textContent = data.vector_dim || 'N/A';
+            el = document.getElementById('dsIndexCount'); if (el) el.textContent = data.indexes ? data.indexes.length : '0';
+
+            var errBox = document.getElementById('dsErrorMsg');
+            if (errBox) {
+                if (data.error_message) {
+                    errBox.textContent = data.error_message;
+                    errBox.style.display = 'block';
+                    errBox.className = 'alert alert-danger mt-2';
+                } else {
+                    errBox.style.display = 'none';
+                }
+            }
+
+            /* 显示/隐藏索引区域 */
+            var indexSection = document.getElementById('indexSection');
+            if (indexSection) {
+                indexSection.style.display = (data.status === 'processed' || data.status === 'indexed') ? '' : 'none';
+            }
+
+            /* 更新索引表格 */
+            if (data.indexes && data.indexes.length > 0) {
+                var noAlert = document.getElementById('noIndexAlert');
+                if (noAlert) noAlert.style.display = 'none';
+
+                var tbody = document.getElementById('indexTbody');
+                if (!tbody) {
+                    /* 若没有 tbody，创建整个 table */
+                    var wrap = document.getElementById('indexTableWrap');
+                    if (wrap) {
+                        var tableHtml = '<div class="table-responsive ui-table-wrap mb-3"><table class="table table-sm align-middle"><thead><tr>' +
+                            '<th>距离度量</th><th>M</th><th>ef_construction</th><th>ef_search</th><th>构建耗时 (ms)</th><th>状态</th>' +
+                            '</tr></thead><tbody id="indexTbody"></tbody></table></div>';
+                        wrap.insertAdjacentHTML('afterbegin', tableHtml);
+                        tbody = document.getElementById('indexTbody');
+                    }
+                }
+                if (tbody) {
+                    tbody.innerHTML = data.indexes.map(function (idx) {
+                        return '<tr><td>' + idx.metric.toUpperCase() + '</td><td>' + idx.M +
+                            '</td><td>' + idx.ef_construction + '</td><td>' + idx.ef_search +
+                            '</td><td>' + (idx.build_time_ms ? idx.build_time_ms.toFixed(1) : '0.0') +
+                            '</td><td><span class="badge status-badge status-indexed">' + idx.status + '</span></td></tr>';
+                    }).join('');
+                }
+            }
+        });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    /* ---- 处理数据集 ---- */
+    var processForm = document.getElementById('processForm');
+    if (processForm) {
+        processForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var wrap = document.getElementById('processProgressWrap');
+            var bar = document.getElementById('processProgressBar');
+            var msg = document.getElementById('processMessage');
+            var btn = document.getElementById('processBtn');
+
+            wrap.style.display = 'block';
+
+            Tasks.submitAjaxTask(processForm, {
+                progressBar: bar,
+                messageBox: msg,
+                submitBtn: btn,
+                onSuccess: function (taskData) {
+                    refreshDatasetStatus();
+                    /* 更新按钮文字 */
+                    if (btn) btn.textContent = '重新处理并覆盖向量缓存';
+                },
+                onError: function (errMsg) {
+                    refreshDatasetStatus();
+                },
+            });
+        });
+    }
+
+    /* ---- 构建索引 ---- */
+    var buildForm = document.getElementById('buildIndexForm');
+    if (buildForm) {
+        buildForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var wrap = document.getElementById('buildIndexProgressWrap');
+            var bar = document.getElementById('buildIndexProgressBar');
+            var msg = document.getElementById('buildIndexMessage');
+            var btn = document.getElementById('buildIndexBtn');
+
+            wrap.style.display = 'block';
+
+            Tasks.submitAjaxTask(buildForm, {
+                progressBar: bar,
+                messageBox: msg,
+                submitBtn: btn,
+                onSuccess: function (taskData) {
+                    refreshDatasetStatus();
+                },
+                onError: function (errMsg) {
+                    refreshDatasetStatus();
+                },
+            });
+        });
+    }
+});
+</script>
 {% endblock %}

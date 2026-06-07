@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import scanpy as sc
 import plotly.graph_objects as go
@@ -163,21 +164,30 @@ def dataset_scatter_html(dataset_id: int) -> str:
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
 
-def search_scatter_html(dataset_id: int, query_cell_index: int, result_cell_indices: list) -> str:
-    """生成检索结果散点图，高亮查询细胞和结果细胞。"""
+# ---------------------------------------------------------------------------
+# JSON 版本：供 AJAX 接口返回，前端用 Plotly.react 渲染，避免 innerHTML 不执行脚本
+# ---------------------------------------------------------------------------
+
+def _fig_to_plotly_json(fig: go.Figure) -> dict:
+    """将 Plotly Figure 序列化为可 JSON 传输的 dict（data + layout）。"""
+    raw = json.loads(fig.to_json())
+    return {"data": raw.get("data", []), "layout": raw.get("layout", {})}
+
+
+def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indices: list) -> dict:
+    """生成检索结果散点图的 Plotly JSON，供 /api/search 返回后前端用 Plotly.react 渲染。"""
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
-        return "<p>数据集不存在</p>"
+        raise ValueError("数据集不存在")
 
     coords, coord_label, adata = _get_coords(dataset)
     if coords is None:
-        return "<p>无可用的 UMAP 或 PCA 坐标</p>"
+        raise ValueError("无可用的 UMAP 或 PCA 坐标")
 
     cells = Cell.query.filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
     if not cells:
-        return "<p>暂无细胞元信息可视化</p>"
+        raise ValueError("暂无细胞元信息，无法绘图")
 
-    # 构建高亮分类标签
     result_set = set(result_cell_indices)
     highlight = []
     for i in range(len(cells)):
@@ -188,7 +198,6 @@ def search_scatter_html(dataset_id: int, query_cell_index: int, result_cell_indi
         else:
             highlight.append("Other")
 
-    fig = go.Figure()
     cell_info = {
         c.cell_index: {
             "cell_name": c.cell_name or "N/A",
@@ -200,150 +209,96 @@ def search_scatter_html(dataset_id: int, query_cell_index: int, result_cell_indi
     }
     all_cell_types = [cell_info[i]["cell_type"] for i in range(len(cells))]
     color_map = _build_color_map(all_cell_types, use_dark_cycle=True)
+    fig = go.Figure()
 
-    # 背景点（其他细胞）
+    # 背景点
     other_indices = [i for i, h in enumerate(highlight) if h == "Other"]
     if other_indices:
         grouped_other = {}
         for idx in other_indices:
             grouped_other.setdefault(cell_info[idx]["cell_type"], []).append(idx)
-
         for cell_type, idx_list in grouped_other.items():
-            fig.add_trace(
-                go.Scatter(
-                    x=coords[idx_list, 0],
-                    y=coords[idx_list, 1],
-                    mode="markers",
-                    marker=dict(
-                        size=3.6,
-                        color=color_map.get(cell_type, "#95b1b0"),
-                        opacity=0.46,
-                        line=dict(width=0.2, color="rgba(232,244,255,0.2)"),
-                    ),
-                    name=f"{cell_type} 背景",
-                    showlegend=False,
-                    hoverinfo="skip",
-                )
-            )
+            fig.add_trace(go.Scatter(
+                x=coords[idx_list, 0].tolist(), y=coords[idx_list, 1].tolist(),
+                mode="markers",
+                marker=dict(size=3.6, color=color_map.get(cell_type, "#95b1b0"), opacity=0.46,
+                            line=dict(width=0.2, color="rgba(232,244,255,0.2)")),
+                name=f"{cell_type} 背景", showlegend=False, hoverinfo="skip",
+            ))
 
     # 结果细胞
-    result_mask = [h == "Result" for h in highlight]
-    if any(result_mask):
-        result_indices = [i for i, mask in enumerate(result_mask) if mask]
+    result_indices = [i for i, h in enumerate(highlight) if h == "Result"]
+    if result_indices:
         grouped_result = {}
         for idx in result_indices:
             grouped_result.setdefault(cell_info[idx]["cell_type"], []).append(idx)
-
         for cell_type, idx_list in grouped_result.items():
-            result_customdata = [
-                [
-                    idx,
-                    cell_info.get(idx, {}).get("cell_name", "N/A"),
-                    cell_info.get(idx, {}).get("cell_type", "N/A"),
-                    cell_info.get(idx, {}).get("disease", "N/A"),
-                    cell_info.get(idx, {}).get("age_group", "N/A"),
-                ]
+            customdata = [
+                [idx, cell_info[idx]["cell_name"], cell_info[idx]["cell_type"],
+                 cell_info[idx]["disease"], cell_info[idx]["age_group"]]
                 for idx in idx_list
             ]
-            fig.add_trace(
-                go.Scatter(
-                    x=coords[idx_list, 0],
-                    y=coords[idx_list, 1],
-                    mode="markers",
-                    marker=dict(
-                        size=9.2,
-                        color=color_map.get(cell_type, "#69d9c0"),
-                        opacity=0.98,
-                        line=dict(width=1.6, color="#f5fbff"),
-                    ),
-                    name=f"相似细胞 · {cell_type}",
-                    customdata=result_customdata,
-                    hovertemplate=(
-                        "cell_index: %{customdata[0]}<br>"
-                        "cell_name: %{customdata[1]}<br>"
-                        "cell_type: %{customdata[2]}<br>"
-                        "disease: %{customdata[3]}<br>"
-                        "age_group: %{customdata[4]}<extra></extra>"
-                    ),
-                )
-            )
+            fig.add_trace(go.Scatter(
+                x=coords[idx_list, 0].tolist(), y=coords[idx_list, 1].tolist(),
+                mode="markers",
+                marker=dict(size=9.2, color=color_map.get(cell_type, "#69d9c0"), opacity=0.98,
+                            line=dict(width=1.6, color="#f5fbff")),
+                name=f"相似细胞 · {cell_type}", customdata=customdata,
+                hovertemplate=(
+                    "cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>"
+                    "cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>"
+                    "age_group: %{customdata[4]}<extra></extra>"
+                ),
+            ))
 
     # 查询细胞
-    query_info = cell_info.get(query_cell_index, {})
-    fig.add_trace(
-        go.Scatter(
-            x=[coords[query_cell_index, 0]],
-            y=[coords[query_cell_index, 1]],
-            mode="markers",
-            marker=dict(size=16, color="#f9f871", symbol="star", line=dict(width=2.4, color="#ffd166")),
-            name="查询细胞",
-            customdata=[
-                [
-                    query_cell_index,
-                    query_info.get("cell_name", "N/A"),
-                    query_info.get("cell_type", "N/A"),
-                    query_info.get("disease", "N/A"),
-                    query_info.get("age_group", "N/A"),
-                ]
-            ],
-            hovertemplate=(
-                "查询细胞<br>"
-                "cell_index: %{customdata[0]}<br>"
-                "cell_name: %{customdata[1]}<br>"
-                "cell_type: %{customdata[2]}<br>"
-                "disease: %{customdata[3]}<br>"
-                "age_group: %{customdata[4]}<extra></extra>"
-            ),
-        )
-    )
+    qi = cell_info.get(query_cell_index, {})
+    fig.add_trace(go.Scatter(
+        x=[float(coords[query_cell_index, 0])], y=[float(coords[query_cell_index, 1])],
+        mode="markers",
+        marker=dict(size=16, color="#f9f871", symbol="star", line=dict(width=2.4, color="#ffd166")),
+        name="查询细胞",
+        customdata=[[query_cell_index, qi.get("cell_name", "N/A"), qi.get("cell_type", "N/A"),
+                     qi.get("disease", "N/A"), qi.get("age_group", "N/A")]],
+        hovertemplate=(
+            "查询细胞<br>cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>"
+            "cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>"
+            "age_group: %{customdata[4]}<extra></extra>"
+        ),
+    ))
 
-    _apply_dark_layout(
-        fig,
-        title=f"检索结果高亮 · {coord_label} 视图",
-        xaxis_title=f"{coord_label}1",
-        yaxis_title=f"{coord_label}2",
-        height=640,
-    )
-    return fig.to_html(full_html=False, include_plotlyjs="cdn")
+    _apply_dark_layout(fig, title=f"检索结果高亮 · {coord_label} 视图",
+                       xaxis_title=f"{coord_label}1", yaxis_title=f"{coord_label}2", height=640)
+    return _fig_to_plotly_json(fig)
 
 
-def eval_bar_html(metrics: dict) -> str:
-    """生成 ANN 与精确检索性能对比柱状图。"""
+def eval_bar_json(metrics: dict) -> dict:
+    """生成性能对比柱状图的 Plotly JSON，供 /api/evaluate 返回后前端用 Plotly.react 渲染。"""
     categories = ["ANN 耗时 (ms)", "精确检索耗时 (ms)"]
     values = [metrics["avg_ann_time_ms"], metrics["avg_exact_time_ms"]]
-
     fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            x=categories,
-            y=values,
-            marker_color=["#8b5cf6", "#fb7185"],
-            text=[f"{v:.4f} ms" for v in values],
-            textposition="auto",
-            width=[0.45, 0.45],
-        )
-    )
+    fig.add_trace(go.Bar(
+        x=categories, y=values,
+        marker_color=["#8b5cf6", "#fb7185"],
+        text=[f"{v:.4f} ms" for v in values],
+        textposition="auto",
+        width=[0.45, 0.45],
+    ))
     fig.update_layout(
         title="ANN 与精确检索性能对比",
         yaxis_title="耗时 (ms)",
         template="plotly_dark",
-        paper_bgcolor=CHART_BG,
-        plot_bgcolor=PLOT_BG,
+        paper_bgcolor=CHART_BG, plot_bgcolor=PLOT_BG,
         font=dict(color=FONT_COLOR),
-        height=320,
-        bargap=0.5,
-        bargroupgap=0.15,
+        height=320, bargap=0.5, bargroupgap=0.15,
         margin=dict(l=20, r=20, t=70, b=40),
-        annotations=[
-            dict(
-                text=f"Recall@{metrics.get('top_k', 'K')}: {metrics['avg_recall_at_k']:.2%}  |  加速比: {metrics['speedup']:.1f}x",
-                xref="paper",
-                yref="paper",
-                x=0.5,
-                y=1.08,
-                showarrow=False,
-                font=dict(size=14),
-            )
-        ],
+        annotations=[dict(
+            text=(
+                f"Recall@{metrics.get('top_k', 'K')}: {metrics['avg_recall_at_k']:.2%}"
+                f"  |  加速比: {metrics['speedup']:.1f}x"
+            ),
+            xref="paper", yref="paper", x=0.5, y=1.08,
+            showarrow=False, font=dict(size=14),
+        )],
     )
-    return fig.to_html(full_html=False, include_plotlyjs="cdn")
+    return _fig_to_plotly_json(fig)

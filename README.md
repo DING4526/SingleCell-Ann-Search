@@ -65,11 +65,16 @@ single-cell-ann-search/
 
 ## 安装与运行
 
-### 1. 创建并激活 conda 环境
+### 1. 创建并激活 conda/venv 虚拟环境
 
 ```bash
 conda create -n sc-ann python=3.10
 conda activate sc-ann
+```
+
+```
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 ```
 
 ### 2. 安装依赖
