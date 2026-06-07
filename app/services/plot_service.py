@@ -1,7 +1,10 @@
 import json
+import os
+import pathlib
 import numpy as np
 import scanpy as sc
 import plotly.graph_objects as go
+from flask import current_app
 from app.models import Dataset, Cell
 from app.extensions import db
 
@@ -302,3 +305,88 @@ def eval_bar_json(metrics: dict) -> dict:
         )],
     )
     return _fig_to_plotly_json(fig)
+
+
+# ---------------------------------------------------------------------------
+# 散点图缓存：生成一次、写入磁盘，供 /api/datasets/<id>/scatter 直接读取
+# ---------------------------------------------------------------------------
+
+def generate_scatter_cache(dataset_id: int) -> str:
+    """
+    生成数据集全量细胞散点图的 Plotly JSON，写入缓存文件。
+
+    缓存文件名：scatter_<dataset_id>.json，存放在 CACHE_DIR 下。
+    同时将文件名（非完整路径）更新到 dataset.scatter_cache_path。
+    返回缓存文件的完整路径。
+    """
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        raise ValueError(f"数据集 {dataset_id} 不存在")
+
+    coords, coord_label, adata = _get_coords(dataset)
+    if coords is None:
+        raise ValueError("无可用的 UMAP 或 PCA 坐标，无法生成散点图缓存")
+
+    cells = Cell.query.filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
+    if not cells:
+        raise ValueError("暂无细胞元信息，无法生成散点图缓存")
+
+    cell_types = [c.cell_type or "未知" for c in cells]
+    cell_indices = [c.cell_index for c in cells]
+    diseases = [c.disease or "N/A" for c in cells]
+    age_groups = [c.age_group or "N/A" for c in cells]
+    cell_names = [c.cell_name or "N/A" for c in cells]
+    color_map = _build_color_map(cell_types, use_dark_cycle=True)
+    fig = go.Figure()
+
+    for cell_type in sorted(set(cell_types)):
+        type_indices = [i for i, v in enumerate(cell_types) if v == cell_type]
+        customdata = [
+            [cell_indices[i], cell_names[i], cell_types[i], diseases[i], age_groups[i]]
+            for i in type_indices
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=coords[type_indices, 0].tolist(),
+                y=coords[type_indices, 1].tolist(),
+                mode="markers",
+                marker=dict(
+                    size=5.2,
+                    color=color_map[cell_type],
+                    opacity=0.93,
+                    line=dict(width=0.35, color="rgba(232,244,255,0.35)"),
+                ),
+                name=f"{cell_type} ({len(type_indices)})",
+                customdata=customdata,
+                hovertemplate=(
+                    "cell_index: %{customdata[0]}<br>"
+                    "cell_name: %{customdata[1]}<br>"
+                    "cell_type: %{customdata[2]}<br>"
+                    "disease: %{customdata[3]}<br>"
+                    "age_group: %{customdata[4]}<extra></extra>"
+                ),
+            )
+        )
+
+    _apply_dark_layout(
+        fig,
+        title=f"{dataset.name} · {coord_label} 预览",
+        xaxis_title=f"{coord_label}1",
+        yaxis_title=f"{coord_label}2",
+        height=640,
+    )
+
+    plot_json = _fig_to_plotly_json(fig)
+
+    cache_dir = pathlib.Path(current_app.config["CACHE_DIR"])
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"scatter_{dataset_id}.json"
+    cache_path = cache_dir / filename
+
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(plot_json, f, ensure_ascii=False)
+
+    dataset.scatter_cache_path = filename
+    db.session.commit()
+
+    return str(cache_path)

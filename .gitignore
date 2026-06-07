@@ -18,6 +18,7 @@ env/
 *.swo
 
 # Data files
+data/
 data/raw/*.h5ad
 data/cache/*.npy
 data/indexes/*.bin

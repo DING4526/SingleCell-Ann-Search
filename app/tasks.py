@@ -73,6 +73,13 @@ def run_process_task(task_id: int, dataset_id: int):
             }, ensure_ascii=False)
             task.updated_at = datetime.utcnow()
             db.session.commit()
+
+            # 在同一 app context 内异步生成散点图缓存（不阻塞任务状态）
+            try:
+                from app.services.plot_service import generate_scatter_cache
+                generate_scatter_cache(dataset_id)
+            except Exception:
+                pass  # 缓存生成失败不影响主流程，首次进入详情页时会重试
         except Exception as e:
             task.status = "error"
             task.message = f"处理失败"
@@ -130,6 +137,14 @@ def run_build_index_task(task_id: int, dataset_id: int, params: dict):
             }, ensure_ascii=False)
             task.updated_at = datetime.utcnow()
             db.session.commit()
+
+            # 索引构建完成后刷新散点图缓存（强制重新生成）
+            try:
+                from app.services.plot_service import generate_scatter_cache
+                generate_scatter_cache(dataset_id)
+            except Exception:
+                pass  # 缓存失败不影响主流程
+
         except Exception as e:
             task.status = "error"
             task.message = "索引构建失败"

@@ -42,6 +42,7 @@ class Dataset(db.Model):
     vector_dim = db.Column(db.Integer)                       # 向量维度
     status = db.Column(db.String(20), default="uploaded")    # uploaded / processed / indexed / error
     error_message = db.Column(db.Text)
+    scatter_cache_path = db.Column(db.String(256))            # 散点图 Plotly JSON 缓存文件名
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     cells = db.relationship("Cell", backref="dataset", cascade="all, delete-orphan")

@@ -230,14 +230,25 @@
     </div>
 </div>
 
-{% if scatter_html %}
+{% if dataset.status in ['processed', 'indexed'] %}
 <div class="card ui-card mb-4">
-    <div class="card-header ui-card-header">数据可视化</div>
+    <div class="card-header ui-card-header d-flex justify-content-between align-items-center">
+        <span>数据可视化</span>
+        <button class="btn btn-outline-secondary btn-sm" id="reloadScatterBtn" style="display:none;">重新加载图表</button>
+    </div>
     <div class="card-body">
         <p class="text-muted mb-3">图中展示数据集整体细胞分布，可用于课堂讲解不同细胞群体结构。</p>
-        <div class="plotly-theme-adaptive">
-            {{ scatter_html|safe }}
+        <!-- 加载占位符 -->
+        <div id="scatterLoading" class="text-center py-5">
+            <div class="spinner-border text-info" role="status" style="width:2.5rem;height:2.5rem;">
+                <span class="visually-hidden">加载中...</span>
+            </div>
+            <p class="text-muted mt-3 mb-0">正在加载散点图，首次加载需要一些时间...</p>
         </div>
+        <!-- 错误提示 -->
+        <div id="scatterError" class="alert alert-warning" style="display:none;"></div>
+        <!-- Plotly 容器 -->
+        <div id="scatterContainer" class="plotly-theme-adaptive" style="display:none;"></div>
     </div>
 </div>
 {% endif %}
@@ -325,6 +336,50 @@ function refreshDatasetStatus() {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
+    /* ---- 异步加载散点图 ---- */
+    function loadScatter() {
+        var loading = document.getElementById('scatterLoading');
+        var errBox = document.getElementById('scatterError');
+        var container = document.getElementById('scatterContainer');
+        var reloadBtn = document.getElementById('reloadScatterBtn');
+        if (!container) return;
+
+        if (loading) loading.style.display = 'block';
+        if (errBox) errBox.style.display = 'none';
+        container.style.display = 'none';
+
+        fetch('/api/datasets/' + DATASET_ID + '/scatter', { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (loading) loading.style.display = 'none';
+                if (!data.ok) {
+                    if (errBox) {
+                        errBox.textContent = '散点图加载失败：' + (data.message || '未知错误');
+                        errBox.style.display = 'block';
+                    }
+                    if (reloadBtn) reloadBtn.style.display = 'inline-block';
+                    return;
+                }
+                container.style.display = 'block';
+                Plotly.react(container, data.scatter_plot.data, data.scatter_plot.layout, { responsive: true });
+                if (reloadBtn) reloadBtn.style.display = 'inline-block';
+            })
+            .catch(function () {
+                if (loading) loading.style.display = 'none';
+                if (errBox) {
+                    errBox.textContent = '网络请求失败，请检查网络后重试。';
+                    errBox.style.display = 'block';
+                }
+                if (reloadBtn) reloadBtn.style.display = 'inline-block';
+            });
+    }
+
+    var reloadBtn = document.getElementById('reloadScatterBtn');
+    if (reloadBtn) {
+        reloadBtn.addEventListener('click', loadScatter);
+    }
+    loadScatter();
+
     /* ---- 处理数据集 ---- */
     var processForm = document.getElementById('processForm');
     if (processForm) {
@@ -345,6 +400,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     refreshDatasetStatus();
                     /* 更新按钮文字 */
                     if (btn) btn.textContent = '重新处理并覆盖向量缓存';
+                    /* 处理完成后重新加载散点图 */
+                    setTimeout(loadScatter, 500);
                 },
                 onError: function (errMsg) {
                     refreshDatasetStatus();
@@ -371,6 +428,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 submitBtn: btn,
                 onSuccess: function (taskData) {
                     refreshDatasetStatus();
+                    /* 索引构建完成后刷新散点图 */
+                    setTimeout(loadScatter, 500);
                 },
                 onError: function (errMsg) {
                     refreshDatasetStatus();

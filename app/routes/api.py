@@ -260,3 +260,49 @@ def api_cell_types(dataset_id):
     )
     cell_types = sorted(set(t[0] for t in types if t[0]))
     return jsonify(ok=True, cell_types=cell_types)
+
+
+# ---------------------------------------------------------------------------
+# 获取数据集散点图缓存（异步加载，避免详情页阻塞）
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/datasets/<int:dataset_id>/scatter", methods=["GET"])
+@login_required
+def api_dataset_scatter(dataset_id):
+    """返回数据集全量细胞散点图的 Plotly JSON。
+    优先读取磁盘缓存；若缓存不存在则同步生成后返回。
+    """
+    import pathlib
+    from app.services.plot_service import generate_scatter_cache
+
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        return jsonify(ok=False, message="数据集不存在。"), 404
+
+    if dataset.status not in ("processed", "indexed"):
+        return jsonify(ok=False, message="数据集尚未处理完成，暂无散点图。"), 400
+
+    cache_dir = pathlib.Path(current_app.config["CACHE_DIR"])
+
+    # 若已有有效缓存文件，直接读取返回
+    if dataset.scatter_cache_path:
+        cache_path = cache_dir / dataset.scatter_cache_path
+        if cache_path.exists():
+            import json as _json
+            with open(cache_path, "r", encoding="utf-8") as f:
+                scatter_plot = _json.load(f)
+            return jsonify(ok=True, scatter_plot=scatter_plot)
+
+    # 缓存不存在，生成后返回
+    try:
+        generate_scatter_cache(dataset_id)
+        # 重新读取刚写入的缓存
+        dataset = db.session.get(Dataset, dataset_id)
+        cache_path = cache_dir / dataset.scatter_cache_path
+        import json as _json
+        with open(cache_path, "r", encoding="utf-8") as f:
+            scatter_plot = _json.load(f)
+        return jsonify(ok=True, scatter_plot=scatter_plot)
+    except Exception as e:
+        return jsonify(ok=False, message=f"散点图生成失败：{str(e)}"), 500
+

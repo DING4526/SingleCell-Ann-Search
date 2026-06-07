@@ -4,7 +4,6 @@ from flask import Blueprint, render_template, redirect, url_for, flash, current_
 from flask_login import login_required
 from app.extensions import db
 from app.models import Dataset, AnnIndex, Cell
-from app.services.plot_service import dataset_scatter_html
 
 datasets_bp = Blueprint("datasets", __name__)
 
@@ -20,7 +19,7 @@ def list_datasets():
 @datasets_bp.route("/datasets/<int:dataset_id>")
 @login_required
 def detail(dataset_id):
-    """数据集详情页：展示统计信息、索引状态和可视化。"""
+    """数据集详情页：展示统计信息、索引状态和可视化（散点图由前端 AJAX 异步加载）。"""
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         flash("数据集不存在。", "danger")
@@ -41,20 +40,11 @@ def detail(dataset_id):
             )
             stats[col] = [(k or "N/A", v) for k, v in counts]
 
-    # 生成散点图（使用旧版 HTML 方式，详情页直接嵌入，不需要 AJAX 交互）
-    scatter_html = ""
-    if dataset.status in ("processed", "indexed"):
-        try:
-            scatter_html = dataset_scatter_html(dataset_id)
-        except Exception as e:
-            scatter_html = f"<p class='text-muted'>可视化暂不可用: {e}</p>"
-
     return render_template(
         "dataset_detail.html",
         dataset=dataset,
         indexes=indexes,
         stats=stats,
-        scatter_html=scatter_html,
     )
 
 
@@ -76,6 +66,11 @@ def delete(dataset_id):
         vec_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.vector_path
         if vec_path.exists():
             os.remove(str(vec_path))
+
+    if dataset.scatter_cache_path:
+        scatter_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.scatter_cache_path
+        if scatter_path.exists():
+            os.remove(str(scatter_path))
 
     for idx in AnnIndex.query.filter_by(dataset_id=dataset_id).all():
         idx_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.index_path
