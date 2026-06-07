@@ -1,5 +1,4 @@
 import json
-import os
 import pathlib
 import numpy as np
 import scanpy as sc
@@ -115,25 +114,11 @@ def dataset_scatter_html(dataset_id: int) -> str:
 
     cell_types = [c.cell_type or "未知" for c in cells]
     cell_indices = [c.cell_index for c in cells]
-    diseases = [c.disease or "N/A" for c in cells]
-    age_groups = [c.age_group or "N/A" for c in cells]
-    cell_names = [c.cell_name or "N/A" for c in cells]
     color_map = _build_color_map(cell_types, use_dark_cycle=True)
     fig = go.Figure()
 
     for cell_type in sorted(set(cell_types)):
         type_indices = [i for i, value in enumerate(cell_types) if value == cell_type]
-        customdata = [
-            [
-                cell_indices[i],
-                cell_names[i],
-                cell_types[i],
-                diseases[i],
-                age_groups[i],
-            ]
-            for i in type_indices
-        ]
-
         fig.add_trace(
             go.Scatter(
                 x=coords[type_indices, 0],
@@ -143,17 +128,10 @@ def dataset_scatter_html(dataset_id: int) -> str:
                     size=5.2,
                     color=color_map[cell_type],
                     opacity=0.93,
-                    line=dict(width=0.35, color="rgba(232,244,255,0.35)"),
                 ),
                 name=f"{cell_type} ({len(type_indices)})",
-                customdata=customdata,
-                hovertemplate=(
-                    "cell_index: %{customdata[0]}<br>"
-                    "cell_name: %{customdata[1]}<br>"
-                    "cell_type: %{customdata[2]}<br>"
-                    "disease: %{customdata[3]}<br>"
-                    "age_group: %{customdata[4]}<extra></extra>"
-                ),
+                customdata=[cell_indices[i] for i in type_indices],
+                hovertemplate="cell_index: %{customdata}<extra></extra>",
             )
         )
 
@@ -191,83 +169,50 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
     if not cells:
         raise ValueError("暂无细胞元信息，无法绘图")
 
+    cell_indices = [c.cell_index for c in cells]
     result_set = set(result_cell_indices)
     highlight = []
     for i in range(len(cells)):
-        if i == query_cell_index:
+        if cell_indices[i] == query_cell_index:
             highlight.append("Query")
-        elif i in result_set:
+        elif cell_indices[i] in result_set:
             highlight.append("Result")
         else:
             highlight.append("Other")
 
-    cell_info = {
-        c.cell_index: {
-            "cell_name": c.cell_name or "N/A",
-            "cell_type": c.cell_type or "N/A",
-            "disease": c.disease or "N/A",
-            "age_group": c.age_group or "N/A",
-        }
-        for c in cells
-    }
-    all_cell_types = [cell_info[i]["cell_type"] for i in range(len(cells))]
-    color_map = _build_color_map(all_cell_types, use_dark_cycle=True)
     fig = go.Figure()
 
-    # 背景点
+    # 背景点：单一 trace，低透明度，无 hover
     other_indices = [i for i, h in enumerate(highlight) if h == "Other"]
     if other_indices:
-        grouped_other = {}
-        for idx in other_indices:
-            grouped_other.setdefault(cell_info[idx]["cell_type"], []).append(idx)
-        for cell_type, idx_list in grouped_other.items():
-            fig.add_trace(go.Scatter(
-                x=coords[idx_list, 0].tolist(), y=coords[idx_list, 1].tolist(),
-                mode="markers",
-                marker=dict(size=3.6, color=color_map.get(cell_type, "#95b1b0"), opacity=0.46,
-                            line=dict(width=0.2, color="rgba(232,244,255,0.2)")),
-                name=f"{cell_type} 背景", showlegend=False, hoverinfo="skip",
-            ))
+        fig.add_trace(go.Scatter(
+            x=coords[other_indices, 0].tolist(), y=coords[other_indices, 1].tolist(),
+            mode="markers",
+            marker=dict(size=3.6, color="rgba(150,185,235,0.25)", opacity=0.5),
+            name="其他", showlegend=False, hoverinfo="skip",
+        ))
 
-    # 结果细胞
+    # 结果细胞：单一 trace，明亮色
     result_indices = [i for i, h in enumerate(highlight) if h == "Result"]
     if result_indices:
-        grouped_result = {}
-        for idx in result_indices:
-            grouped_result.setdefault(cell_info[idx]["cell_type"], []).append(idx)
-        for cell_type, idx_list in grouped_result.items():
-            customdata = [
-                [idx, cell_info[idx]["cell_name"], cell_info[idx]["cell_type"],
-                 cell_info[idx]["disease"], cell_info[idx]["age_group"]]
-                for idx in idx_list
-            ]
-            fig.add_trace(go.Scatter(
-                x=coords[idx_list, 0].tolist(), y=coords[idx_list, 1].tolist(),
-                mode="markers",
-                marker=dict(size=9.2, color=color_map.get(cell_type, "#69d9c0"), opacity=0.98,
-                            line=dict(width=1.6, color="#f5fbff")),
-                name=f"相似细胞 · {cell_type}", customdata=customdata,
-                hovertemplate=(
-                    "cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>"
-                    "cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>"
-                    "age_group: %{customdata[4]}<extra></extra>"
-                ),
-            ))
+        fig.add_trace(go.Scatter(
+            x=coords[result_indices, 0].tolist(), y=coords[result_indices, 1].tolist(),
+            mode="markers",
+            marker=dict(size=9.2, color="#69d9c0", opacity=0.98),
+            name="相似细胞",
+            customdata=[cell_indices[i] for i in result_indices],
+            hovertemplate="cell_index: %{customdata}<extra></extra>",
+        ))
 
-    # 查询细胞
-    qi = cell_info.get(query_cell_index, {})
+    # 查询细胞：星形高亮
+    query_pos = next((i for i, ci in enumerate(cell_indices) if ci == query_cell_index), 0)
     fig.add_trace(go.Scatter(
-        x=[float(coords[query_cell_index, 0])], y=[float(coords[query_cell_index, 1])],
+        x=[float(coords[query_pos, 0])], y=[float(coords[query_pos, 1])],
         mode="markers",
         marker=dict(size=16, color="#f9f871", symbol="star", line=dict(width=2.4, color="#ffd166")),
         name="查询细胞",
-        customdata=[[query_cell_index, qi.get("cell_name", "N/A"), qi.get("cell_type", "N/A"),
-                     qi.get("disease", "N/A"), qi.get("age_group", "N/A")]],
-        hovertemplate=(
-            "查询细胞<br>cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>"
-            "cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>"
-            "age_group: %{customdata[4]}<extra></extra>"
-        ),
+        customdata=[query_cell_index],
+        hovertemplate="查询细胞<br>cell_index: %{customdata}<extra></extra>",
     ))
 
     _apply_dark_layout(fig, title=f"检索结果高亮 · {coord_label} 视图",
@@ -315,7 +260,7 @@ def generate_scatter_cache(dataset_id: int) -> str:
     """
     生成数据集全量细胞散点图的 Plotly JSON，写入缓存文件。
 
-    缓存文件名：scatter_<dataset_id>.json，存放在 CACHE_DIR 下。
+    缓存文件名：scatter_v2_<dataset_id>.json，存放在 CACHE_DIR 下。
     同时将文件名（非完整路径）更新到 dataset.scatter_cache_path。
     返回缓存文件的完整路径。
     """
@@ -333,18 +278,11 @@ def generate_scatter_cache(dataset_id: int) -> str:
 
     cell_types = [c.cell_type or "未知" for c in cells]
     cell_indices = [c.cell_index for c in cells]
-    diseases = [c.disease or "N/A" for c in cells]
-    age_groups = [c.age_group or "N/A" for c in cells]
-    cell_names = [c.cell_name or "N/A" for c in cells]
     color_map = _build_color_map(cell_types, use_dark_cycle=True)
     fig = go.Figure()
 
     for cell_type in sorted(set(cell_types)):
         type_indices = [i for i, v in enumerate(cell_types) if v == cell_type]
-        customdata = [
-            [cell_indices[i], cell_names[i], cell_types[i], diseases[i], age_groups[i]]
-            for i in type_indices
-        ]
         fig.add_trace(
             go.Scatter(
                 x=coords[type_indices, 0].tolist(),
@@ -354,17 +292,10 @@ def generate_scatter_cache(dataset_id: int) -> str:
                     size=5.2,
                     color=color_map[cell_type],
                     opacity=0.93,
-                    line=dict(width=0.35, color="rgba(232,244,255,0.35)"),
                 ),
                 name=f"{cell_type} ({len(type_indices)})",
-                customdata=customdata,
-                hovertemplate=(
-                    "cell_index: %{customdata[0]}<br>"
-                    "cell_name: %{customdata[1]}<br>"
-                    "cell_type: %{customdata[2]}<br>"
-                    "disease: %{customdata[3]}<br>"
-                    "age_group: %{customdata[4]}<extra></extra>"
-                ),
+                customdata=[cell_indices[i] for i in type_indices],
+                hovertemplate="cell_index: %{customdata}<extra></extra>",
             )
         )
 
@@ -380,11 +311,16 @@ def generate_scatter_cache(dataset_id: int) -> str:
 
     cache_dir = pathlib.Path(current_app.config["CACHE_DIR"])
     cache_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"scatter_{dataset_id}.json"
+    filename = f"scatter_v2_{dataset_id}.json"
     cache_path = cache_dir / filename
 
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(plot_json, f, ensure_ascii=False)
+
+    # 清理旧版缓存文件（如有）
+    old_path = cache_dir / f"scatter_{dataset_id}.json"
+    if old_path.exists():
+        old_path.unlink()
 
     dataset.scatter_cache_path = filename
     db.session.commit()
