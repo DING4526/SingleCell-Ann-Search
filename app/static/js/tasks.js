@@ -240,6 +240,36 @@
             });
     }
 
+    /**
+     * 全局任务指示器：轮询 /api/tasks/active，更新导航栏徽标
+     * @param {number} [interval=15000] 轮询间隔毫秒
+     */
+    function pollActiveTasks(interval) {
+        interval = interval || 15000;
+        var wrap = document.getElementById("globalTaskWrap");
+        var badge = document.getElementById("globalTaskCount");
+        if (!wrap || !badge) return;
+
+        function update() {
+            fetch("/api/tasks/active", { credentials: "same-origin" })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (!data.ok) return;
+                    var count = data.tasks ? data.tasks.length : 0;
+                    if (count > 0) {
+                        badge.textContent = count;
+                        wrap.style.display = "";
+                    } else {
+                        wrap.style.display = "none";
+                    }
+                })
+                .catch(function () {});
+        }
+
+        update();
+        setInterval(update, interval);
+    }
+
     // 公开接口
     window.Tasks = {
         pollTask: pollTask,
@@ -248,5 +278,6 @@
         submitAjaxDirect: submitAjaxDirect,
         setProgress: setProgress,
         setMessage: setMessage,
+        pollActiveTasks: pollActiveTasks,
     };
 })(window);

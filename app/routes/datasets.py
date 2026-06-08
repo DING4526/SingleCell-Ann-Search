@@ -3,7 +3,7 @@ import pathlib
 from flask import Blueprint, render_template, redirect, url_for, flash, current_app
 from flask_login import login_required
 from app.extensions import db
-from app.models import Dataset, AnnIndex, Cell
+from app.models import Dataset, AnnIndex, Cell, Task
 
 datasets_bp = Blueprint("datasets", __name__)
 
@@ -13,7 +13,7 @@ datasets_bp = Blueprint("datasets", __name__)
 def list_datasets():
     """数据集列表页。"""
     datasets = Dataset.query.order_by(Dataset.created_at.desc()).all()
-    return render_template("datasets.html", datasets=datasets)
+    return render_template("datasets.html", nav_active="datasets", datasets=datasets)
 
 
 @datasets_bp.route("/datasets/<int:dataset_id>")
@@ -40,11 +40,21 @@ def detail(dataset_id):
             )
             stats[col] = [(k or "N/A", v) for k, v in counts]
 
+    # 最近 5 条任务
+    recent_tasks = (
+        Task.query.filter_by(dataset_id=dataset_id)
+        .order_by(Task.updated_at.desc())
+        .limit(5)
+        .all()
+    )
+
     return render_template(
         "dataset_detail.html",
+        nav_active="datasets",
         dataset=dataset,
         indexes=indexes,
         stats=stats,
+        recent_tasks=recent_tasks,
     )
 
 

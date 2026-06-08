@@ -165,7 +165,10 @@ def api_search():
     from app.services.plot_service import search_scatter_json
 
     dataset_id = int(request.form.get("dataset_id", 0))
-    index_id = int(request.form.get("index_id", 0))
+    raw_index_id = request.form.get("index_id", "").strip()
+    if not raw_index_id:
+        return jsonify(ok=False, message="请先选择可用索引。"), 400
+    index_id = int(raw_index_id)
     query_cell_index = int(request.form.get("query_cell_index", 0))
     top_k = int(request.form.get("top_k", 10))
     filter_cell_type = request.form.get("filter_cell_type", "").strip() or None
@@ -197,7 +200,10 @@ def api_evaluate():
     from app.services.plot_service import eval_bar_json
 
     dataset_id = int(request.form.get("dataset_id", 0))
-    index_id = int(request.form.get("index_id", 0))
+    raw_index_id = request.form.get("index_id", "").strip()
+    if not raw_index_id:
+        return jsonify(ok=False, message="请先选择可用索引。"), 400
+    index_id = int(raw_index_id)
     sample_size = int(request.form.get("sample_size", 10))
     top_k = int(request.form.get("eval_top_k", 10))
 
@@ -306,3 +312,96 @@ def api_dataset_scatter(dataset_id):
     except Exception as e:
         return jsonify(ok=False, message=f"散点图生成失败：{str(e)}"), 500
 
+
+# ---------------------------------------------------------------------------
+# 获取进行中的任务列表（全局任务指示器 + 最近任务）
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/tasks/active", methods=["GET"])
+@login_required
+def api_active_tasks():
+    """返回所有进行中（pending/running）的任务列表。"""
+    tasks = (
+        Task.query
+        .filter(Task.status.in_(["pending", "running"]))
+        .order_by(Task.updated_at.desc())
+        .all()
+    )
+    return jsonify(ok=True, tasks=[_task_to_dict(t) for t in tasks])
+
+
+# ---------------------------------------------------------------------------
+# 获取单个细胞元信息（检索页索引预览）
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/datasets/<int:dataset_id>/cell-meta/<int:cell_index>", methods=["GET"])
+@login_required
+def api_cell_meta(dataset_id, cell_index):
+    """返回指定数据集中某个细胞的元信息，用于检索页输入索引后预览。"""
+    cell = Cell.query.filter_by(
+        dataset_id=dataset_id, cell_index=cell_index
+    ).first()
+    if not cell:
+        return jsonify(ok=False, message="细胞索引不存在。"), 404
+    return jsonify(
+        ok=True,
+        cell={
+            "cell_index": cell.cell_index,
+            "cell_name": cell.cell_name,
+            "cell_type": cell.cell_type,
+            "disease": cell.disease,
+            "age_group": cell.age_group,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# 仪表盘聚合数据（工作台页面）
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/dashboard/summary", methods=["GET"])
+@login_required
+def api_dashboard_summary():
+    """返回工作台页面所需的聚合统计数据。"""
+    from app.models import QueryLog
+
+    datasets = Dataset.query.order_by(Dataset.created_at.desc()).all()
+    datasets_total = len(datasets)
+    datasets_uploaded = sum(1 for d in datasets if d.status == "uploaded")
+    datasets_processed = sum(1 for d in datasets if d.status == "processed")
+    datasets_indexed = sum(1 for d in datasets if d.status == "indexed")
+    indexes_total = AnnIndex.query.filter_by(status="ready").count()
+    recent_queries = QueryLog.query.count()
+
+    recent_datasets = [
+        {
+            "id": d.id,
+            "name": d.name,
+            "status": d.status,
+            "n_cells": d.n_cells,
+            "created_at": d.created_at.strftime("%Y-%m-%d %H:%M") if d.created_at else "",
+        }
+        for d in datasets[:5]
+    ]
+
+    recent_tasks = [
+        _task_to_dict(t)
+        for t in Task.query.order_by(Task.updated_at.desc()).limit(5).all()
+    ]
+
+    first_uploaded = next((d.id for d in datasets if d.status == "uploaded"), None)
+    first_processed = next((d.id for d in datasets if d.status == "processed"), None)
+
+    return jsonify(
+        ok=True,
+        datasets_total=datasets_total,
+        datasets_uploaded=datasets_uploaded,
+        datasets_processed=datasets_processed,
+        datasets_indexed=datasets_indexed,
+        indexes_total=indexes_total,
+        recent_queries=recent_queries,
+        recent_datasets=recent_datasets,
+        recent_tasks=recent_tasks,
+        first_uploaded_id=first_uploaded,
+        first_processed_id=first_processed,
+    )
