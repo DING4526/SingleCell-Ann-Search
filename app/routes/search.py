@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template
+from flask import Blueprint, render_template, request
 from flask_login import login_required
 from app.extensions import db
 from app.models import Dataset, AnnIndex, Cell
@@ -32,11 +32,26 @@ def search():
         )
         cell_types = sorted(set(t[0] for t in types if t[0]))
 
+    # 从 URL 参数获取预填值
+    prefill_dataset_id = request.args.get("dataset_id", type=int)
+    prefill_index_id = request.args.get("index_id", type=int)
+    prefill_cell_index = request.args.get("cell_index", type=int)
+
+    # 确定默认选中的数据集和索引
+    selected_dataset_id = prefill_dataset_id or (indexed_datasets[0].id if indexed_datasets else None)
+    selected_index_id = prefill_index_id or None
+
+    # 获取各数据集的细胞数（用于输入范围提示）
+    dataset_cell_counts = {ds.id: ds.n_cells or 0 for ds in indexed_datasets}
+
     return render_template(
         "search.html",
+        nav_active="search",
         datasets=indexed_datasets,
         index_options=index_options,
         cell_types=cell_types,
-        selected_dataset_id=indexed_datasets[0].id if indexed_datasets else None,
-        selected_index_id=None,
+        selected_dataset_id=selected_dataset_id,
+        selected_index_id=selected_index_id,
+        prefill_cell_index=prefill_cell_index or 0,
+        dataset_cell_counts=dataset_cell_counts,
     )

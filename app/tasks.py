@@ -63,7 +63,7 @@ def run_process_task(task_id: int, dataset_id: int):
             task.progress = 100
             task.message = (
                 f"处理完成：{dataset.n_cells} 个细胞，{dataset.n_genes} 个基因，"
-                f"向量维度 {dataset.vector_dim}。"
+                f"向量维度 {dataset.vector_dim}。下一步：构建 HNSW 索引"
             )
             task.result_json = json.dumps({
                 "n_cells": dataset.n_cells,
@@ -125,7 +125,7 @@ def run_build_index_task(task_id: int, dataset_id: int, params: dict):
             task.progress = 100
             task.message = (
                 f"HNSW 索引构建完成（{ann_index.metric}, M={ann_index.M}），"
-                f"耗时 {ann_index.build_time_ms:.1f} ms。"
+                f"耗时 {ann_index.build_time_ms:.1f} ms。下一步：前往检索页面查询"
             )
             task.result_json = json.dumps({
                 "index_id": ann_index.id,

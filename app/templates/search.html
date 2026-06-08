@@ -2,8 +2,8 @@
 {% block title %}检索 - 单细胞 ANN 检索系统{% endblock %}
 {% block content %}
 <section class="page-hero mb-4">
-    <h2 class="page-title mb-2">细胞检索</h2>
-    <p class="page-subtitle mb-0">选择数据集与索引，输入查询细胞并查看 Top-K 相似结果与性能指标。</p>
+    <h2 class="page-title mb-2">检索工作台</h2>
+    <p class="page-subtitle mb-0">选择数据集与索引，执行相似细胞检索或索引性能评估。</p>
 </section>
 
 {% if not datasets %}
@@ -12,30 +12,25 @@
 </div>
 {% else %}
 
-<div class="card ui-card mb-4">
-    <div class="card-header ui-card-header">检索参数</div>
-    <div class="card-body">
-        <div class="viz-setting-bar mb-3">
-            <span class="viz-setting-title">可视化设置</span>
-            <span class="viz-chip"><span class="dot dot-query"></span>查询细胞：星形高亮</span>
-            <span class="viz-chip"><span class="dot dot-result"></span>相似细胞：按类型着色</span>
-            <span class="viz-chip"><span class="dot dot-other"></span>背景细胞：低透明度</span>
-        </div>
-        <form id="searchForm" action="{{ url_for('api.api_search') }}">
-            <div class="row g-3 align-items-end">
-                <div class="col-lg-3 col-md-6">
-                    <label class="form-label">数据集</label>
-                    <select name="dataset_id" id="searchDatasetSelect" class="form-select ui-select" required>
+<!-- 紧凑上下文条 -->
+<div class="card ui-card mb-3">
+    <div class="card-body py-2">
+        <form id="contextForm">
+            <div class="row g-2 align-items-end">
+                <div class="col-lg-5 col-md-6">
+                    <label class="form-label mb-0 small">数据集</label>
+                    <select name="dataset_id" id="contextDatasetSelect" class="form-select ui-select form-select-sm" required>
                         {% for ds in datasets %}
-                        <option value="{{ ds.id }}" {% if ds.id == selected_dataset_id %}selected{% endif %}>
+                        <option value="{{ ds.id }}" {% if ds.id == selected_dataset_id %}selected{% endif %}
+                                data-n-cells="{{ ds.n_cells or 0 }}">
                             {{ ds.name }}（{{ ds.n_cells or "?" }} 个细胞）
                         </option>
                         {% endfor %}
                     </select>
                 </div>
-                <div class="col-lg-3 col-md-6">
-                    <label class="form-label">索引</label>
-                    <select name="index_id" id="searchIndexSelect" class="form-select ui-select" required>
+                <div class="col-lg-5 col-md-6">
+                    <label class="form-label mb-0 small">索引</label>
+                    <select name="index_id" id="contextIndexSelect" class="form-select ui-select form-select-sm" required>
                         {% for ds_id, idxs in index_options.items() %}
                             {% for idx in idxs %}
                             <option value="{{ idx.id }}" data-dataset="{{ ds_id }}"
@@ -46,120 +41,146 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="col-lg-2 col-md-4">
-                    <label class="form-label">query_cell_index</label>
-                    <input type="number" name="query_cell_index" class="form-control ui-input" value="0" min="0" required>
-                </div>
-                <div class="col-lg-2 col-md-4">
-                    <label class="form-label">Top-K</label>
-                    <input type="number" name="top_k" class="form-control ui-input" value="10" min="1" max="100">
-                </div>
-                <div class="col-lg-2 col-md-4">
-                    <label class="form-label">细胞类型过滤</label>
-                    <select name="filter_cell_type" class="form-select ui-select">
-                        <option value="">全部</option>
-                        {% for ct in cell_types %}
-                        <option value="{{ ct }}">{{ ct }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-            </div>
-            <div class="row g-2 mt-3 align-items-center">
-                <div class="col-lg-10 col-md-8">
-                    <span class="text-muted small" id="searchIndexHint">提示：若索引为空，请先到数据集详情页构建索引。</span>
-                </div>
-                <div class="col-lg-2 col-md-4 d-grid">
-                    <button type="submit" id="searchBtn" class="btn btn-primary btn-cta">执行检索</button>
+                <div class="col-lg-2">
+                    <span class="text-muted small" id="contextHint">选择数据集与索引</span>
                 </div>
             </div>
         </form>
-        <div id="searchMessage" class="alert mt-2" style="display:none;"></div>
     </div>
 </div>
 
-<!-- 检索结果容器（初始隐藏） -->
-<div id="searchResultSection" style="display:none;">
-    <!-- 指标卡片 -->
-    <div class="row g-3 mb-4" id="searchMetricsRow"></div>
+<!-- Tab 导航 -->
+<ul class="nav nav-tabs mb-4" id="workbenchTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="search-tab" data-bs-toggle="tab"
+                data-bs-target="#searchPane" type="button" role="tab">相似细胞检索</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="eval-tab" data-bs-toggle="tab"
+                data-bs-target="#evalPane" type="button" role="tab">索引性能评估</button>
+    </li>
+</ul>
 
-    <!-- 结果表格 -->
-    <div class="card ui-card mb-4">
-        <div class="card-header ui-card-header d-flex justify-content-between align-items-center">
-            <span>检索结果</span>
-            <span class="badge bg-info" id="searchTopKBadge"></span>
-        </div>
-        <div class="card-body">
-            <div class="table-responsive ui-table-wrap" id="searchResultTable"></div>
+<div class="tab-content" id="workbenchTabContent">
+    <!-- ========== 检索 Tab ========== -->
+    <div class="tab-pane fade show active" id="searchPane" role="tabpanel">
+        <div class="row g-3">
+            <!-- 左工作区：查询+摘要+结果表 ~38% -->
+            <div class="col-lg-5">
+                <div class="card ui-card mb-3 info-level-1">
+                    <div class="card-header ui-card-header">查询条件</div>
+                    <div class="card-body">
+                        <form id="searchForm" action="{{ url_for('api.api_search') }}">
+                            <input type="hidden" name="dataset_id" id="searchDatasetId">
+                            <input type="hidden" name="index_id" id="searchIndexId">
+                            <div class="mb-2">
+                                <label class="form-label">查询细胞索引</label>
+                                <input type="number" name="query_cell_index" id="queryCellInput"
+                                       class="form-control ui-input" value="{{ prefill_cell_index }}" min="0" required>
+                                <div class="form-text" id="cellRangeHint">范围: 0 ~ ?</div>
+                            </div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-6">
+                                    <label class="form-label">Top-K</label>
+                                    <input type="number" name="top_k" class="form-control ui-input" value="10" min="1" max="100">
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label">细胞类型</label>
+                                    <select name="filter_cell_type" id="filterCellType" class="form-select ui-select">
+                                        <option value="">全部</option>
+                                        {% for ct in cell_types %}
+                                        <option value="{{ ct }}">{{ ct }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                            <!-- 细胞元信息预览 -->
+                            <div id="cellMetaPreview" class="cell-meta-preview" style="display:none;"></div>
+                            <div class="mt-2 d-grid">
+                                <button type="submit" id="searchBtn" class="btn btn-primary btn-cta">执行检索</button>
+                            </div>
+                            <div id="searchNoIndexHint" style="display:none;" class="mt-2">
+                                <span class="text-danger small">当前数据集暂无可用索引</span>
+                                <a href="{{ url_for('datasets.list_datasets') }}" class="small">去构建索引</a>
+                            </div>
+                        </form>
+                        <div id="searchMessage" class="alert mt-2" style="display:none;"></div>
+                    </div>
+                </div>
+
+                <!-- 结果摘要 + 结果表（紧凑，固定高度滚动） -->
+                <div id="searchResultSection" style="display:none;">
+                    <div id="searchResultSummary"></div>
+                    <div class="card ui-card info-level-2">
+                        <div class="card-header ui-card-header d-flex justify-content-between align-items-center py-2">
+                            <span class="small">检索结果</span>
+                            <span class="badge bg-info" id="searchTopKBadge"></span>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="search-result-scroll" id="searchResultTable"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右工作区：散点图 ~62% -->
+            <div class="col-lg-7">
+                <div class="card ui-card info-level-2" id="searchScatterCard" style="display:none;">
+                    <div class="card-header ui-card-header d-flex justify-content-between align-items-center flex-wrap gap-1">
+                        <span>检索可视化</span>
+                        <div class="d-flex align-items-center gap-1 flex-wrap">
+                            <span class="viz-chip"><span class="dot dot-query"></span>查询</span>
+                            <span class="viz-chip"><span class="dot dot-result"></span>相似</span>
+                            <span class="viz-chip"><span class="dot dot-other"></span>背景</span>
+                            <button class="btn btn-outline-secondary btn-sm viz-toggle-btn" id="toggleResultsOnly" title="仅显示结果和查询细胞">仅结果</button>
+                            <button class="btn btn-outline-secondary btn-sm viz-toggle-btn" id="toggleSameType" title="仅高亮与查询同类型的背景细胞">同类型</button>
+                        </div>
+                    </div>
+                    <div class="card-body" style="position:relative;">
+                        <div class="plotly-theme-adaptive" id="searchScatterContainer"></div>
+                        <!-- 背景点重新检索提示 -->
+                        <div id="bgRequeryTooltip" class="bg-requery-tooltip" style="display:none;">
+                            <span id="bgRequeryText"></span>
+                            <a href="#" id="bgRequeryLink" class="text-decoration-underline ms-1">检索</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
-    <!-- 散点图 -->
-    <div class="card ui-card mb-4" id="searchScatterCard" style="display:none;">
-        <div class="card-header ui-card-header d-flex justify-content-between align-items-center">
-            <span>检索可视化</span>
-            <span class="small text-muted">结果按细胞类型稳定配色</span>
-        </div>
-        <div class="card-body">
-            <p class="text-muted mb-2">同一细胞类型在图中使用固定颜色，便于课堂展示时快速比较群体分布。</p>
-            <div class="viz-legend-row mb-3">
-                <span class="viz-chip"><span class="dot dot-query"></span>查询细胞</span>
-                <span class="viz-chip"><span class="dot dot-result"></span>相似细胞（Top-K）</span>
-                <span class="viz-chip"><span class="dot dot-other"></span>背景细胞</span>
-            </div>
-            <div class="plotly-theme-adaptive" id="searchScatterContainer"></div>
-        </div>
-    </div>
-</div>
-
-<!-- 评估区域 -->
-<div class="card ui-card mb-4">
-    <div class="card-header ui-card-header">性能评估</div>
-    <div class="card-body">
-        <form id="evalForm" action="{{ url_for('api.api_evaluate') }}">
-            <div class="row g-2 align-items-end">
-                <div class="col-lg-3 col-md-6">
-                    <label class="form-label">数据集</label>
-                    <select name="dataset_id" id="evalDatasetSelect" class="form-select ui-select">
-                        {% for ds in datasets %}
-                        <option value="{{ ds.id }}" {% if ds.id == selected_dataset_id %}selected{% endif %}>
-                            {{ ds.name }}
-                        </option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="col-lg-3 col-md-6">
-                    <label class="form-label">索引</label>
-                    <select name="index_id" id="evalIndexSelect" class="form-select ui-select">
-                        {% for ds_id, idxs in index_options.items() %}
-                            {% for idx in idxs %}
-                            <option value="{{ idx.id }}" data-dataset="{{ ds_id }}"
-                                    {% if idx.id == selected_index_id %}selected{% endif %}>
-                                {{ idx.metric|upper }} · M={{ idx.M }} · ef={{ idx.ef_search }}
-                            </option>
-                            {% endfor %}
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="col-lg-2 col-md-4">
-                    <label class="form-label">采样数量</label>
-                    <input type="number" name="sample_size" class="form-control ui-input" value="10" min="1" max="50">
-                </div>
-                <div class="col-lg-2 col-md-4">
-                    <label class="form-label">Top-K</label>
-                    <input type="number" name="eval_top_k" class="form-control ui-input" value="10" min="1" max="100">
-                </div>
-                <div class="col-lg-2 col-md-4 d-grid">
-                    <button type="submit" id="evalBtn" class="btn btn-warning btn-cta">运行评估</button>
+    <!-- ========== 评估 Tab ========== -->
+    <div class="tab-pane fade" id="evalPane" role="tabpanel">
+        <div class="row g-4">
+            <div class="col-lg-4">
+                <div class="card ui-card info-level-3">
+                    <div class="card-header ui-card-header">评估参数</div>
+                    <div class="card-body">
+                        <form id="evalForm" action="{{ url_for('api.api_evaluate') }}">
+                            <input type="hidden" name="dataset_id" id="evalDatasetId">
+                            <input type="hidden" name="index_id" id="evalIndexId">
+                            <div class="mb-3">
+                                <label class="form-label">采样数量</label>
+                                <input type="number" name="sample_size" class="form-control ui-input" value="10" min="1" max="50">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">评估 Top-K</label>
+                                <input type="number" name="eval_top_k" class="form-control ui-input" value="10" min="1" max="100">
+                            </div>
+                            <div class="mt-3 d-grid">
+                                <button type="submit" id="evalBtn" class="btn btn-warning btn-cta">运行评估</button>
+                            </div>
+                        </form>
+                        <div id="evalMessage" class="alert mt-2" style="display:none;"></div>
+                    </div>
                 </div>
             </div>
-            <p class="text-muted small mt-2 mb-0">建议与检索相同数据集/索引参数下对比 Recall@K 和耗时。</p>
-        </form>
-        <div id="evalMessage" class="alert mt-2" style="display:none;"></div>
-
-        <!-- 评估结果容器 -->
-        <div id="evalResultSection" style="display:none;" class="mt-4">
-            <div class="row g-3" id="evalMetricsRow"></div>
-            <div class="mt-3" id="evalBarContainer"></div>
+            <div class="col-lg-8">
+                <div id="evalResultSection" style="display:none;">
+                    <div class="row g-3" id="evalMetricsRow"></div>
+                    <div class="mt-3" id="evalBarContainer"></div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -170,10 +191,10 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
 <script>
-function syncIndexOptions(datasetSelectId, indexSelectId, hintId) {
-    var datasetSelect = document.getElementById(datasetSelectId);
-    var indexSelect = document.getElementById(indexSelectId);
-    var hint = document.getElementById(hintId);
+/* ===== 上下文选择器同步 ===== */
+function syncContext() {
+    var datasetSelect = document.getElementById('contextDatasetSelect');
+    var indexSelect = document.getElementById('contextIndexSelect');
     if (!datasetSelect || !indexSelect) return;
 
     var options = Array.from(indexSelect.querySelectorAll('option'));
@@ -192,117 +213,355 @@ function syncIndexOptions(datasetSelectId, indexSelectId, hintId) {
             }
         });
 
+        var searchBtn = document.getElementById('searchBtn');
+        var evalBtn = document.getElementById('evalBtn');
+        var noIndexHint = document.getElementById('searchNoIndexHint');
+        var hint = document.getElementById('contextHint');
+
         if (visibleCount === 0) {
             indexSelect.value = '';
             indexSelect.disabled = true;
-            if (hint) hint.textContent = '当前数据集暂无可用索引，请先前往详情页构建。';
-            return;
+            if (hint) hint.textContent = '当前数据集暂无可用索引';
+            if (searchBtn) searchBtn.disabled = true;
+            if (evalBtn) evalBtn.disabled = true;
+            if (noIndexHint) noIndexHint.style.display = 'block';
+        } else {
+            indexSelect.disabled = false;
+            var selectedVisible = options.some(function (opt) { return !opt.hidden && opt.value === indexSelect.value; });
+            if (!selectedVisible && firstVisible) {
+                indexSelect.value = firstVisible.value;
+            }
+            if (hint) hint.textContent = visibleCount + ' 个可用索引';
+            if (searchBtn) searchBtn.disabled = false;
+            if (evalBtn) evalBtn.disabled = false;
+            if (noIndexHint) noIndexHint.style.display = 'none';
         }
 
-        indexSelect.disabled = false;
-        var selectedVisible = options.some(function (opt) { return !opt.hidden && opt.value === indexSelect.value; });
-        if (!selectedVisible && firstVisible) {
-            indexSelect.value = firstVisible.value;
-        }
-        if (hint) hint.textContent = '仅显示当前数据集可用索引。';
+        /* 同步隐藏字段 */
+        var searchDsId = document.getElementById('searchDatasetId');
+        var searchIxId = document.getElementById('searchIndexId');
+        var evalDsId = document.getElementById('evalDatasetId');
+        var evalIxId = document.getElementById('evalIndexId');
+        if (searchDsId) searchDsId.value = datasetSelect.value;
+        if (searchIxId) searchIxId.value = indexSelect.value;
+        if (evalDsId) evalDsId.value = datasetSelect.value;
+        if (evalIxId) evalIxId.value = indexSelect.value;
+
+        /* 更新细胞索引范围提示 */
+        var selOpt = datasetSelect.options[datasetSelect.selectedIndex];
+        var nCells = selOpt ? parseInt(selOpt.dataset.nCells, 10) : 0;
+        var rangeHint = document.getElementById('cellRangeHint');
+        if (rangeHint) rangeHint.textContent = '范围: 0 ~ ' + (nCells > 0 ? nCells - 1 : '?');
     }
 
-    datasetSelect.addEventListener('change', applyFilter);
+    datasetSelect.addEventListener('change', function () {
+        applyFilter();
+        refreshCellTypes(this.value);
+    });
+    indexSelect.addEventListener('change', function () {
+        var searchIxId = document.getElementById('searchIndexId');
+        var evalIxId = document.getElementById('evalIndexId');
+        if (searchIxId) searchIxId.value = this.value;
+        if (evalIxId) evalIxId.value = this.value;
+    });
     applyFilter();
 }
 
-function addButtonParticles() {
-    var buttons = document.querySelectorAll('.btn-cta');
-    buttons.forEach(function (btn) {
-        btn.addEventListener('click', function (event) {
-            var rect = btn.getBoundingClientRect();
-            var particle = document.createElement('span');
-            particle.className = 'btn-particle';
-            particle.style.left = (event.clientX - rect.left) + 'px';
-            particle.style.top = (event.clientY - rect.top) + 'px';
-            btn.appendChild(particle);
-            setTimeout(function () { particle.remove(); }, 400);
-        });
+/* ===== 细胞类型过滤刷新 ===== */
+function refreshCellTypes(datasetId) {
+    if (!datasetId) return;
+    fetch('/api/datasets/' + datasetId + '/cell-types', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            var sel = document.getElementById('filterCellType');
+            if (!sel || !data.ok) return;
+            var current = sel.value;
+            sel.innerHTML = '<option value="">全部</option>';
+            (data.cell_types || []).forEach(function (ct) {
+                var opt = document.createElement('option');
+                opt.value = ct;
+                opt.textContent = ct;
+                if (ct === current) opt.selected = true;
+                sel.appendChild(opt);
+            });
+        })
+        .catch(function () {});
+}
+
+/* ===== 细胞元信息预览（debounce） ===== */
+var cellMetaTimer = null;
+function setupCellMetaPreview() {
+    var input = document.getElementById('queryCellInput');
+    var preview = document.getElementById('cellMetaPreview');
+    if (!input || !preview) return;
+
+    input.addEventListener('input', function () {
+        clearTimeout(cellMetaTimer);
+        var idx = parseInt(input.value, 10);
+        var dsId = document.getElementById('contextDatasetSelect');
+        if (!dsId || isNaN(idx) || idx < 0) {
+            preview.style.display = 'none';
+            return;
+        }
+
+        cellMetaTimer = setTimeout(function () {
+            fetch('/api/datasets/' + dsId.value + '/cell-meta/' + idx, { credentials: 'same-origin' })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (!data.ok) {
+                        preview.innerHTML = '<span class="text-danger small">索引不存在或超出范围</span>';
+                        preview.style.display = 'block';
+                        return;
+                    }
+                    var c = data.cell;
+                    preview.innerHTML =
+                        '<span class="cmp-label">名称:</span> ' + (c.cell_name || '-') +
+                        ' <span class="cmp-label">类型:</span> ' + (c.cell_type || '-') +
+                        ' <span class="cmp-label">疾病:</span> ' + (c.disease || '-') +
+                        ' <span class="cmp-label">年龄:</span> ' + (c.age_group || '-');
+                    preview.style.display = 'block';
+                })
+                .catch(function () { preview.style.display = 'none'; });
+        }, 300);
     });
 }
 
-/* 渲染检索指标卡片 */
-function renderSearchMetrics(data) {
-    var row = document.getElementById('searchMetricsRow');
-    if (!row) return;
-    row.innerHTML =
-        '<div class="col-lg-2 col-md-4 col-6"><div class="metric-card text-center"><p class="metric-label mb-1">查询细胞</p><h5 class="mb-0">' + data.query_cell_index + '</h5></div></div>' +
-        '<div class="col-lg-2 col-md-4 col-6"><div class="metric-card text-center"><p class="metric-label mb-1">Top-K</p><h5 class="mb-0">' + data.top_k + '</h5></div></div>' +
-        '<div class="col-lg-2 col-md-4 col-6"><div class="metric-card text-center"><p class="metric-label mb-1">返回数量</p><h5 class="mb-0">' + data.results.length + '</h5></div></div>' +
-        '<div class="col-lg-3 col-md-6 col-6"><div class="metric-card text-center"><p class="metric-label mb-1">过滤条件</p><h6 class="mb-0">' + (data.filter_cell_type || '全部细胞类型') + '</h6></div></div>' +
-        '<div class="col-lg-3 col-md-6"><div class="metric-card text-center metric-time"><p class="metric-label mb-1">查询耗时</p><h5 class="mb-0">' + data.query_time_ms + ' ms</h5></div></div>';
+/* ===== 检索散点图交互状态 ===== */
+var searchScatterState = {
+    loaded: false,
+    cellIndexToTracePoint: {},
+    highlightedCellIndex: null,
+    queryCellType: null,
+    originalBgOpacity: 1.0,
+    activeToggle: null,
+};
+
+function buildScatterLookup() {
+    var container = document.getElementById('searchScatterContainer');
+    if (!container || !container.data) return;
+    searchScatterState.cellIndexToTracePoint = {};
+    for (var t = 0; t < container.data.length; t++) {
+        var trace = container.data[t];
+        if (!trace.customdata) continue;
+        for (var p = 0; p < trace.customdata.length; p++) {
+            var ci = trace.customdata[p][0];
+            if (ci !== undefined && ci !== null) {
+                searchScatterState.cellIndexToTracePoint[ci] = { traceIdx: t, pointIdx: p };
+            }
+        }
+    }
+    searchScatterState.loaded = true;
+}
+
+function highlightScatterPoint(cellIndex) {
+    var container = document.getElementById('searchScatterContainer');
+    if (!container || !container.data) return;
+    if (searchScatterState.highlightedCellIndex !== null) {
+        unhighlightScatterPoint(searchScatterState.highlightedCellIndex);
+    }
+    var info = searchScatterState.cellIndexToTracePoint[cellIndex];
+    if (!info) return;
+    var trace = container.data[info.traceIdx];
+    if (!trace || !trace.marker) return;
+    var sizes = trace.marker.size;
+    if (Array.isArray(sizes)) {
+        sizes[info.pointIdx] = 14;
+        Plotly.restyle(container, { 'marker.size': [sizes] }, [info.traceIdx]);
+    } else {
+        var n = (trace.x || []).length;
+        var arr = new Array(n).fill(trace.marker.size || 8);
+        arr[info.pointIdx] = 14;
+        Plotly.restyle(container, { 'marker.size': [arr] }, [info.traceIdx]);
+    }
+    searchScatterState.highlightedCellIndex = cellIndex;
+}
+
+function unhighlightScatterPoint(cellIndex) {
+    var container = document.getElementById('searchScatterContainer');
+    if (!container || !container.data) return;
+    var info = searchScatterState.cellIndexToTracePoint[cellIndex];
+    if (!info) return;
+    var trace = container.data[info.traceIdx];
+    if (!trace || !trace.marker) return;
+    var origSize = (info.traceIdx === 0) ? 3.2 : (info.traceIdx === 2 ? 16 : 8);
+    var sizes = trace.marker.size;
+    if (Array.isArray(sizes)) {
+        sizes[info.pointIdx] = origSize;
+        Plotly.restyle(container, { 'marker.size': [sizes] }, [info.traceIdx]);
+    }
+}
+
+/* ===== 渲染检索结果（精简列、固定高度滚动） ===== */
+function renderSearchResults(data, interpretation) {
+    var section = document.getElementById('searchResultSection');
+    if (!section) return;
+    section.style.display = '';
+
+    /* 保存查询细胞类型（供"同类型"切换使用） */
+    if (data.results && data.results.length > 0) {
+        searchScatterState.queryCellType = data.results[0].cell_type || null;
+    }
+
+    /* 结果摘要（含解释性指标） */
+    var summaryDiv = document.getElementById('searchResultSummary');
+    if (summaryDiv) {
+        var typeDist = {};
+        data.results.forEach(function (r) {
+            typeDist[r.cell_type] = (typeDist[r.cell_type] || 0) + 1;
+        });
+        var typeStr = Object.keys(typeDist).map(function (k) { return k + ' ' + typeDist[k]; }).join(', ');
+
+        var summaryHtml = '<div class="result-summary">' +
+            '<div class="rs-query">查询细胞 #' + data.query_cell_index +
+            ' <span class="rs-stats" style="margin-left:0.5rem;">Top-K ' + data.top_k +
+            ' | 返回 ' + data.results.length +
+            ' | 耗时 ' + data.query_time_ms + ' ms</span></div>' +
+            (typeStr ? '<div class="rs-type-dist">类型分布: ' + typeStr + '</div>' : '');
+
+        if (interpretation) {
+            if (interpretation.distance_range) {
+                var dr = interpretation.distance_range;
+                summaryHtml += '<div class="rs-stats" style="font-size:0.78rem;">距离范围: ' +
+                    dr.min.toFixed(6) + ' ~ ' + dr.max.toFixed(6) + '</div>';
+            }
+            if (interpretation.disease_distribution) {
+                var dd = interpretation.disease_distribution;
+                var ddStr = Object.keys(dd).map(function (k) { return k + ' ' + dd[k]; }).join(', ');
+                var ddUniform = interpretation.disease_uniform ? ' <span class="text-info">(一致)</span>' : '';
+                summaryHtml += '<div class="rs-stats" style="font-size:0.78rem;">疾病分布: ' + ddStr + ddUniform + '</div>';
+            }
+            if (interpretation.age_group_distribution) {
+                var ad = interpretation.age_group_distribution;
+                var adStr = Object.keys(ad).map(function (k) { return k + ' ' + ad[k]; }).join(', ');
+                var adUniform = interpretation.age_group_uniform ? ' <span class="text-info">(一致)</span>' : '';
+                summaryHtml += '<div class="rs-stats" style="font-size:0.78rem;">年龄分布: ' + adStr + adUniform + '</div>';
+            }
+            if (interpretation.same_type_ratio) {
+                summaryHtml += '<div class="rs-stats" style="font-size:0.78rem;">' + interpretation.same_type_ratio + '</div>';
+            }
+        }
+
+        summaryHtml += '</div>';
+        summaryDiv.innerHTML = summaryHtml;
+    }
+
+    /* 结果表格（精简列：排名、索引、名称、距离、类型、操作） */
+    var container = document.getElementById('searchResultTable');
+    if (container) {
+        if (!data.results || data.results.length === 0) {
+            container.innerHTML = '<div class="alert alert-secondary mb-0">当前条件下没有检索到结果。</div>';
+        } else {
+            var rows = data.results.map(function (r) {
+                var dist = typeof r.distance === 'number' ? r.distance.toFixed(6) : r.distance;
+                var name = r.cell_name || '-';
+                if (name.length > 18) name = name.substring(0, 16) + '...';
+                return '<tr data-cell-index="' + r.cell_index + '" style="cursor:pointer;">' +
+                    '<td class="text-center">' + r.rank + '</td>' +
+                    '<td>' + r.cell_index + '</td>' +
+                    '<td title="' + (r.cell_name || '') + '">' + name + '</td>' +
+                    '<td class="font-monospace small">' + dist + '</td>' +
+                    '<td>' + r.cell_type + '</td>' +
+                    '<td><button class="btn btn-link btn-sm p-0 requery-btn" data-cell="' + r.cell_index + '" title="设为查询细胞">&#x21BB;</button></td>' +
+                    '</tr>';
+            }).join('');
+            container.innerHTML = '<table class="table table-sm table-hover align-middle mb-0">' +
+                '<thead><tr>' +
+                '<th class="text-center" style="width:2rem">#</th>' +
+                '<th style="width:3rem">索引</th>' +
+                '<th>名称</th>' +
+                '<th>距离</th>' +
+                '<th>类型</th>' +
+                '<th style="width:2rem"></th>' +
+                '</tr></thead><tbody>' + rows + '</tbody></table>';
+
+            /* "设为查询细胞" 按钮事件 */
+            container.querySelectorAll('.requery-btn').forEach(function (btn) {
+                btn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    var cellIdx = this.getAttribute('data-cell');
+                    var input = document.getElementById('queryCellInput');
+                    if (input) {
+                        input.value = cellIdx;
+                        input.dispatchEvent(new Event('input'));
+                        document.getElementById('searchForm').dispatchEvent(new Event('submit'));
+                    }
+                });
+            });
+
+            /* 表格行点击 → 散点图高亮 */
+            container.querySelectorAll('tbody tr[data-cell-index]').forEach(function (row) {
+                row.addEventListener('click', function () {
+                    var ci = parseInt(this.getAttribute('data-cell-index'), 10);
+                    if (!isNaN(ci)) {
+                        highlightScatterPoint(ci);
+                        container.querySelectorAll('tbody tr.table-active').forEach(function (r) { r.classList.remove('table-active'); });
+                        this.classList.add('table-active');
+                    }
+                });
+            });
+        }
+    }
 
     var badge = document.getElementById('searchTopKBadge');
     if (badge) badge.textContent = 'Top-K ' + data.top_k;
 }
 
-/* 渲染检索结果表格 */
-function renderSearchTable(results) {
-    var container = document.getElementById('searchResultTable');
-    if (!container) return;
-    if (!results || results.length === 0) {
-        container.innerHTML = '<div class="alert alert-secondary mb-0">当前条件下没有检索到结果，请尝试调整 Top-K 或过滤条件。</div>';
-        return;
-    }
-    var rows = results.map(function (r) {
-        return '<tr><td>' + r.rank + '</td><td>' + r.cell_index + '</td><td>' + r.cell_name +
-               '</td><td>' + r.distance + '</td><td>' + r.cell_type + '</td><td>' + r.disease +
-               '</td><td>' + r.age_group + '</td></tr>';
-    }).join('');
-    container.innerHTML = '<table class="table table-striped table-hover align-middle">' +
-        '<thead class="table-dark"><tr><th>排名</th><th>细胞索引</th><th>细胞名称</th>' +
-        '<th>距离</th><th>细胞类型</th><th>疾病</th><th>年龄组</th></tr></thead>' +
-        '<tbody>' + rows + '</tbody></table>';
-}
-
-/* 渲染评估指标卡片 */
+/* ===== 渲染评估结果 ===== */
 function renderEvalMetrics(metrics) {
     var row = document.getElementById('evalMetricsRow');
     if (!row) return;
     row.innerHTML =
-        '<div class="col-md-3"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + (metrics.avg_recall_at_k * 100).toFixed(2) + '%</h4><small class="text-muted">Recall@' + metrics.top_k + '</small></div></div></div>' +
-        '<div class="col-md-3"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + metrics.avg_ann_time_ms.toFixed(4) + ' ms</h4><small class="text-muted">ANN 平均耗时</small></div></div></div>' +
-        '<div class="col-md-3"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + metrics.avg_exact_time_ms.toFixed(4) + ' ms</h4><small class="text-muted">精确检索平均耗时</small></div></div></div>' +
-        '<div class="col-md-3"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + metrics.speedup.toFixed(1) + 'x</h4><small class="text-muted">加速比</small></div></div></div>';
+        '<div class="col-md-6"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + (metrics.avg_recall_at_k * 100).toFixed(2) + '%</h4><small class="text-muted">Recall@' + metrics.top_k + '</small></div></div></div>' +
+        '<div class="col-md-6"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + metrics.speedup.toFixed(1) + 'x</h4><small class="text-muted">加速比</small></div></div></div>' +
+        '<div class="col-md-6"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + metrics.avg_ann_time_ms.toFixed(4) + ' ms</h4><small class="text-muted">ANN 平均耗时</small></div></div></div>' +
+        '<div class="col-md-6"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + metrics.avg_exact_time_ms.toFixed(4) + ' ms</h4><small class="text-muted">精确检索平均耗时</small></div></div></div>';
 }
 
-document.addEventListener('DOMContentLoaded', function () {
-    syncIndexOptions('searchDatasetSelect', 'searchIndexSelect', 'searchIndexHint');
-    syncIndexOptions('evalDatasetSelect', 'evalIndexSelect', 'evalIndexHint');
-    addButtonParticles();
-
-    /* ---- 数据集切换时动态更新 cell_type 过滤器 ---- */
-    function refreshCellTypes(datasetId) {
-        if (!datasetId) return;
-        fetch('/api/datasets/' + datasetId + '/cell-types', { credentials: 'same-origin' })
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                var sel = document.querySelector('select[name="filter_cell_type"]');
-                if (!sel || !data.ok) return;
-                var current = sel.value;
-                sel.innerHTML = '<option value="">全部</option>';
-                (data.cell_types || []).forEach(function (ct) {
-                    var opt = document.createElement('option');
-                    opt.value = ct;
-                    opt.textContent = ct;
-                    if (ct === current) opt.selected = true;
-                    sel.appendChild(opt);
-                });
-            })
-            .catch(function () {});
+/* ===== Tab 初始化与 URL hash 联动 ===== */
+function setupTabs() {
+    function activateTabByHash(hash) {
+        if (hash === '#eval') {
+            var evalTabEl = document.getElementById('eval-tab');
+            if (evalTabEl) {
+                var tab = bootstrap.Tab.getOrCreateInstance(evalTabEl);
+                tab.show();
+            }
+        } else if (hash === '#search') {
+            var searchTabEl = document.getElementById('search-tab');
+            if (searchTabEl) {
+                var tab = bootstrap.Tab.getOrCreateInstance(searchTabEl);
+                tab.show();
+            }
+        }
     }
 
-    var searchDatasetSel = document.getElementById('searchDatasetSelect');
-    if (searchDatasetSel) {
-        searchDatasetSel.addEventListener('change', function () {
-            refreshCellTypes(this.value);
+    /* 页面加载时根据 hash 激活 Tab */
+    activateTabByHash(window.location.hash);
+
+    /* 监听 hashchange 事件（导航栏点击"评估"等场景） */
+    window.addEventListener('hashchange', function () {
+        activateTabByHash(window.location.hash);
+    });
+
+    /* Tab 切换时更新 URL hash */
+    var tabEls = document.querySelectorAll('#workbenchTabs button');
+    tabEls.forEach(function (tabEl) {
+        tabEl.addEventListener('shown.bs.tab', function (e) {
+            var target = e.target.getAttribute('data-bs-target');
+            if (target === '#searchPane') {
+                history.replaceState(null, '', window.location.pathname + '#search');
+            } else if (target === '#evalPane') {
+                history.replaceState(null, '', window.location.pathname + '#eval');
+            }
         });
-    }
+    });
+}
+
+/* ===== DOM Ready ===== */
+document.addEventListener('DOMContentLoaded', function () {
+    syncContext();
+    setupCellMetaPreview();
+    setupTabs();
 
     /* ---- 检索表单 ---- */
     var searchForm = document.getElementById('searchForm');
@@ -311,7 +570,19 @@ document.addEventListener('DOMContentLoaded', function () {
             e.preventDefault();
             var msg = document.getElementById('searchMessage');
             var btn = document.getElementById('searchBtn');
-            var section = document.getElementById('searchResultSection');
+
+            /* 同步上下文 */
+            var dsSelect = document.getElementById('contextDatasetSelect');
+            var ixSelect = document.getElementById('contextIndexSelect');
+            var searchDsId = document.getElementById('searchDatasetId');
+            var searchIxId = document.getElementById('searchIndexId');
+            if (dsSelect && searchDsId) searchDsId.value = dsSelect.value;
+            if (ixSelect && searchIxId) searchIxId.value = ixSelect.value;
+
+            if (!ixSelect.value) {
+                Tasks.setMessage(msg, '请先选择可用索引。', 'danger');
+                return;
+            }
 
             Tasks.setMessage(msg, '正在检索，请稍候...', 'info');
             if (btn) btn.disabled = true;
@@ -331,12 +602,10 @@ document.addEventListener('DOMContentLoaded', function () {
                     Tasks.setMessage(msg, '', 'info');
                     msg.style.display = 'none';
 
-                    /* 显示结果区域 */
-                    section.style.display = '';
-                    renderSearchMetrics(data.result_data);
-                    renderSearchTable(data.result_data.results);
+                    /* 渲染结果 */
+                    renderSearchResults(data.result_data, data.interpretation);
 
-                    /* 散点图：用 Plotly.react 渲染，避免 innerHTML 不执行脚本 */
+                    /* 散点图 */
                     var scatterCard = document.getElementById('searchScatterCard');
                     var scatterContainer = document.getElementById('searchScatterContainer');
                     if (data.scatter_plot && scatterContainer) {
@@ -349,7 +618,18 @@ document.addEventListener('DOMContentLoaded', function () {
                         );
                         setTimeout(function () {
                             window.applyThemeToPlotlyCharts && window.applyThemeToPlotlyCharts();
-                        }, 100);
+                            /* 构建交互映射（5.2a） */
+                            buildScatterLookup();
+                            /* 重置切换状态 */
+                            searchScatterState.activeToggle = null;
+                            searchScatterState.highlightedCellIndex = null;
+                            var toggleRO = document.getElementById('toggleResultsOnly');
+                            var toggleST = document.getElementById('toggleSameType');
+                            if (toggleRO) toggleRO.classList.remove('active');
+                            if (toggleST) toggleST.classList.remove('active');
+                            /* 绑定散点图点击 → 表格滚动（5.2c） */
+                            bindSearchScatterClick();
+                        }, 150);
                     } else if (scatterCard) {
                         scatterCard.style.display = 'none';
                     }
@@ -368,7 +648,19 @@ document.addEventListener('DOMContentLoaded', function () {
             e.preventDefault();
             var msg = document.getElementById('evalMessage');
             var btn = document.getElementById('evalBtn');
-            var section = document.getElementById('evalResultSection');
+
+            /* 同步上下文 */
+            var dsSelect = document.getElementById('contextDatasetSelect');
+            var ixSelect = document.getElementById('contextIndexSelect');
+            var evalDsId = document.getElementById('evalDatasetId');
+            var evalIxId = document.getElementById('evalIndexId');
+            if (dsSelect && evalDsId) evalDsId.value = dsSelect.value;
+            if (ixSelect && evalIxId) evalIxId.value = ixSelect.value;
+
+            if (!ixSelect.value) {
+                Tasks.setMessage(msg, '请先选择可用索引。', 'danger');
+                return;
+            }
 
             Tasks.setMessage(msg, '正在运行评估，请稍候...', 'info');
             if (btn) btn.disabled = true;
@@ -387,12 +679,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     Tasks.setMessage(msg, '评估完成：Recall@' + data.metrics.top_k + '=' + (data.metrics.avg_recall_at_k * 100).toFixed(2) + '%，加速比=' + data.metrics.speedup.toFixed(1) + 'x', 'success');
 
-                    section.style.display = '';
+                    var section = document.getElementById('evalResultSection');
+                    if (section) section.style.display = '';
                     renderEvalMetrics(data.metrics);
 
                     var barContainer = document.getElementById('evalBarContainer');
                     if (barContainer && data.bar_plot) {
-                        /* 用 Plotly.react 渲染，避免 innerHTML 不执行脚本 */
                         Plotly.react(
                             barContainer,
                             data.bar_plot.data,
@@ -408,6 +700,124 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (btn) btn.disabled = false;
                     Tasks.setMessage(msg, '网络错误：' + String(err), 'danger');
                 });
+        });
+    }
+
+    /* ---- 散点图点击 → 表格滚动（5.2c） ---- */
+    var bgRequeryTimer = null;
+    function bindSearchScatterClick() {
+        var container = document.getElementById('searchScatterContainer');
+        if (!container) return;
+        container.removeAllListeners && container.removeAllListeners('plotly_click');
+        container.on('plotly_click', function (eventData) {
+            if (!eventData || !eventData.points || !eventData.points.length) return;
+            var pt = eventData.points[0];
+            if (!pt.data || !pt.data.customdata) return;
+            var cd = pt.data.customdata[pt.pointIndex];
+            if (!cd) return;
+            var cellIndex = cd[0];
+
+            if (pt.curveNumber === 0) {
+                /* 背景点：显示重新检索提示（5.2d） */
+                var tooltip = document.getElementById('bgRequeryTooltip');
+                var text = document.getElementById('bgRequeryText');
+                var link = document.getElementById('bgRequeryLink');
+                if (tooltip && text) {
+                    text.textContent = '以细胞 #' + cellIndex + ' 重新检索';
+                    link.setAttribute('data-cell', cellIndex);
+                    tooltip.style.display = 'block';
+                    clearTimeout(bgRequeryTimer);
+                    bgRequeryTimer = setTimeout(function () { tooltip.style.display = 'none'; }, 5000);
+                }
+            } else {
+                /* 结果/查询点：滚动到表格行 */
+                var row = document.querySelector('tr[data-cell-index="' + cellIndex + '"]');
+                if (row) {
+                    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    row.classList.add('table-active');
+                    setTimeout(function () { row.classList.remove('table-active'); }, 2000);
+                }
+            }
+        });
+    }
+
+    /* 背景重检索提示链接点击（5.2d） */
+    var bgLink = document.getElementById('bgRequeryLink');
+    if (bgLink) {
+        bgLink.addEventListener('click', function (e) {
+            e.preventDefault();
+            var cellIdx = this.getAttribute('data-cell');
+            var input = document.getElementById('queryCellInput');
+            if (input && cellIdx) {
+                input.value = cellIdx;
+                input.dispatchEvent(new Event('input'));
+                document.getElementById('searchForm').dispatchEvent(new Event('submit'));
+            }
+            document.getElementById('bgRequeryTooltip').style.display = 'none';
+        });
+    }
+
+    /* ---- 显示切换按钮（5.2e） ---- */
+    var toggleRO = document.getElementById('toggleResultsOnly');
+    var toggleST = document.getElementById('toggleSameType');
+
+    if (toggleRO) {
+        toggleRO.addEventListener('click', function () {
+            var container = document.getElementById('searchScatterContainer');
+            if (!container || !container.data || !container.data.length) return;
+            var trace = container.data[0];  // 背景轨迹
+
+            if (searchScatterState.activeToggle === 'resultsOnly') {
+                /* 关闭：恢复背景 */
+                Plotly.restyle(container, { 'marker.opacity': [searchScatterState.originalBgOpacity] }, [0]);
+                searchScatterState.activeToggle = null;
+                this.classList.remove('active');
+            } else {
+                /* 开启：隐藏背景 */
+                if (trace.marker && typeof trace.marker.opacity === 'number') {
+                    searchScatterState.originalBgOpacity = trace.marker.opacity;
+                } else {
+                    searchScatterState.originalBgOpacity = 1.0;
+                }
+                Plotly.restyle(container, { 'marker.opacity': [0] }, [0]);
+                searchScatterState.activeToggle = 'resultsOnly';
+                this.classList.add('active');
+                if (toggleST) toggleST.classList.remove('active');
+            }
+        });
+    }
+
+    if (toggleST) {
+        toggleST.addEventListener('click', function () {
+            var container = document.getElementById('searchScatterContainer');
+            if (!container || !container.data || !container.data.length) return;
+            var trace = container.data[0];
+
+            if (searchScatterState.activeToggle === 'sameType') {
+                /* 关闭：恢复背景 */
+                Plotly.restyle(container, { 'marker.opacity': [searchScatterState.originalBgOpacity] }, [0]);
+                searchScatterState.activeToggle = null;
+                this.classList.remove('active');
+            } else {
+                /* 开启：仅同类型可见 */
+                if (trace.marker && typeof trace.marker.opacity === 'number') {
+                    searchScatterState.originalBgOpacity = trace.marker.opacity;
+                } else {
+                    searchScatterState.originalBgOpacity = 1.0;
+                }
+                var qType = searchScatterState.queryCellType;
+                if (qType && trace.customdata) {
+                    var opacityArr = [];
+                    for (var i = 0; i < trace.customdata.length; i++) {
+                        /* customdata: [cell_index, cell_type] */
+                        opacityArr.push(trace.customdata[i][1] === qType ? 0.8 : 0.05);
+                    }
+                    Plotly.restyle(container, { 'marker.opacity': [opacityArr] }, [0]);
+                }
+                searchScatterState.activeToggle = 'sameType';
+                this.classList.add('active');
+                if (toggleRO) toggleRO.classList.remove('active');
+            }
         });
     }
 });

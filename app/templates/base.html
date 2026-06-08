@@ -25,22 +25,38 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.index') }}">首页</a>
+                        <a class="nav-link{% if nav_active == 'workbench' %} active{% endif %}"
+                           href="{{ url_for('main.index') }}">工作台</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.background') }}">项目背景</a>
+                        <a class="nav-link{% if nav_active == 'datasets' %} active{% endif %}"
+                           href="{{ url_for('datasets.list_datasets') }}">数据集</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.data_info') }}">数据说明</a>
+                        <a class="nav-link{% if nav_active == 'search' %} active{% endif %}"
+                           href="{{ url_for('search.search') }}#search">检索</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('datasets.list_datasets') }}">数据集</a>
+                        <a class="nav-link{% if nav_active == 'eval' %} active{% endif %}"
+                           href="{{ url_for('search.search') }}#eval">评估</a>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('search.search') }}">检索</a>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle{% if nav_active == 'docs' %} active{% endif %}"
+                           href="#" role="button" data-bs-toggle="dropdown">文档</a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="{{ url_for('main.background') }}">项目背景</a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('main.data_info') }}">数据说明</a></li>
+                        </ul>
                     </li>
                 </ul>
                 <ul class="navbar-nav">
+                    <li class="nav-item d-flex align-items-center me-2" id="globalTaskWrap" style="display:none;">
+                        <a href="{{ url_for('main.index') }}#recent-tasks"
+                           class="btn btn-sm btn-outline-info position-relative"
+                           id="globalTaskBadge" title="后台任务进行中">
+                            后台任务 <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" id="globalTaskCount">0</span>
+                        </a>
+                    </li>
                     <li class="nav-item d-flex align-items-center me-2">
                         <button id="themeToggleBtn" type="button" class="btn btn-sm btn-outline-light theme-toggle-btn">
                             切换亮色
@@ -85,6 +101,9 @@
         <hr>
         <p>单细胞 ANN 检索系统 &copy; 2026 | 软件工程课程项目</p>
     </footer>
+
+    <!-- Toast 通知容器（6.2a） -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index:1090;" id="globalToastContainer"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
@@ -166,7 +185,17 @@
             };
             applyWithRetry();
         })();
+
+        /* 全局任务指示器：使用 GlobalTaskTracker（6.3c） */
+        document.addEventListener("DOMContentLoaded", function () {
+            if (window.GlobalTaskTracker) {
+                window.GlobalTaskTracker.start(15000, 2000);
+            } else if (window.Tasks && window.Tasks.pollActiveTasks) {
+                window.Tasks.pollActiveTasks(15000);
+            }
+        });
     </script>
+    <script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>
