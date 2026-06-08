@@ -642,13 +642,31 @@ footer p {
     padding-left: 1rem;
 }
 
+.info-level-1 .ui-card-header,
+.info-level-1.card .card-header {
+    background: linear-gradient(90deg, rgba(139, 92, 246, 0.18), var(--header-bg));
+}
+
 .info-level-2 {
     /* 标准权重，使用默认 ui-card 样式 */
 }
 
 .info-level-3 {
-    opacity: 0.7;
+    opacity: 0.72;
     font-size: 0.88rem;
+    transition: opacity 0.2s ease;
+}
+
+.info-level-3:hover {
+    opacity: 1;
+}
+
+.info-level-3.collapsed-content {
+    display: none;
+}
+
+.info-level-3.collapsed-content.show {
+    display: block;
 }
 
 .collapsible-hint {
@@ -907,4 +925,76 @@ footer p {
 .result-summary .rs-stats {
     display: inline;
     font-weight: 400;
+}
+
+/* ===== 细胞详情卡（散点图点击） ===== */
+.cell-detail-card {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-left: 3px solid var(--accent-primary);
+    border-radius: 12px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.75rem;
+    position: relative;
+    backdrop-filter: blur(10px);
+}
+
+/* ===== 背景重检索提示（搜索页散点图） ===== */
+.bg-requery-tooltip {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.82rem;
+    backdrop-filter: blur(10px);
+    z-index: 5;
+}
+
+/* ===== 散点图切换按钮 ===== */
+.viz-toggle-btn {
+    font-size: 0.75rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+}
+
+.viz-toggle-btn.active {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: #fff;
+}
+
+/* ===== Toast 通知样式 ===== */
+.app-toast {
+    border-radius: 14px;
+    backdrop-filter: blur(14px);
+    color: var(--text-main);
+}
+
+.app-toast .toast-header {
+    color: var(--text-main);
+    border-bottom-color: var(--glass-border);
+}
+
+.app-toast .toast-body {
+    color: var(--text-main);
+}
+
+.app-toast .btn-close {
+    filter: invert(1);
+}
+
+/* ===== 任务中心 pill tabs ===== */
+.nav-pills-sm .nav-link {
+    font-size: 0.78rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    color: var(--text-secondary);
+}
+
+.nav-pills-sm .nav-link.active {
+    background: var(--accent-primary);
+    color: #fff;
 }

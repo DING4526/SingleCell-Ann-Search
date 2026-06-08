@@ -67,7 +67,7 @@
         <div class="row g-3">
             <!-- 左工作区：查询+摘要+结果表 ~38% -->
             <div class="col-lg-5">
-                <div class="card ui-card mb-3">
+                <div class="card ui-card mb-3 info-level-1">
                     <div class="card-header ui-card-header">查询条件</div>
                     <div class="card-body">
                         <form id="searchForm" action="{{ url_for('api.api_search') }}">
@@ -111,7 +111,7 @@
                 <!-- 结果摘要 + 结果表（紧凑，固定高度滚动） -->
                 <div id="searchResultSection" style="display:none;">
                     <div id="searchResultSummary"></div>
-                    <div class="card ui-card">
+                    <div class="card ui-card info-level-2">
                         <div class="card-header ui-card-header d-flex justify-content-between align-items-center py-2">
                             <span class="small">检索结果</span>
                             <span class="badge bg-info" id="searchTopKBadge"></span>
@@ -125,17 +125,24 @@
 
             <!-- 右工作区：散点图 ~62% -->
             <div class="col-lg-7">
-                <div class="card ui-card" id="searchScatterCard" style="display:none;">
-                    <div class="card-header ui-card-header d-flex justify-content-between align-items-center">
+                <div class="card ui-card info-level-2" id="searchScatterCard" style="display:none;">
+                    <div class="card-header ui-card-header d-flex justify-content-between align-items-center flex-wrap gap-1">
                         <span>检索可视化</span>
-                        <div>
-                            <span class="viz-chip"><span class="dot dot-query"></span>查询细胞</span>
-                            <span class="viz-chip"><span class="dot dot-result"></span>相似细胞</span>
+                        <div class="d-flex align-items-center gap-1 flex-wrap">
+                            <span class="viz-chip"><span class="dot dot-query"></span>查询</span>
+                            <span class="viz-chip"><span class="dot dot-result"></span>相似</span>
                             <span class="viz-chip"><span class="dot dot-other"></span>背景</span>
+                            <button class="btn btn-outline-secondary btn-sm viz-toggle-btn" id="toggleResultsOnly" title="仅显示结果和查询细胞">仅结果</button>
+                            <button class="btn btn-outline-secondary btn-sm viz-toggle-btn" id="toggleSameType" title="仅高亮与查询同类型的背景细胞">同类型</button>
                         </div>
                     </div>
-                    <div class="card-body">
+                    <div class="card-body" style="position:relative;">
                         <div class="plotly-theme-adaptive" id="searchScatterContainer"></div>
+                        <!-- 背景点重新检索提示 -->
+                        <div id="bgRequeryTooltip" class="bg-requery-tooltip" style="display:none;">
+                            <span id="bgRequeryText"></span>
+                            <a href="#" id="bgRequeryLink" class="text-decoration-underline ms-1">检索</a>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -146,7 +153,7 @@
     <div class="tab-pane fade" id="evalPane" role="tabpanel">
         <div class="row g-4">
             <div class="col-lg-4">
-                <div class="card ui-card">
+                <div class="card ui-card info-level-3">
                     <div class="card-header ui-card-header">评估参数</div>
                     <div class="card-body">
                         <form id="evalForm" action="{{ url_for('api.api_evaluate') }}">
@@ -319,13 +326,83 @@ function setupCellMetaPreview() {
     });
 }
 
+/* ===== 检索散点图交互状态 ===== */
+var searchScatterState = {
+    loaded: false,
+    cellIndexToTracePoint: {},
+    highlightedCellIndex: null,
+    queryCellType: null,
+    originalBgOpacity: 1.0,
+    activeToggle: null,
+};
+
+function buildScatterLookup() {
+    var container = document.getElementById('searchScatterContainer');
+    if (!container || !container.data) return;
+    searchScatterState.cellIndexToTracePoint = {};
+    for (var t = 0; t < container.data.length; t++) {
+        var trace = container.data[t];
+        if (!trace.customdata) continue;
+        for (var p = 0; p < trace.customdata.length; p++) {
+            var ci = trace.customdata[p][0];
+            if (ci !== undefined && ci !== null) {
+                searchScatterState.cellIndexToTracePoint[ci] = { traceIdx: t, pointIdx: p };
+            }
+        }
+    }
+    searchScatterState.loaded = true;
+}
+
+function highlightScatterPoint(cellIndex) {
+    var container = document.getElementById('searchScatterContainer');
+    if (!container || !container.data) return;
+    if (searchScatterState.highlightedCellIndex !== null) {
+        unhighlightScatterPoint(searchScatterState.highlightedCellIndex);
+    }
+    var info = searchScatterState.cellIndexToTracePoint[cellIndex];
+    if (!info) return;
+    var trace = container.data[info.traceIdx];
+    if (!trace || !trace.marker) return;
+    var sizes = trace.marker.size;
+    if (Array.isArray(sizes)) {
+        sizes[info.pointIdx] = 14;
+        Plotly.restyle(container, { 'marker.size': [sizes] }, [info.traceIdx]);
+    } else {
+        var n = (trace.x || []).length;
+        var arr = new Array(n).fill(trace.marker.size || 8);
+        arr[info.pointIdx] = 14;
+        Plotly.restyle(container, { 'marker.size': [arr] }, [info.traceIdx]);
+    }
+    searchScatterState.highlightedCellIndex = cellIndex;
+}
+
+function unhighlightScatterPoint(cellIndex) {
+    var container = document.getElementById('searchScatterContainer');
+    if (!container || !container.data) return;
+    var info = searchScatterState.cellIndexToTracePoint[cellIndex];
+    if (!info) return;
+    var trace = container.data[info.traceIdx];
+    if (!trace || !trace.marker) return;
+    var origSize = (info.traceIdx === 0) ? 3.2 : (info.traceIdx === 2 ? 16 : 8);
+    var sizes = trace.marker.size;
+    if (Array.isArray(sizes)) {
+        sizes[info.pointIdx] = origSize;
+        Plotly.restyle(container, { 'marker.size': [sizes] }, [info.traceIdx]);
+    }
+}
+
 /* ===== 渲染检索结果（精简列、固定高度滚动） ===== */
-function renderSearchResults(data) {
+function renderSearchResults(data, interpretation) {
     var section = document.getElementById('searchResultSection');
     if (!section) return;
     section.style.display = '';
 
-    /* 结果摘要（内嵌指标信息） */
+    /* 保存查询细胞类型（供"同类型"切换使用） */
+    if (data.results && data.results.length > 0) {
+        searchScatterState.queryCellType = data.results[0].cell_type || null;
+    }
+
+    /* 结果摘要（含解释性指标） */
     var summaryDiv = document.getElementById('searchResultSummary');
     if (summaryDiv) {
         var typeDist = {};
@@ -334,14 +411,38 @@ function renderSearchResults(data) {
         });
         var typeStr = Object.keys(typeDist).map(function (k) { return k + ' ' + typeDist[k]; }).join(', ');
 
-        summaryDiv.innerHTML =
-            '<div class="result-summary">' +
+        var summaryHtml = '<div class="result-summary">' +
             '<div class="rs-query">查询细胞 #' + data.query_cell_index +
             ' <span class="rs-stats" style="margin-left:0.5rem;">Top-K ' + data.top_k +
             ' | 返回 ' + data.results.length +
             ' | 耗时 ' + data.query_time_ms + ' ms</span></div>' +
-            (typeStr ? '<div class="rs-type-dist">类型分布: ' + typeStr + '</div>' : '') +
-            '</div>';
+            (typeStr ? '<div class="rs-type-dist">类型分布: ' + typeStr + '</div>' : '');
+
+        if (interpretation) {
+            if (interpretation.distance_range) {
+                var dr = interpretation.distance_range;
+                summaryHtml += '<div class="rs-stats" style="font-size:0.78rem;">距离范围: ' +
+                    dr.min.toFixed(6) + ' ~ ' + dr.max.toFixed(6) + '</div>';
+            }
+            if (interpretation.disease_distribution) {
+                var dd = interpretation.disease_distribution;
+                var ddStr = Object.keys(dd).map(function (k) { return k + ' ' + dd[k]; }).join(', ');
+                var ddUniform = interpretation.disease_uniform ? ' <span class="text-info">(一致)</span>' : '';
+                summaryHtml += '<div class="rs-stats" style="font-size:0.78rem;">疾病分布: ' + ddStr + ddUniform + '</div>';
+            }
+            if (interpretation.age_group_distribution) {
+                var ad = interpretation.age_group_distribution;
+                var adStr = Object.keys(ad).map(function (k) { return k + ' ' + ad[k]; }).join(', ');
+                var adUniform = interpretation.age_group_uniform ? ' <span class="text-info">(一致)</span>' : '';
+                summaryHtml += '<div class="rs-stats" style="font-size:0.78rem;">年龄分布: ' + adStr + adUniform + '</div>';
+            }
+            if (interpretation.same_type_ratio) {
+                summaryHtml += '<div class="rs-stats" style="font-size:0.78rem;">' + interpretation.same_type_ratio + '</div>';
+            }
+        }
+
+        summaryHtml += '</div>';
+        summaryDiv.innerHTML = summaryHtml;
     }
 
     /* 结果表格（精简列：排名、索引、名称、距离、类型、操作） */
@@ -354,7 +455,7 @@ function renderSearchResults(data) {
                 var dist = typeof r.distance === 'number' ? r.distance.toFixed(6) : r.distance;
                 var name = r.cell_name || '-';
                 if (name.length > 18) name = name.substring(0, 16) + '...';
-                return '<tr data-cell-index="' + r.cell_index + '">' +
+                return '<tr data-cell-index="' + r.cell_index + '" style="cursor:pointer;">' +
                     '<td class="text-center">' + r.rank + '</td>' +
                     '<td>' + r.cell_index + '</td>' +
                     '<td title="' + (r.cell_name || '') + '">' + name + '</td>' +
@@ -375,13 +476,26 @@ function renderSearchResults(data) {
 
             /* "设为查询细胞" 按钮事件 */
             container.querySelectorAll('.requery-btn').forEach(function (btn) {
-                btn.addEventListener('click', function () {
+                btn.addEventListener('click', function (e) {
+                    e.stopPropagation();
                     var cellIdx = this.getAttribute('data-cell');
                     var input = document.getElementById('queryCellInput');
                     if (input) {
                         input.value = cellIdx;
                         input.dispatchEvent(new Event('input'));
                         document.getElementById('searchForm').dispatchEvent(new Event('submit'));
+                    }
+                });
+            });
+
+            /* 表格行点击 → 散点图高亮 */
+            container.querySelectorAll('tbody tr[data-cell-index]').forEach(function (row) {
+                row.addEventListener('click', function () {
+                    var ci = parseInt(this.getAttribute('data-cell-index'), 10);
+                    if (!isNaN(ci)) {
+                        highlightScatterPoint(ci);
+                        container.querySelectorAll('tbody tr.table-active').forEach(function (r) { r.classList.remove('table-active'); });
+                        this.classList.add('table-active');
                     }
                 });
             });
@@ -489,7 +603,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     msg.style.display = 'none';
 
                     /* 渲染结果 */
-                    renderSearchResults(data.result_data);
+                    renderSearchResults(data.result_data, data.interpretation);
 
                     /* 散点图 */
                     var scatterCard = document.getElementById('searchScatterCard');
@@ -504,7 +618,18 @@ document.addEventListener('DOMContentLoaded', function () {
                         );
                         setTimeout(function () {
                             window.applyThemeToPlotlyCharts && window.applyThemeToPlotlyCharts();
-                        }, 100);
+                            /* 构建交互映射（5.2a） */
+                            buildScatterLookup();
+                            /* 重置切换状态 */
+                            searchScatterState.activeToggle = null;
+                            searchScatterState.highlightedCellIndex = null;
+                            var toggleRO = document.getElementById('toggleResultsOnly');
+                            var toggleST = document.getElementById('toggleSameType');
+                            if (toggleRO) toggleRO.classList.remove('active');
+                            if (toggleST) toggleST.classList.remove('active');
+                            /* 绑定散点图点击 → 表格滚动（5.2c） */
+                            bindSearchScatterClick();
+                        }, 150);
                     } else if (scatterCard) {
                         scatterCard.style.display = 'none';
                     }
@@ -575,6 +700,124 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (btn) btn.disabled = false;
                     Tasks.setMessage(msg, '网络错误：' + String(err), 'danger');
                 });
+        });
+    }
+
+    /* ---- 散点图点击 → 表格滚动（5.2c） ---- */
+    var bgRequeryTimer = null;
+    function bindSearchScatterClick() {
+        var container = document.getElementById('searchScatterContainer');
+        if (!container) return;
+        container.removeAllListeners && container.removeAllListeners('plotly_click');
+        container.on('plotly_click', function (eventData) {
+            if (!eventData || !eventData.points || !eventData.points.length) return;
+            var pt = eventData.points[0];
+            if (!pt.data || !pt.data.customdata) return;
+            var cd = pt.data.customdata[pt.pointIndex];
+            if (!cd) return;
+            var cellIndex = cd[0];
+
+            if (pt.curveNumber === 0) {
+                /* 背景点：显示重新检索提示（5.2d） */
+                var tooltip = document.getElementById('bgRequeryTooltip');
+                var text = document.getElementById('bgRequeryText');
+                var link = document.getElementById('bgRequeryLink');
+                if (tooltip && text) {
+                    text.textContent = '以细胞 #' + cellIndex + ' 重新检索';
+                    link.setAttribute('data-cell', cellIndex);
+                    tooltip.style.display = 'block';
+                    clearTimeout(bgRequeryTimer);
+                    bgRequeryTimer = setTimeout(function () { tooltip.style.display = 'none'; }, 5000);
+                }
+            } else {
+                /* 结果/查询点：滚动到表格行 */
+                var row = document.querySelector('tr[data-cell-index="' + cellIndex + '"]');
+                if (row) {
+                    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    row.classList.add('table-active');
+                    setTimeout(function () { row.classList.remove('table-active'); }, 2000);
+                }
+            }
+        });
+    }
+
+    /* 背景重检索提示链接点击（5.2d） */
+    var bgLink = document.getElementById('bgRequeryLink');
+    if (bgLink) {
+        bgLink.addEventListener('click', function (e) {
+            e.preventDefault();
+            var cellIdx = this.getAttribute('data-cell');
+            var input = document.getElementById('queryCellInput');
+            if (input && cellIdx) {
+                input.value = cellIdx;
+                input.dispatchEvent(new Event('input'));
+                document.getElementById('searchForm').dispatchEvent(new Event('submit'));
+            }
+            document.getElementById('bgRequeryTooltip').style.display = 'none';
+        });
+    }
+
+    /* ---- 显示切换按钮（5.2e） ---- */
+    var toggleRO = document.getElementById('toggleResultsOnly');
+    var toggleST = document.getElementById('toggleSameType');
+
+    if (toggleRO) {
+        toggleRO.addEventListener('click', function () {
+            var container = document.getElementById('searchScatterContainer');
+            if (!container || !container.data || !container.data.length) return;
+            var trace = container.data[0];  // 背景轨迹
+
+            if (searchScatterState.activeToggle === 'resultsOnly') {
+                /* 关闭：恢复背景 */
+                Plotly.restyle(container, { 'marker.opacity': [searchScatterState.originalBgOpacity] }, [0]);
+                searchScatterState.activeToggle = null;
+                this.classList.remove('active');
+            } else {
+                /* 开启：隐藏背景 */
+                if (trace.marker && typeof trace.marker.opacity === 'number') {
+                    searchScatterState.originalBgOpacity = trace.marker.opacity;
+                } else {
+                    searchScatterState.originalBgOpacity = 1.0;
+                }
+                Plotly.restyle(container, { 'marker.opacity': [0] }, [0]);
+                searchScatterState.activeToggle = 'resultsOnly';
+                this.classList.add('active');
+                if (toggleST) toggleST.classList.remove('active');
+            }
+        });
+    }
+
+    if (toggleST) {
+        toggleST.addEventListener('click', function () {
+            var container = document.getElementById('searchScatterContainer');
+            if (!container || !container.data || !container.data.length) return;
+            var trace = container.data[0];
+
+            if (searchScatterState.activeToggle === 'sameType') {
+                /* 关闭：恢复背景 */
+                Plotly.restyle(container, { 'marker.opacity': [searchScatterState.originalBgOpacity] }, [0]);
+                searchScatterState.activeToggle = null;
+                this.classList.remove('active');
+            } else {
+                /* 开启：仅同类型可见 */
+                if (trace.marker && typeof trace.marker.opacity === 'number') {
+                    searchScatterState.originalBgOpacity = trace.marker.opacity;
+                } else {
+                    searchScatterState.originalBgOpacity = 1.0;
+                }
+                var qType = searchScatterState.queryCellType;
+                if (qType && trace.customdata) {
+                    var opacityArr = [];
+                    for (var i = 0; i < trace.customdata.length; i++) {
+                        /* customdata: [cell_index, cell_type] */
+                        opacityArr.push(trace.customdata[i][1] === qType ? 0.8 : 0.05);
+                    }
+                    Plotly.restyle(container, { 'marker.opacity': [opacityArr] }, [0]);
+                }
+                searchScatterState.activeToggle = 'sameType';
+                this.classList.add('active');
+                if (toggleRO) toggleRO.classList.remove('active');
+            }
         });
     }
 });

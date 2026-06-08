@@ -7,7 +7,7 @@
 </section>
 
 <!-- 系统状态总览 -->
-<div class="row g-3 mb-4">
+<div class="row g-3 mb-4 info-level-2">
     <div class="col-lg-3 col-md-6">
         <div class="metric-card text-center h-100">
             <p class="metric-label mb-1">数据集</p>
@@ -35,7 +35,7 @@
 </div>
 
 <!-- 四步工作流 -->
-<div class="row g-3 mb-4">
+<div class="row g-3 mb-4 info-level-1">
     <div class="col-lg-3 col-md-6">
         <div class="workflow-card {% if dataset_count > 0 %}wf-done{% else %}wf-current{% endif %}">
             <div class="step-number">{% if dataset_count > 0 %}&#10003;{% else %}1{% endif %}</div>
@@ -91,7 +91,7 @@
 </div>
 
 <!-- 最近活动 -->
-<div class="row g-3" id="recent-tasks">
+<div class="row g-3 info-level-2" id="recent-tasks">
     <div class="col-lg-6">
         <div class="card ui-card">
             <div class="card-header ui-card-header">最近数据集</div>
@@ -134,34 +134,16 @@
     </div>
     <div class="col-lg-6">
         <div class="card ui-card">
-            <div class="card-header ui-card-header">最近任务</div>
-            <div class="card-body">
-                {% if recent_tasks %}
-                    {% for t in recent_tasks %}
-                    <div class="task-item">
-                        <span class="task-type">
-                            {% if t.type == 'process' %}处理数据{% elif t.type == 'build_index' %}构建索引{% else %}{{ t.type }}{% endif %}
-                        </span>
-                        {% if t.status == 'running' %}
-                            <span class="badge bg-info">进行中</span>
-                            <div class="task-progress">
-                                <div class="progress" style="height:6px;">
-                                    <div class="progress-bar progress-bar-striped progress-bar-animated" style="width:{{ t.progress }}%;"></div>
-                                </div>
-                            </div>
-                        {% elif t.status == 'success' %}
-                            <span class="badge bg-success">完成</span>
-                        {% elif t.status == 'error' %}
-                            <span class="badge bg-danger">失败</span>
-                        {% elif t.status == 'pending' %}
-                            <span class="badge bg-secondary">等待中</span>
-                        {% endif %}
-                        <span class="text-muted small ms-auto">{{ t.updated_at.strftime('%m-%d %H:%M') if t.updated_at else '' }}</span>
-                    </div>
-                    {% endfor %}
-                {% else %}
-                <div class="text-muted">暂无任务记录。</div>
-                {% endif %}
+            <div class="card-header ui-card-header">
+                任务中心
+                <ul class="nav nav-pills nav-pills-sm ms-auto" id="taskCenterTabs">
+                    <li class="nav-item"><a class="nav-link active" href="#" data-filter="active">进行中</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#" data-filter="success">已完成</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#" data-filter="error">失败</a></li>
+                </ul>
+            </div>
+            <div class="card-body" id="taskCenterBody">
+                <div class="text-muted">加载中...</div>
             </div>
         </div>
     </div>
@@ -172,11 +154,6 @@
 <script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
 <script>
 /* ===== 工作台自适应刷新 ===== */
-var dashboardTimer = null;
-var dashboardIdleInterval = 12000;   // 空闲时 12s 轮询
-var dashboardActiveInterval = 500;   // 有活跃任务时 0.5s 轮询
-var lastDashboardActive = false;
-
 function refreshDashboard() {
     fetch('/api/dashboard/summary', { credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
@@ -206,77 +183,108 @@ function refreshDashboard() {
                         '</tr>';
                 }).join('');
             }
+        })
+        .catch(function () {});
+}
 
-            /* 更新最近任务列表 */
-            var taskContainer = document.querySelector('#recent-tasks .col-lg-6:nth-child(2) .card-body');
-            if (taskContainer && data.recent_tasks) {
-                if (data.recent_tasks.length === 0) {
-                    taskContainer.innerHTML = '<div class="text-muted">暂无任务记录。</div>';
-                } else {
-                    taskContainer.innerHTML = data.recent_tasks.map(function (t) {
-                        var typeLabel = t.type === 'process' ? '处理数据' : t.type === 'build_index' ? '构建索引' : t.type;
-                        var statusBadge = '';
-                        if (t.status === 'running') {
-                            statusBadge = '<span class="badge bg-info">进行中</span>' +
-                                '<div class="task-progress"><div class="progress" style="height:6px;">' +
-                                '<div class="progress-bar progress-bar-striped progress-bar-animated" style="width:' + t.progress + '%;"></div></div></div>';
-                        } else if (t.status === 'success') {
-                            statusBadge = '<span class="badge bg-success">完成</span>';
-                        } else if (t.status === 'error') {
-                            statusBadge = '<span class="badge bg-danger">失败</span>';
-                        } else if (t.status === 'pending') {
-                            statusBadge = '<span class="badge bg-secondary">等待中</span>';
-                        }
-                        var timeStr = t.updated_at ? t.updated_at.substring(5, 16).replace('T', ' ') : '';
-                        return '<div class="task-item">' +
-                            '<span class="task-type">' + typeLabel + '</span>' +
-                            statusBadge +
-                            '<span class="text-muted small ms-auto">' + timeStr + '</span>' +
-                            '</div>';
-                    }).join('');
-                }
+/* ===== 任务中心（6.1b） ===== */
+var taskCenterCache = [];
+var taskCenterFilter = 'active';
+
+function renderTaskCenter() {
+    var body = document.getElementById('taskCenterBody');
+    if (!body) return;
+
+    var filtered;
+    if (taskCenterFilter === 'active') {
+        filtered = taskCenterCache.filter(function (t) { return t.status === 'pending' || t.status === 'running'; });
+    } else {
+        filtered = taskCenterCache.filter(function (t) { return t.status === taskCenterFilter; });
+    }
+
+    if (filtered.length === 0) {
+        var emptyMsg = { active: '没有进行中的任务。', success: '没有已完成的任务。', error: '没有失败的任务。' };
+        body.innerHTML = '<div class="text-muted">' + (emptyMsg[taskCenterFilter] || '暂无记录。') + '</div>';
+        return;
+    }
+
+    body.innerHTML = filtered.map(function (t) {
+        var typeLabel = t.type === 'process' ? '处理数据' : t.type === 'build_index' ? '构建索引' : t.type;
+        var statusBadge = '';
+        if (t.status === 'running') {
+            statusBadge = '<span class="badge bg-info">进行中</span>' +
+                '<div class="task-progress"><div class="progress" style="height:6px;">' +
+                '<div class="progress-bar progress-bar-striped progress-bar-animated" style="width:' + (t.progress || 0) + '%;"></div></div></div>';
+        } else if (t.status === 'success') {
+            statusBadge = '<span class="badge bg-success">完成</span>';
+        } else if (t.status === 'error') {
+            statusBadge = '<span class="badge bg-danger">失败</span>';
+        } else if (t.status === 'pending') {
+            statusBadge = '<span class="badge bg-secondary">等待中</span>';
+        }
+        var dsLabel = t.dataset_name ? ' · ' + t.dataset_name : '';
+        var actionHtml = '';
+        if (t.dataset_id) {
+            actionHtml = '<a href="/datasets/' + t.dataset_id + '" class="btn btn-sm btn-outline-primary ms-auto">查看</a>';
+        }
+        var timeStr = t.updated_at ? t.updated_at.substring(5, 16).replace('T', ' ') : '';
+        return '<div class="task-item">' +
+            '<span class="task-type">' + typeLabel + dsLabel + '</span>' +
+            statusBadge +
+            '<span class="text-muted small">' + timeStr + '</span>' +
+            actionHtml +
+            '</div>';
+    }).join('');
+}
+
+function fetchTaskCenter() {
+    fetch('/api/tasks?limit=20', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.ok) {
+                taskCenterCache = data.tasks;
+                renderTaskCenter();
             }
         })
         .catch(function () {});
 }
 
-function scheduleDashboardRefresh() {
-    fetch('/api/tasks/active', { credentials: 'same-origin' })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-            var activeCount = data.ok && data.tasks ? data.tasks.length : 0;
-            var isActive = activeCount > 0;
-            var interval = isActive ? dashboardActiveInterval : dashboardIdleInterval;
-
-            // 活跃→空闲转换时立即刷新一次
-            if (lastDashboardActive && !isActive) {
-                refreshDashboard();
-            }
-            lastDashboardActive = isActive;
-
-            clearTimeout(dashboardTimer);
-            dashboardTimer = setTimeout(function () {
-                refreshDashboard();
-                scheduleDashboardRefresh();
-            }, interval);
-        })
-        .catch(function () {
-            clearTimeout(dashboardTimer);
-            dashboardTimer = setTimeout(function () {
-                refreshDashboard();
-                scheduleDashboardRefresh();
-            }, dashboardIdleInterval);
-        });
-}
-
-/* 全局回调：当全局任务指示器从活跃变空闲时触发刷新 */
-window._onWorkbenchIdle = function () {
-    refreshDashboard();
-};
-
+/* ===== 初始化 ===== */
 document.addEventListener('DOMContentLoaded', function () {
     refreshDashboard();
-    scheduleDashboardRefresh();
+
+    /* 任务中心 tab 切换 */
+    var tabs = document.querySelectorAll('#taskCenterTabs .nav-link');
+    tabs.forEach(function (tab) {
+        tab.addEventListener('click', function (e) {
+            e.preventDefault();
+            tabs.forEach(function (t) { t.classList.remove('active'); });
+            tab.classList.add('active');
+            taskCenterFilter = tab.getAttribute('data-filter');
+            renderTaskCenter();
+        });
+    });
+
+    fetchTaskCenter();
+
+    /* GlobalTaskTracker 订阅（6.3c） */
+    if (window.GlobalTaskTracker) {
+        GlobalTaskTracker.subscribe({
+            onActiveChange: function (isActive) {
+                if (isActive) {
+                    refreshDashboard();
+                    fetchTaskCenter();
+                }
+            },
+            onTaskComplete: function () {
+                refreshDashboard();
+                fetchTaskCenter();
+            }
+        });
+        GlobalTaskTracker.start(12000, 500);
+    } else {
+        setInterval(function () { refreshDashboard(); fetchTaskCenter(); }, 12000);
+    }
 });
 </script>
 {% endblock %}

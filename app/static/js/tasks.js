@@ -302,5 +302,168 @@
         setProgress: setProgress,
         setMessage: setMessage,
         pollActiveTasks: pollActiveTasks,
+        showToast: showToast,
     };
+
+    // ===== Toast 通知（6.2a） =====
+    var MAX_TOASTS = 3;
+
+    function showToast(opts) {
+        opts = opts || {};
+        var container = document.getElementById("globalToastContainer");
+        if (!container) return;
+
+        /* 限制最大数量 */
+        while (container.children.length >= MAX_TOASTS) {
+            container.removeChild(container.firstChild);
+        }
+
+        var typeColors = {
+            success: { bg: "rgba(34,197,94,0.18)", border: "rgba(34,197,94,0.5)", icon: "&#10003;" },
+            error: { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.5)", icon: "&#10007;" },
+            info: { bg: "rgba(56,189,248,0.18)", border: "rgba(56,189,248,0.5)", icon: "&#8505;" },
+        };
+        var tc = typeColors[opts.type] || typeColors.info;
+
+        var toastEl = document.createElement("div");
+        toastEl.className = "toast app-toast";
+        toastEl.setAttribute("role", "alert");
+        toastEl.setAttribute("aria-live", "assertive");
+        toastEl.setAttribute("aria-atomic", "true");
+        toastEl.style.cssText = "background:" + tc.bg + ";border:1px solid " + tc.border + ";";
+
+        var actionHtml = "";
+        if (opts.actionUrl && opts.actionLabel) {
+            actionHtml = '<a href="' + opts.actionUrl + '" class="btn btn-sm btn-outline-primary mt-1">' + opts.actionLabel + '</a>';
+        }
+
+        toastEl.innerHTML =
+            '<div class="toast-header" style="background:transparent;border-bottom:1px solid ' + tc.border + ';">' +
+            '<span class="me-auto fw-bold" style="font-size:0.9rem;">' + tc.icon + ' ' + (opts.title || "通知") + '</span>' +
+            '<button type="button" class="btn-close btn-close-sm" data-bs-dismiss="toast"></button>' +
+            '</div>' +
+            '<div class="toast-body" style="font-size:0.85rem;">' +
+            '<div>' + (opts.message || "") + '</div>' +
+            actionHtml +
+            '</div>';
+
+        container.appendChild(toastEl);
+        var bsToast = new bootstrap.Toast(toastEl, { delay: 5000 });
+        bsToast.show();
+        toastEl.addEventListener("hidden.bs.toast", function () { toastEl.remove(); });
+    }
+
+    // ===== GlobalTaskTracker 单例（6.3a） =====
+    var GlobalTaskTracker = {
+        _timer: null,
+        _lastActiveCount: 0,
+        _subscribers: [],
+        _idleInterval: 15000,
+        _activeInterval: 2000,
+        _paused: false,
+
+        start: function (idleInterval, activeInterval) {
+            this._idleInterval = idleInterval || 15000;
+            this._activeInterval = activeInterval || 2000;
+            var self = this;
+
+            /* visibility-aware polling（6.3b） */
+            document.addEventListener("visibilitychange", function () {
+                if (document.hidden) {
+                    self._paused = true;
+                    clearTimeout(self._timer);
+                } else {
+                    self._paused = false;
+                    self._update();
+                }
+            });
+
+            this._update();
+        },
+
+        stop: function () {
+            clearTimeout(this._timer);
+            this._timer = null;
+        },
+
+        subscribe: function (callbacks) {
+            this._subscribers.push(callbacks);
+            var self = this;
+            return function () {
+                self._subscribers = self._subscribers.filter(function (s) { return s !== callbacks; });
+            };
+        },
+
+        _scheduleNext: function (delay) {
+            var self = this;
+            clearTimeout(this._timer);
+            this._timer = setTimeout(function () { self._update(); }, delay);
+        },
+
+        _update: function () {
+            if (this._paused) return;
+            var self = this;
+            var wrap = document.getElementById("globalTaskWrap");
+            var badge = document.getElementById("globalTaskCount");
+
+            fetch("/api/tasks/active", { credentials: "same-origin" })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (!data.ok) { self._scheduleNext(self._idleInterval); return; }
+                    var count = data.tasks ? data.tasks.length : 0;
+
+                    /* 更新导航栏徽标 */
+                    if (wrap && badge) {
+                        if (count > 0) { badge.textContent = count; wrap.style.display = ""; }
+                        else { wrap.style.display = "none"; }
+                    }
+
+                    /* 任务完成转换检测 */
+                    var hadActive = self._lastActiveCount > 0;
+                    self._lastActiveCount = count;
+
+                    if (hadActive && count === 0) {
+                        /* 从活跃→空闲，通知所有订阅者 */
+                        self._subscribers.forEach(function (cb) {
+                            if (cb.onActiveChange) cb.onActiveChange(false, count);
+                            if (cb.onTaskComplete) cb.onTaskComplete();
+                        });
+                        /* 工作台回调 */
+                        if (window._onWorkbenchIdle) window._onWorkbenchIdle();
+                        /* Toast 通知 */
+                        showToast({ title: "任务完成", message: "后台任务已全部完成。", type: "success" });
+                    } else if (hadActive && count > 0) {
+                        self._subscribers.forEach(function (cb) {
+                            if (cb.onActiveChange) cb.onActiveChange(true, count);
+                        });
+                    }
+
+                    self._scheduleNext(count > 0 ? self._activeInterval : self._idleInterval);
+                })
+                .catch(function () { self._scheduleNext(self._idleInterval); });
+        },
+    };
+
+    window.GlobalTaskTracker = GlobalTaskTracker;
+
+    // ===== 可折叠 Level 3 初始化（7.1c） =====
+    function initCollapsibleLevel3() {
+        var hints = document.querySelectorAll(".collapsible-hint");
+        hints.forEach(function (el) {
+            var targetSel = el.getAttribute("data-bs-target");
+            if (!targetSel) return;
+            var target = document.querySelector(targetSel);
+            if (!target) return;
+            el.addEventListener("click", function () {
+                var isExpanded = el.getAttribute("aria-expanded") === "true";
+                el.setAttribute("aria-expanded", String(!isExpanded));
+            });
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initCollapsibleLevel3);
+    } else {
+        initCollapsibleLevel3();
+    }
 })(window);

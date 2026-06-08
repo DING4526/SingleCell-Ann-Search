@@ -25,6 +25,11 @@ def _task_to_dict(task: Task) -> dict:
             result = json.loads(task.result_json)
         except Exception:
             result = task.result_json
+    dataset_name = None
+    if task.dataset_id:
+        ds = db.session.get(Dataset, task.dataset_id)
+        if ds:
+            dataset_name = ds.name
     return {
         "id": task.id,
         "type": task.type,
@@ -34,6 +39,7 @@ def _task_to_dict(task: Task) -> dict:
         "error": task.error_message,
         "result": result,
         "dataset_id": task.dataset_id,
+        "dataset_name": dataset_name,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
     }
 
@@ -187,7 +193,42 @@ def api_search():
         )
         result_cell_indices = [r["cell_index"] for r in result_data["results"]]
         scatter_plot = search_scatter_json(dataset_id, query_cell_index, result_cell_indices)
-        return jsonify(ok=True, result_data=result_data, scatter_plot=scatter_plot)
+
+        # 5.3a: 计算检索结果解释性指标
+        results = result_data.get("results", [])
+        interpretation = {}
+        if results:
+            distances = [r["distance"] for r in results if "distance" in r]
+            if distances:
+                interpretation["distance_range"] = {
+                    "min": min(distances),
+                    "max": max(distances),
+                }
+
+            diseases = [r.get("disease") or "N/A" for r in results]
+            age_groups = [r.get("age_group") or "N/A" for r in results]
+            interpretation["disease_uniform"] = len(set(diseases)) == 1
+            interpretation["age_group_uniform"] = len(set(age_groups)) == 1
+
+            disease_dist = {}
+            for d in diseases:
+                disease_dist[d] = disease_dist.get(d, 0) + 1
+            interpretation["disease_distribution"] = disease_dist
+
+            age_dist = {}
+            for a in age_groups:
+                age_dist[a] = age_dist.get(a, 0) + 1
+            interpretation["age_group_distribution"] = age_dist
+
+            query_cell = Cell.query.filter_by(
+                dataset_id=dataset_id, cell_index=query_cell_index
+            ).first()
+            if query_cell and query_cell.cell_type:
+                same_count = sum(1 for r in results if r.get("cell_type") == query_cell.cell_type)
+                interpretation["same_type_ratio"] = f"{same_count}/{len(results)} 结果与查询细胞同类型"
+
+        return jsonify(ok=True, result_data=result_data, scatter_plot=scatter_plot,
+                       interpretation=interpretation)
     except Exception as e:
         return jsonify(ok=False, message=f"检索失败：{str(e)}"), 500
 
@@ -331,6 +372,25 @@ def api_active_tasks():
         .order_by(Task.updated_at.desc())
         .all()
     )
+    return jsonify(ok=True, tasks=[_task_to_dict(t) for t in tasks])
+
+
+# ---------------------------------------------------------------------------
+# 任务列表（支持状态过滤，用于任务中心）
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/tasks", methods=["GET"])
+@login_required
+def api_tasks():
+    """返回任务列表，支持状态过滤。"""
+    status_filter = request.args.get("status", "all").strip()
+    limit = min(int(request.args.get("limit", 20)), 100)
+
+    query = Task.query.order_by(Task.updated_at.desc())
+    if status_filter != "all" and status_filter in ("pending", "running", "success", "error"):
+        query = query.filter_by(status=status_filter)
+
+    tasks = query.limit(limit).all()
     return jsonify(ok=True, tasks=[_task_to_dict(t) for t in tasks])
 
 

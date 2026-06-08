@@ -102,6 +102,9 @@
         <p>单细胞 ANN 检索系统 &copy; 2026 | 软件工程课程项目</p>
     </footer>
 
+    <!-- Toast 通知容器（6.2a） -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index:1090;" id="globalToastContainer"></div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <script>
@@ -183,9 +186,11 @@
             applyWithRetry();
         })();
 
-        /* 全局任务指示器：页面加载后开始轮询 */
+        /* 全局任务指示器：使用 GlobalTaskTracker（6.3c） */
         document.addEventListener("DOMContentLoaded", function () {
-            if (window.Tasks && window.Tasks.pollActiveTasks) {
+            if (window.GlobalTaskTracker) {
+                window.GlobalTaskTracker.start(15000, 2000);
+            } else if (window.Tasks && window.Tasks.pollActiveTasks) {
                 window.Tasks.pollActiveTasks(15000);
             }
         });

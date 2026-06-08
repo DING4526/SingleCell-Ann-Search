@@ -81,7 +81,7 @@
     <!-- 左栏：数据概览 / 可视化 / 统计 -->
     <div class="col-lg-7">
         <!-- 数据概况 -->
-        <div class="card ui-card mb-4">
+        <div class="card ui-card mb-4 info-level-2">
             <div class="card-header ui-card-header">数据概况</div>
             <div class="card-body">
                 <div class="row g-3">
@@ -133,6 +133,25 @@
                 </div>
                 <!-- 错误提示 -->
                 <div id="scatterError" class="alert alert-warning" style="display:none;"></div>
+                <!-- 散点图控制栏（着色维度切换） -->
+                <div class="viz-setting-bar mb-2" id="scatterControlBar" style="display:none;">
+                    <span class="viz-setting-title">着色维度</span>
+                    <select id="scatterColorDim" class="form-select form-select-sm ui-select" style="width:auto;display:inline-block;">
+                        <option value="cell_type">细胞类型</option>
+                        <option value="disease">疾病</option>
+                        <option value="age_group">年龄组</option>
+                    </select>
+                </div>
+                <!-- 点击细胞详情卡 -->
+                <div id="cellDetailCard" class="cell-detail-card" style="display:none;">
+                    <button class="btn-close btn-sm float-end" id="cellDetailClose"></button>
+                    <div class="small">
+                        <strong>细胞 #<span id="cdCellIndex"></span></strong><br>
+                        类型: <span id="cdCellType"></span> &middot; 疾病: <span id="cdDisease"></span> &middot; 年龄: <span id="cdAgeGroup"></span>
+                        <div id="cdCellName" class="text-muted mt-1"></div>
+                    </div>
+                    <a id="cdSearchLink" href="#" class="btn btn-sm btn-outline-primary mt-2">检索该细胞</a>
+                </div>
                 <!-- Plotly 容器（始终存在于 DOM） -->
                 <div id="scatterContainer" class="plotly-theme-adaptive" style="{% if dataset.status not in ['processed', 'indexed'] %}display:none;{% endif %}"></div>
             </div>
@@ -140,9 +159,9 @@
 
         <!-- 细胞统计 -->
         {% if stats %}
-        <div class="card ui-card mb-4">
-            <div class="card-header ui-card-header">细胞统计</div>
-            <div class="card-body">
+        <div class="card ui-card mb-4 info-level-3">
+            <div class="card-header ui-card-header collapsible-hint" data-bs-toggle="collapse" data-bs-target="#statsCollapse" aria-expanded="true">细胞统计</div>
+            <div class="card-body collapse show" id="statsCollapse">
                 <div class="row g-3">
                     {% for key, items in stats.items() %}
                     <div class="col-lg-4 col-md-6">
@@ -206,7 +225,7 @@
         </div>
 
         <!-- HNSW 索引 -->
-        <div class="card ui-card mb-4" id="indexSection"
+        <div class="card ui-card mb-4 info-level-2" id="indexSection"
              {% if dataset.status not in ['processed', 'indexed'] %}style="display:none;"{% endif %}>
             <div class="card-header ui-card-header">HNSW 索引</div>
             <div class="card-body">
@@ -279,7 +298,7 @@
         </div>
 
         <!-- 最近任务 -->
-        <div class="card ui-card mb-4">
+        <div class="card ui-card mb-4 info-level-3">
             <div class="card-header ui-card-header">最近任务</div>
             <div class="card-body">
                 {% if recent_tasks %}
@@ -311,8 +330,8 @@
             </div>
         </div>
 
-        <!-- 删除数据集（危险操作，小文字链接） -->
-        <div class="text-end">
+        <!-- 删除数据集（危险操作，Level 3） -->
+        <div class="text-end info-level-3">
             <form method="POST" action="{{ url_for('datasets.delete', dataset_id=dataset.id) }}"
                   onsubmit="return confirm('确定要删除该数据集及其所有关联数据吗？');"
                   class="d-inline">
@@ -344,6 +363,10 @@ function statusBadgeHtml(status) {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
+    /* ---- 散点图 v3 元数据 ---- */
+    var scatterMetadata = null;
+    var currentColorDim = 'cell_type';
+
     /* ---- 异步加载散点图 ---- */
     function loadScatter() {
         var placeholder = document.getElementById('scatterPlaceholder');
@@ -351,6 +374,8 @@ document.addEventListener('DOMContentLoaded', function () {
         var errBox = document.getElementById('scatterError');
         var container = document.getElementById('scatterContainer');
         var reloadBtn = document.getElementById('reloadScatterBtn');
+        var controlBar = document.getElementById('scatterControlBar');
+        var cellDetail = document.getElementById('cellDetailCard');
         if (!container) return;
 
         /* 未处理状态不加载 */
@@ -360,6 +385,8 @@ document.addEventListener('DOMContentLoaded', function () {
         if (loading) loading.style.display = 'block';
         if (errBox) errBox.style.display = 'none';
         container.style.display = 'none';
+        if (controlBar) controlBar.style.display = 'none';
+        if (cellDetail) cellDetail.style.display = 'none';
 
         fetch('/api/datasets/' + DATASET_ID + '/scatter', { credentials: 'same-origin' })
             .then(function (r) { return r.json(); })
@@ -373,9 +400,21 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (reloadBtn) reloadBtn.style.display = 'inline-block';
                     return;
                 }
+                /* 保存 v3 元数据 */
+                scatterMetadata = (data.scatter_plot && data.scatter_plot.metadata) || null;
+
                 container.style.display = 'block';
                 Plotly.react(container, data.scatter_plot.data, data.scatter_plot.layout, { responsive: true });
                 if (reloadBtn) reloadBtn.style.display = 'inline-block';
+
+                /* 显示控制栏 */
+                if (controlBar && scatterMetadata) controlBar.style.display = '';
+                currentColorDim = 'cell_type';
+                var dimSelect = document.getElementById('scatterColorDim');
+                if (dimSelect) dimSelect.value = 'cell_type';
+
+                /* 绑定点击事件 */
+                bindScatterClick();
             })
             .catch(function () {
                 if (loading) loading.style.display = 'none';
@@ -385,6 +424,112 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
                 if (reloadBtn) reloadBtn.style.display = 'inline-block';
             });
+    }
+
+    /* ---- 散点图颜色切换 ---- */
+    function switchScatterColor(domain) {
+        if (!scatterMetadata || !scatterMetadata.color_domains) return;
+        var colorMap = scatterMetadata.color_domains[domain];
+        if (!colorMap) return;
+
+        var container = document.getElementById('scatterContainer');
+        if (!container || !container.data || !container.data.length) return;
+
+        var trace = container.data[0];
+        if (!trace.customdata) return;
+
+        var dimIdx = { cell_type: 1, disease: 2, age_group: 3 }[domain];
+        if (dimIdx === undefined) return;
+
+        var newColors = [];
+        for (var i = 0; i < trace.customdata.length; i++) {
+            var val = trace.customdata[i][dimIdx];
+            newColors.push(colorMap[val] || '#888888');
+        }
+
+        Plotly.restyle(container, { 'marker.color': [newColors] }, [0]);
+
+        /* 重建图例轨迹 */
+        var labels = Object.keys(colorMap);
+        var legendTraces = [];
+        for (var j = 0; j < labels.length; j++) {
+            legendTraces.push({
+                x: [null], y: [null],
+                mode: 'markers',
+                marker: { size: 8, color: colorMap[labels[j]] },
+                name: labels[j],
+                showlegend: true,
+                hoverinfo: 'skip',
+            });
+        }
+        var traceCount = container.data.length;
+        if (traceCount > 1) {
+            Plotly.deleteTraces(container, Array.from({ length: traceCount - 1 }, function (_, k) { return 1 + k; }));
+        }
+        Plotly.addTraces(container, legendTraces);
+
+        currentColorDim = domain;
+    }
+
+    /* 着色维度下拉事件 */
+    var colorDimSelect = document.getElementById('scatterColorDim');
+    if (colorDimSelect) {
+        colorDimSelect.addEventListener('change', function () {
+            switchScatterColor(this.value);
+        });
+    }
+
+    /* ---- 散点图点击 → 细胞详情卡 ---- */
+    var cellDetailTimer = null;
+    function showCellDetail(cellIndex, cellType, disease, ageGroup) {
+        var card = document.getElementById('cellDetailCard');
+        if (!card) return;
+        document.getElementById('cdCellIndex').textContent = cellIndex;
+        document.getElementById('cdCellType').textContent = cellType;
+        document.getElementById('cdDisease').textContent = disease;
+        document.getElementById('cdAgeGroup').textContent = ageGroup;
+        document.getElementById('cdCellName').textContent = '加载中...';
+        document.getElementById('cdSearchLink').href = '/search?dataset_id=' + DATASET_ID + '&cell_index=' + cellIndex + '#search';
+        card.style.display = 'block';
+
+        clearTimeout(cellDetailTimer);
+        cellDetailTimer = setTimeout(function () {
+            fetch('/api/datasets/' + DATASET_ID + '/cell-meta/' + cellIndex, { credentials: 'same-origin' })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (d.ok && d.cell) {
+                        document.getElementById('cdCellName').textContent = d.cell.cell_name || '-';
+                    } else {
+                        document.getElementById('cdCellName').textContent = '-';
+                    }
+                })
+                .catch(function () { document.getElementById('cdCellName').textContent = '-'; });
+        }, 100);
+    }
+
+    function bindScatterClick() {
+        var container = document.getElementById('scatterContainer');
+        if (!container) return;
+        container.removeAllListeners && container.removeAllListeners('plotly_click');
+        container.on('plotly_click', function (eventData) {
+            if (!eventData || !eventData.points || !eventData.points.length) return;
+            var pt = eventData.points[0];
+            if (!pt.data || !pt.data.customdata) return;
+            var cd = pt.data.customdata[pt.pointIndex];
+            if (!cd) return;
+            /* 仅对 trace 0 响应 */
+            if (pt.curveNumber !== 0) return;
+            showCellDetail(cd[0], cd[1], cd[2], cd[3]);
+        });
+    }
+
+    /* 细胞详情卡关闭 */
+    var detailCloseBtn = document.getElementById('cellDetailClose');
+    if (detailCloseBtn) {
+        detailCloseBtn.addEventListener('click', function () {
+            var card = document.getElementById('cellDetailCard');
+            if (card) card.style.display = 'none';
+        });
     }
 
     var reloadBtn = document.getElementById('reloadScatterBtn');
@@ -439,36 +584,25 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    /* ---- 刷新全局任务徽标 ---- */
-    function refreshGlobalBadge() {
-        var wrap = document.getElementById('globalTaskWrap');
-        var badge = document.getElementById('globalTaskCount');
-        if (!wrap || !badge) return;
-        fetch('/api/tasks/active', { credentials: 'same-origin' })
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                if (!data.ok) return;
-                var count = data.tasks ? data.tasks.length : 0;
-                if (count > 0) {
-                    badge.textContent = count;
-                    wrap.style.display = '';
-                } else {
-                    wrap.style.display = 'none';
-                }
-            })
-            .catch(function () {});
-    }
-
     /* ---- 任务完成后的通用回调（后端驱动状态刷新） ---- */
     function onTaskSuccess() {
         refreshDatasetStatus();
-        refreshGlobalBadge();
         /* 延迟加载散点图，等待后端状态更新完成 */
         setTimeout(function () {
             if (DATASET_STATUS === 'processed' || DATASET_STATUS === 'indexed') {
                 loadScatter();
             }
         }, 500);
+    }
+
+    /* ---- GlobalTaskTracker 订阅（6.4a） ---- */
+    if (window.GlobalTaskTracker) {
+        GlobalTaskTracker.subscribe({
+            onTaskComplete: function () {
+                /* 全局任务完成 → 刷新本数据集状态 */
+                refreshDatasetStatus();
+            }
+        });
     }
 
     /* ---- 从 API 拉取数据集最新状态，全面更新 DOM（后端驱动） ---- */

@@ -80,7 +80,7 @@ def _fig_to_plotly_json(fig: go.Figure) -> dict:
     return {"data": raw.get("data", []), "layout": raw.get("layout", {})}
 
 
-# ------------------ 数据集详情页缓存 ------------------
+# ------------------ 数据集详情页缓存（v3 格式） ------------------
 def generate_scatter_cache(dataset_id: int) -> str:
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
@@ -90,7 +90,8 @@ def generate_scatter_cache(dataset_id: int) -> str:
     if coords is None:
         raise ValueError("无可用坐标")
 
-    cells = db.session.query(Cell.cell_index, Cell.cell_type).filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
+    cells = db.session.query(Cell.cell_index, Cell.cell_type, Cell.disease, Cell.age_group)\
+        .filter_by(dataset_id=dataset_id).order_by(Cell.cell_index).all()
     if not cells:
         raise ValueError("无细胞信息")
 
@@ -98,27 +99,65 @@ def generate_scatter_cache(dataset_id: int) -> str:
     cells = cells[:usable_count]
     coords = coords[:usable_count, :]
 
-    cell_types = [c.cell_type or "未知" for c in cells]
     cell_indices = [c.cell_index for c in cells]
-    color_map = _build_color_map(cell_types, use_dark_cycle=True)
+    cell_types = [c.cell_type or "未知" for c in cells]
+    diseases = [c.disease or "未知" for c in cells]
+    age_groups = [c.age_group or "未知" for c in cells]
 
-    fig = px.scatter(
-        x=coords[:, 0], y=coords[:, 1],
-        color=cell_types,
-        color_discrete_map=color_map,
-        labels={"x": f"{coord_label}1", "y": f"{coord_label}2", "color": "细胞类型"},
-        hover_data={"cell_index": cell_indices},
-        render_mode="webgl",
-    )
+    # 三个维度的颜色映射
+    cell_type_color_map = _build_color_map(cell_types, use_dark_cycle=True)
+    disease_color_map = _build_color_map(diseases, use_dark_cycle=True)
+    age_group_color_map = _build_color_map(age_groups, use_dark_cycle=True)
+
+    # 默认按 cell_type 着色
+    marker_colors = [cell_type_color_map[ct] for ct in cell_types]
+
+    # customdata: [cell_index, cell_type, disease, age_group]
+    customdata = [
+        [c.cell_index, c.cell_type or "未知", c.disease or "未知", c.age_group or "未知"]
+        for c in cells
+    ]
+
+    fig = go.Figure()
+
+    # 单条 Scattergl 轨迹承载全部点，便于前端颜色重映射
+    fig.add_trace(go.Scattergl(
+        x=coords[:, 0].tolist(),
+        y=coords[:, 1].tolist(),
+        mode="markers",
+        marker=dict(size=3.2, opacity=0.38, color=marker_colors),
+        customdata=customdata,
+        hovertemplate="类型: %{customdata[1]}<br>疾病: %{customdata[2]}<br>年龄: %{customdata[3]}<extra>索引 #%{customdata[0]}</extra>",
+        name="细胞",
+    ))
+
+    # 伪图例条目：每种 cell_type 一条不可见轨迹，仅用于图例显示
+    for label, color in cell_type_color_map.items():
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode="markers",
+            marker=dict(size=8, color=color),
+            name=label,
+            showlegend=True,
+            hoverinfo="skip",
+        ))
 
     _apply_dark_layout(fig, title=f"{dataset.name} · {coord_label} 预览", xaxis_title=f"{coord_label}1", yaxis_title=f"{coord_label}2", height=640)
-    fig.update_traces(marker=dict(size=3.2, opacity=0.38), selector=dict(mode="markers"))
 
     plot_json = _fig_to_plotly_json(fig)
 
+    # v3 元数据：颜色映射表，供前端颜色切换使用
+    plot_json["metadata"] = {
+        "color_domains": {
+            "cell_type": cell_type_color_map,
+            "disease": disease_color_map,
+            "age_group": age_group_color_map,
+        }
+    }
+
     cache_dir = pathlib.Path(current_app.config["CACHE_DIR"])
     cache_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"scatter_v2_{dataset_id}.json"
+    filename = f"scatter_v3_{dataset_id}.json"
     cache_path = cache_dir / filename
 
     with open(cache_path, "w", encoding="utf-8") as f:
