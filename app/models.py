@@ -42,6 +42,7 @@ class Dataset(db.Model):
     vector_dim = db.Column(db.Integer)                       # 向量维度
     status = db.Column(db.String(20), default="uploaded")    # uploaded / processed / indexed / error
     error_message = db.Column(db.Text)
+    scatter_cache_path = db.Column(db.String(256))            # 散点图 Plotly JSON 缓存文件名
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     cells = db.relationship("Cell", backref="dataset", cascade="all, delete-orphan")
@@ -80,7 +81,7 @@ class AnnIndex(db.Model):
     ef_construction = db.Column(db.Integer, default=200)     # 构建时的 ef
     ef_search = db.Column(db.Integer, default=100)           # 查询时的 ef
     build_time_ms = db.Column(db.Float)                      # 构建耗时（毫秒）
-    status = db.Column(db.String(20), default="ready")       # ready / error
+    status = db.Column(db.String(20), default="building")    # building / ready / error
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     query_logs = db.relationship("QueryLog", backref="index", cascade="all, delete-orphan")
@@ -98,3 +99,19 @@ class QueryLog(db.Model):
     query_time_ms = db.Column(db.Float)                      # 查询耗时（毫秒）
     result_count = db.Column(db.Integer)                     # 实际返回结果数
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class Task(db.Model):
+    """后台任务模型：跟踪异步任务状态与进度"""
+    __tablename__ = "tasks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    type = db.Column(db.String(30), nullable=False)           # upload/process/build_index/search/evaluate
+    status = db.Column(db.String(20), default="pending")      # pending/running/success/error
+    progress = db.Column(db.Integer, default=0)               # 0-100
+    message = db.Column(db.String(500), default="")           # 当前阶段描述
+    result_json = db.Column(db.Text)                          # JSON 格式的任务结果
+    error_message = db.Column(db.Text)                        # 错误信息
+    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -6,12 +6,22 @@ from app.extensions import db
 from app.models import Dataset, Cell
 
 
-def process_h5ad_dataset(dataset_id: int) -> Dataset:
-    """读取 h5ad 文件，提取 PCA 向量缓存为 npy，将细胞元信息保存到 SQLite。"""
+def process_h5ad_dataset(dataset_id: int, progress_cb=None) -> Dataset:
+    """读取 h5ad 文件，提取 PCA 向量缓存为 npy，将细胞元信息保存到 SQLite。
+
+    Args:
+        dataset_id: 数据集 ID
+        progress_cb: 可选的进度回调 progress_cb(progress: int, message: str)
+    """
+    def _cb(p, msg):
+        if progress_cb:
+            progress_cb(p, msg)
+
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         raise ValueError(f"数据集 {dataset_id} 不存在")
 
+    _cb(5, "正在读取 h5ad 文件...")
     try:
         adata = sc.read_h5ad(dataset.file_path)
     except Exception as e:
@@ -20,6 +30,7 @@ def process_h5ad_dataset(dataset_id: int) -> Dataset:
         db.session.commit()
         raise
 
+    _cb(20, "文件读取完成，正在检查 PCA 向量...")
     # 检查是否存在 X_pca
     if "X_pca" not in adata.obsm:
         dataset.status = "error"
@@ -27,6 +38,7 @@ def process_h5ad_dataset(dataset_id: int) -> Dataset:
         db.session.commit()
         raise ValueError(dataset.error_message)
 
+    _cb(35, "正在提取 PCA 向量并保存缓存...")
     # 提取向量并缓存为 npy
     vectors = np.array(adata.obsm["X_pca"], dtype=np.float32)
     vector_path = f"dataset_{dataset_id}_vectors.npy"
@@ -43,9 +55,11 @@ def process_h5ad_dataset(dataset_id: int) -> Dataset:
     dataset.vector_dim = vectors.shape[1]
     dataset.vector_path = vector_path
 
+    _cb(50, "向量缓存完成，正在清理旧细胞记录...")
     # 删除该数据集已有的细胞记录（支持重复处理）
     Cell.query.filter_by(dataset_id=dataset_id).delete()
 
+    _cb(60, "正在提取细胞元信息，批量写入数据库...")
     # 提取 obs 中的元信息字段
     known_cols = {"cell_type", "disease", "AgeGroup"}
     obs = adata.obs
@@ -69,11 +83,13 @@ def process_h5ad_dataset(dataset_id: int) -> Dataset:
             )
         )
 
+    _cb(80, f"正在提交 {len(cell_records)} 条细胞记录...")
     db.session.bulk_save_objects(cell_records)
     dataset.status = "processed"
     dataset.error_message = None
     db.session.commit()
 
+    _cb(100, "数据集处理完成。")
     return dataset
 
 

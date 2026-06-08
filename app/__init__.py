@@ -24,10 +24,12 @@ def create_app(config_class=Config):
     from app.routes.auth import auth_bp
     from app.routes.datasets import datasets_bp
     from app.routes.search import search_bp
+    from app.routes.api import api_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(datasets_bp)
     app.register_blueprint(search_bp)
+    app.register_blueprint(api_bp)
 
     return app

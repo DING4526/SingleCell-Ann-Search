@@ -14,56 +14,77 @@ def build_hnsw_index(
     M: int = 16,
     ef_construction: int = 200,
     ef_search: int = 100,
+    progress_cb=None,
 ) -> AnnIndex:
-    """为数据集构建 HNSW 索引并保存到磁盘。"""
+    """为数据集构建 HNSW 索引并保存到磁盘。
+
+    Args:
+        dataset_id: 数据集 ID
+        metric: 距离度量，'l2' 或 'cosine'
+        M: HNSW 参数 M
+        ef_construction: 建图 ef
+        ef_search: 查询 ef
+        progress_cb: 可选的进度回调 progress_cb(progress: int, message: str)
+    """
+    def _cb(p, msg):
+        if progress_cb:
+            progress_cb(p, msg)
+
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset or dataset.status not in ("processed", "indexed"):
         raise ValueError("数据集需要先处理才能构建索引")
 
+    _cb(10, "正在加载向量缓存...")
     vectors = load_vectors(dataset)
     n_cells, dim = vectors.shape
 
+    _cb(25, "正在初始化 HNSW 索引结构...")
     space = "cosine" if metric == "cosine" else "l2"
     index = hnswlib.Index(space=space, dim=dim)
     index.init_index(max_elements=n_cells, ef_construction=ef_construction, M=M)
     index.set_ef(ef_search)
 
+    _cb(40, f"正在向索引添加 {n_cells} 个向量...")
     t0 = time.time()
     # 使用 cell_index（0..n-1）作为 hnswlib 的 label
     labels = np.arange(n_cells, dtype=np.int64)
     index.add_items(vectors, labels)
     build_time_ms = (time.time() - t0) * 1000
 
-    # 保存索引文件
-    index_filename = f"dataset_{dataset_id}_{metric}.bin"
-    index_path_full = pathlib.Path(current_app.config["INDEX_DIR"]) / index_filename
-    index.save_index(str(index_path_full))
-
-    # 保存或更新 AnnIndex 数据库记录
-    ann_index = AnnIndex.query.filter_by(dataset_id=dataset_id, metric=metric).first()
-    if ann_index:
-        ann_index.index_path = index_filename
-        ann_index.M = M
-        ann_index.ef_construction = ef_construction
-        ann_index.ef_search = ef_search
-        ann_index.build_time_ms = build_time_ms
-        ann_index.status = "ready"
-    else:
-        ann_index = AnnIndex(
-            dataset_id=dataset_id,
-            metric=metric,
-            index_path=index_filename,
-            M=M,
-            ef_construction=ef_construction,
-            ef_search=ef_search,
-            build_time_ms=build_time_ms,
-            status="ready",
-        )
-        db.session.add(ann_index)
-
-    dataset.status = "indexed"
+    # 先创建 AnnIndex 记录（building 状态），获取 index_id 用于文件名唯一性
+    ann_index = AnnIndex(
+        dataset_id=dataset_id,
+        metric=metric,
+        index_path="",
+        M=M,
+        ef_construction=ef_construction,
+        ef_search=ef_search,
+        status="building",
+    )
+    db.session.add(ann_index)
     db.session.commit()
 
+    try:
+        _cb(75, "向量添加完成，正在保存索引文件...")
+        # 使用 index_id 保证文件名唯一，不同参数组合可共存
+        index_filename = f"dataset_{dataset_id}_index_{ann_index.id}_{metric}.bin"
+        index_path_full = pathlib.Path(current_app.config["INDEX_DIR"]) / index_filename
+        index.save_index(str(index_path_full))
+
+        _cb(90, "正在更新数据库记录...")
+        ann_index.index_path = index_filename
+        ann_index.build_time_ms = build_time_ms
+        ann_index.status = "ready"
+
+        dataset.status = "indexed"
+        db.session.commit()
+    except Exception:
+        # 构建失败，标记索引状态为 error
+        ann_index.status = "error"
+        db.session.commit()
+        raise
+
+    _cb(100, "索引构建完成。")
     return ann_index
 
 

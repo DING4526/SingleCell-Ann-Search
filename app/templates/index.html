@@ -1,61 +1,301 @@
 {% extends "base.html" %}
-{% block title %}首页 - 单细胞 ANN 检索系统{% endblock %}
+{% block title %}工作台 - 单细胞 ANN 检索系统{% endblock %}
 {% block content %}
-<div class="row">
-    <div class="col-lg-8 mx-auto">
-        <div class="text-center mb-4">
-            <h1>单细胞 ANN 检索系统</h1>
-            <p class="lead text-muted">基于高维向量的单细胞近似最近邻检索平台</p>
-        </div>
+<section class="page-hero mb-4">
+    <h2 class="page-title mb-2">系统工作台</h2>
+    <p class="page-subtitle mb-0">管理数据集、构建索引、执行检索与评估的统一入口。</p>
+</section>
 
-        <div class="card mb-4">
-            <div class="card-body">
-                <h5 class="card-title">系统简介</h5>
-                <p>本系统读取 <code>.h5ad</code> 单细胞数据，提取 PCA 降维向量，
-                使用 HNSWLIB 构建近似最近邻索引，支持 Top-K 相似细胞检索与交互式可视化。</p>
-                <p>主要功能：</p>
-                <ul>
-                    <li>上传并处理 <code>.h5ad</code> 单细胞数据集</li>
-                    <li>构建 HNSW 近似最近邻索引</li>
-                    <li>按细胞索引号查询相似细胞</li>
-                    <li>在 UMAP/PCA 散点图上可视化检索结果</li>
-                    <li>对比 ANN 与精确检索的 Recall@K 和耗时</li>
-                    <li>支持按细胞类型过滤检索结果</li>
-                </ul>
-            </div>
+<!-- 系统状态总览 -->
+<div class="row g-3 mb-4 info-level-2">
+    <div class="col-lg-3 col-md-6">
+        <div class="metric-card text-center h-100">
+            <p class="metric-label mb-1">数据集</p>
+            <h4 class="mb-0">{{ dataset_count }}</h4>
         </div>
-
-        <div class="row g-3 mb-4">
-            <div class="col-md-4">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h2 class="card-title">{{ dataset_count }}</h2>
-                        <p class="card-text text-muted">数据集</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h2 class="card-title">{{ index_count }}</h2>
-                        <p class="card-text text-muted">已构建索引</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h2 class="card-title">{{ query_count }}</h2>
-                        <p class="card-text text-muted">查询次数</p>
-                    </div>
-                </div>
-            </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="metric-card text-center h-100">
+            <p class="metric-label mb-1">已处理</p>
+            <h4 class="mb-0">{{ datasets_by_status.get('processed', 0) + datasets_by_status.get('indexed', 0) }}</h4>
         </div>
-
-        <div class="d-flex justify-content-center gap-3">
-            <a href="{{ url_for('datasets.list_datasets') }}" class="btn btn-primary btn-lg">管理数据集</a>
-            <a href="{{ url_for('search.search') }}" class="btn btn-success btn-lg">开始检索</a>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="metric-card text-center h-100">
+            <p class="metric-label mb-1">已建索引</p>
+            <h4 class="mb-0">{{ index_count }}</h4>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="metric-card text-center h-100">
+            <p class="metric-label mb-1">查询次数</p>
+            <h4 class="mb-0">{{ query_count }}</h4>
         </div>
     </div>
 </div>
+
+<!-- 四步工作流 -->
+<div class="row g-3 mb-4 info-level-1">
+    <div class="col-lg-3 col-md-6">
+        <div class="workflow-card {% if dataset_count > 0 %}wf-done{% else %}wf-current{% endif %}">
+            <div class="step-number">{% if dataset_count > 0 %}&#10003;{% else %}1{% endif %}</div>
+            <div class="wf-title">上传数据</div>
+            <div class="wf-desc">{% if dataset_count > 0 %}已有 {{ dataset_count }} 个数据集{% else %}尚无数据集{% endif %}</div>
+            <a href="{{ url_for('datasets.list_datasets') }}" class="btn btn-sm btn-outline-primary">上传数据集</a>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        {% set uploaded_count = datasets_by_status.get('uploaded', 0) %}
+        <div class="workflow-card {% if uploaded_count == 0 and dataset_count > 0 %}wf-done{% elif uploaded_count > 0 %}wf-current{% else %}{% endif %}">
+            <div class="step-number">{% if uploaded_count == 0 and dataset_count > 0 %}&#10003;{% else %}2{% endif %}</div>
+            <div class="wf-title">处理数据</div>
+            <div class="wf-desc">{% if uploaded_count > 0 %}{{ uploaded_count }} 个待处理{% elif dataset_count > 0 %}全部已处理{% else %}请先上传数据集{% endif %}</div>
+            {% if first_uploaded_id %}
+            <a href="{{ url_for('datasets.detail', dataset_id=first_uploaded_id) }}" class="btn btn-sm btn-primary btn-cta">前往处理</a>
+            {% elif dataset_count > 0 %}
+            <span class="text-muted small">已完成</span>
+            {% else %}
+            <span class="text-muted small">待上传后操作</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        {% set processed_count = datasets_by_status.get('processed', 0) %}
+        {% set indexed_count = datasets_by_status.get('indexed', 0) %}
+        <div class="workflow-card {% if processed_count == 0 and indexed_count > 0 %}wf-done{% elif processed_count > 0 %}wf-current{% else %}{% endif %}">
+            <div class="step-number">{% if processed_count == 0 and indexed_count > 0 %}&#10003;{% else %}3{% endif %}</div>
+            <div class="wf-title">构建索引</div>
+            <div class="wf-desc">{% if processed_count > 0 %}{{ processed_count }} 个可构建{% elif indexed_count > 0 %}索引已就绪{% else %}请先处理数据集{% endif %}</div>
+            {% if first_processed_id %}
+            <a href="{{ url_for('datasets.detail', dataset_id=first_processed_id) }}" class="btn btn-sm btn-success btn-cta">前往构建</a>
+            {% elif indexed_count > 0 %}
+            <span class="text-muted small">已完成</span>
+            {% else %}
+            <span class="text-muted small">待处理后操作</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        {% set searchable = indexed_count %}
+        <div class="workflow-card {% if searchable > 0 %}wf-current{% else %}{% endif %}">
+            <div class="step-number">4</div>
+            <div class="wf-title">开始检索</div>
+            <div class="wf-desc">{% if searchable > 0 %}{{ searchable }} 个数据集可用{% else %}请先构建索引{% endif %}</div>
+            {% if searchable > 0 %}
+            <a href="{{ url_for('search.search') }}#search" class="btn btn-sm btn-primary btn-cta">开始检索</a>
+            {% else %}
+            <span class="text-muted small">待建索引后操作</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- 最近活动 -->
+<div class="row g-3 info-level-2" id="recent-tasks">
+    <div class="col-lg-6">
+        <div class="card ui-card">
+            <div class="card-header ui-card-header">最近数据集</div>
+            <div class="card-body p-0">
+                {% if recent_datasets %}
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead class="table-dark">
+                            <tr><th>名称</th><th>状态</th><th>创建时间</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                            {% for d in recent_datasets %}
+                            <tr>
+                                <td><a href="{{ url_for('datasets.detail', dataset_id=d.id) }}" class="fw-semibold">{{ d.name }}</a></td>
+                                <td>
+                                    {% if d.status == 'uploaded' %}
+                                        <span class="badge status-badge status-uploaded">已上传</span>
+                                    {% elif d.status == 'processed' %}
+                                        <span class="badge status-badge status-processed">已处理</span>
+                                    {% elif d.status == 'indexed' %}
+                                        <span class="badge status-badge status-indexed">已建索引</span>
+                                    {% elif d.status == 'error' %}
+                                        <span class="badge status-badge status-error">错误</span>
+                                    {% else %}
+                                        <span class="badge status-badge status-uploaded">{{ d.status }}</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-muted small">{{ d.created_at.strftime('%m-%d %H:%M') }}</td>
+                                <td><a href="{{ url_for('datasets.detail', dataset_id=d.id) }}" class="btn btn-sm btn-outline-primary">详情</a></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="p-3 text-muted">暂无数据集，请先上传 .h5ad 文件。</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card ui-card">
+            <div class="card-header ui-card-header">
+                任务中心
+                <ul class="nav nav-pills nav-pills-sm ms-auto" id="taskCenterTabs">
+                    <li class="nav-item"><a class="nav-link active" href="#" data-filter="active">进行中</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#" data-filter="success">已完成</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#" data-filter="error">失败</a></li>
+                </ul>
+            </div>
+            <div class="card-body" id="taskCenterBody">
+                <div class="text-muted">加载中...</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
+<script>
+/* ===== 工作台自适应刷新 ===== */
+function refreshDashboard() {
+    fetch('/api/dashboard/summary', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (!data.ok) return;
+
+            /* 更新指标卡片 */
+            var cards = document.querySelectorAll('.metric-card h4');
+            if (cards.length >= 4) {
+                cards[0].textContent = data.datasets_total;
+                cards[1].textContent = data.datasets_processed + data.datasets_indexed;
+                cards[2].textContent = data.indexes_total;
+                cards[3].textContent = data.recent_queries;
+            }
+
+            /* 更新最近数据集表格 */
+            var tbody = document.querySelector('#recent-tasks table tbody');
+            if (tbody && data.recent_datasets) {
+                tbody.innerHTML = data.recent_datasets.map(function (d) {
+                    var badgeCls = { uploaded: 'status-uploaded', processed: 'status-processed', indexed: 'status-indexed', error: 'status-error' }[d.status] || 'status-uploaded';
+                    var badgeText = { uploaded: '已上传', processed: '已处理', indexed: '已建索引', error: '错误' }[d.status] || d.status;
+                    return '<tr>' +
+                        '<td><a href="/datasets/' + d.id + '" class="fw-semibold">' + d.name + '</a></td>' +
+                        '<td><span class="badge status-badge ' + badgeCls + '">' + badgeText + '</span></td>' +
+                        '<td class="text-muted small">' + d.created_at + '</td>' +
+                        '<td><a href="/datasets/' + d.id + '" class="btn btn-sm btn-outline-primary">详情</a></td>' +
+                        '</tr>';
+                }).join('');
+            }
+        })
+        .catch(function () {});
+}
+
+/* ===== 任务中心（6.1b） ===== */
+var taskCenterCache = [];
+var taskCenterFilter = 'active';
+
+function renderTaskCenter() {
+    var body = document.getElementById('taskCenterBody');
+    if (!body) return;
+
+    var filtered;
+    if (taskCenterFilter === 'active') {
+        filtered = taskCenterCache.filter(function (t) { return t.status === 'pending' || t.status === 'running'; });
+    } else {
+        filtered = taskCenterCache.filter(function (t) { return t.status === taskCenterFilter; });
+    }
+
+    if (filtered.length === 0) {
+        var emptyMsg = { active: '没有进行中的任务。', success: '没有已完成的任务。', error: '没有失败的任务。' };
+        body.innerHTML = '<div class="text-muted">' + (emptyMsg[taskCenterFilter] || '暂无记录。') + '</div>';
+        return;
+    }
+
+    // 已完成列表限制最多显示 5 条
+    var maxDisplay = (taskCenterFilter === 'success') ? 5 : filtered.length;
+    var displayItems = filtered.slice(0, maxDisplay);
+    var hasMore = filtered.length > maxDisplay;
+
+    var html = displayItems.map(function (t) {
+        var typeLabel = t.type === 'process' ? '处理数据' : t.type === 'build_index' ? '构建索引' : t.type;
+        var statusBadge = '';
+        if (t.status === 'running') {
+            statusBadge = '<span class="badge bg-info">进行中</span>' +
+                '<div class="task-progress"><div class="progress" style="height:6px;">' +
+                '<div class="progress-bar progress-bar-striped progress-bar-animated" style="width:' + (t.progress || 0) + '%;"></div></div></div>';
+        } else if (t.status === 'success') {
+            statusBadge = '<span class="badge bg-success">完成</span>';
+        } else if (t.status === 'error') {
+            statusBadge = '<span class="badge bg-danger">失败</span>';
+        } else if (t.status === 'pending') {
+            statusBadge = '<span class="badge bg-secondary">等待中</span>';
+        }
+        var dsLabel = t.dataset_name ? ' · ' + t.dataset_name : '';
+        var actionHtml = '';
+        if (t.dataset_id) {
+            actionHtml = '<a href="/datasets/' + t.dataset_id + '" class="btn btn-sm btn-outline-primary ms-auto">查看</a>';
+        }
+        var timeStr = t.updated_at ? t.updated_at.substring(5, 16).replace('T', ' ') : '';
+        return '<div class="task-item">' +
+            '<span class="task-type">' + typeLabel + dsLabel + '</span>' +
+            statusBadge +
+            '<span class="text-muted small">' + timeStr + '</span>' +
+            actionHtml +
+            '</div>';
+    }).join('');
+
+    if (taskCenterFilter === 'success') {
+        html += '<div class="text-muted small mt-2 text-center">仅显示最近 5 条已完成任务</div>';
+    }
+
+    body.innerHTML = html;
+}
+
+function fetchTaskCenter() {
+    fetch('/api/tasks?limit=20', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.ok) {
+                taskCenterCache = data.tasks;
+                renderTaskCenter();
+            }
+        })
+        .catch(function () {});
+}
+
+/* ===== 初始化 ===== */
+document.addEventListener('DOMContentLoaded', function () {
+    refreshDashboard();
+
+    /* 任务中心 tab 切换 */
+    var tabs = document.querySelectorAll('#taskCenterTabs .nav-link');
+    tabs.forEach(function (tab) {
+        tab.addEventListener('click', function (e) {
+            e.preventDefault();
+            tabs.forEach(function (t) { t.classList.remove('active'); });
+            tab.classList.add('active');
+            taskCenterFilter = tab.getAttribute('data-filter');
+            renderTaskCenter();
+        });
+    });
+
+    fetchTaskCenter();
+
+    /* GlobalTaskTracker 订阅（6.3c） */
+    if (window.GlobalTaskTracker) {
+        GlobalTaskTracker.subscribe({
+            onActiveChange: function (isActive) {
+                if (isActive) {
+                    refreshDashboard();
+                    fetchTaskCenter();
+                }
+            },
+            onTaskComplete: function () {
+                refreshDashboard();
+                fetchTaskCenter();
+            }
+        });
+        GlobalTaskTracker.start(12000, 500);
+    } else {
+        setInterval(function () { refreshDashboard(); fetchTaskCenter(); }, 12000);
+    }
+});
+</script>
 {% endblock %}
