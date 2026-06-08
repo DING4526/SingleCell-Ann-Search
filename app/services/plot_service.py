@@ -43,6 +43,39 @@ def _build_color_map(labels: list[str], use_dark_cycle: bool = True) -> dict[str
     return {label: palette[i % len(palette)] for i, label in enumerate(unique_labels)}
 
 
+# 年龄组固定配色：Ped 蓝色，Adult 橙色，未知灰色
+_AGE_GROUP_FIXED = {
+    "ped": "#4dd4ff",
+    "pediatric": "#4dd4ff",
+    "child": "#4dd4ff",
+    "adult": "#ffb86b",
+}
+_AGE_GROUP_UNKNOWN = "#95b1b0"
+
+
+def _build_age_group_color_map(labels: list[str]) -> dict[str, str]:
+    """为年龄组标签构建固定颜色映射，不依赖排序顺序。
+
+    Ped / Pediatric / Child → 明亮蓝色
+    Adult → 橙色
+    其他 → 灰色
+    """
+    unique_labels = sorted(set(labels))
+    color_map = {}
+    for label in unique_labels:
+        key = label.strip().lower()
+        color_map[label] = _AGE_GROUP_FIXED.get(key, _AGE_GROUP_UNKNOWN)
+    return color_map
+
+
+def _build_disease_color_map(labels: list[str]) -> dict[str, str]:
+    """为疾病标签构建颜色映射。若仅有单一类别（如 normal），使用中性色。"""
+    unique_labels = sorted(set(labels))
+    if len(unique_labels) <= 1:
+        return {label: "#95b1b0" for label in unique_labels}
+    return _build_color_map(labels, use_dark_cycle=True)
+
+
 def _muted_color(hex_color: str, alpha: float = 0.28, darken: float = 0.62) -> str:
     """压暗并透明化背景颜色。"""
     hex_color = hex_color.lstrip("#")
@@ -104,10 +137,10 @@ def generate_scatter_cache(dataset_id: int) -> str:
     diseases = [c.disease or "未知" for c in cells]
     age_groups = [c.age_group or "未知" for c in cells]
 
-    # 三个维度的颜色映射
+    # 三个维度的颜色映射（年龄组/疾病使用专用配色函数）
     cell_type_color_map = _build_color_map(cell_types, use_dark_cycle=True)
-    disease_color_map = _build_color_map(diseases, use_dark_cycle=True)
-    age_group_color_map = _build_color_map(age_groups, use_dark_cycle=True)
+    disease_color_map = _build_disease_color_map(diseases)
+    age_group_color_map = _build_age_group_color_map(age_groups)
 
     # 默认按 cell_type 着色
     marker_colors = [cell_type_color_map[ct] for ct in cell_types]

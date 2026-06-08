@@ -362,9 +362,18 @@
         _activeInterval: 2000,
         _paused: false,
 
+        _started: false,
+
         start: function (idleInterval, activeInterval) {
             this._idleInterval = idleInterval || 15000;
             this._activeInterval = activeInterval || 2000;
+            if (this._started) {
+                // 已启动过，仅更新间隔，不重复注册 listener
+                clearTimeout(this._timer);
+                this._update();
+                return;
+            }
+            this._started = true;
             var self = this;
 
             /* visibility-aware polling（6.3b） */

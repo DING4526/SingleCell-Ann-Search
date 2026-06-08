@@ -51,37 +51,38 @@ def build_hnsw_index(
     index.add_items(vectors, labels)
     build_time_ms = (time.time() - t0) * 1000
 
-    _cb(75, "向量添加完成，正在保存索引文件...")
-    # 保存索引文件
-    index_filename = f"dataset_{dataset_id}_{metric}.bin"
-    index_path_full = pathlib.Path(current_app.config["INDEX_DIR"]) / index_filename
-    index.save_index(str(index_path_full))
+    # 先创建 AnnIndex 记录（building 状态），获取 index_id 用于文件名唯一性
+    ann_index = AnnIndex(
+        dataset_id=dataset_id,
+        metric=metric,
+        index_path="",
+        M=M,
+        ef_construction=ef_construction,
+        ef_search=ef_search,
+        status="building",
+    )
+    db.session.add(ann_index)
+    db.session.commit()
 
-    _cb(90, "正在更新数据库记录...")
-    # 保存或更新 AnnIndex 数据库记录
-    ann_index = AnnIndex.query.filter_by(dataset_id=dataset_id, metric=metric).first()
-    if ann_index:
+    try:
+        _cb(75, "向量添加完成，正在保存索引文件...")
+        # 使用 index_id 保证文件名唯一，不同参数组合可共存
+        index_filename = f"dataset_{dataset_id}_index_{ann_index.id}_{metric}.bin"
+        index_path_full = pathlib.Path(current_app.config["INDEX_DIR"]) / index_filename
+        index.save_index(str(index_path_full))
+
+        _cb(90, "正在更新数据库记录...")
         ann_index.index_path = index_filename
-        ann_index.M = M
-        ann_index.ef_construction = ef_construction
-        ann_index.ef_search = ef_search
         ann_index.build_time_ms = build_time_ms
         ann_index.status = "ready"
-    else:
-        ann_index = AnnIndex(
-            dataset_id=dataset_id,
-            metric=metric,
-            index_path=index_filename,
-            M=M,
-            ef_construction=ef_construction,
-            ef_search=ef_search,
-            build_time_ms=build_time_ms,
-            status="ready",
-        )
-        db.session.add(ann_index)
 
-    dataset.status = "indexed"
-    db.session.commit()
+        dataset.status = "indexed"
+        db.session.commit()
+    except Exception:
+        # 构建失败，标记索引状态为 error
+        ann_index.status = "error"
+        db.session.commit()
+        raise
 
     _cb(100, "索引构建完成。")
     return ann_index

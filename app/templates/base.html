@@ -186,16 +186,15 @@
             applyWithRetry();
         })();
 
-        /* 全局任务指示器：使用 GlobalTaskTracker（6.3c） */
-        document.addEventListener("DOMContentLoaded", function () {
-            if (window.GlobalTaskTracker) {
-                window.GlobalTaskTracker.start(15000, 2000);
-            } else if (window.Tasks && window.Tasks.pollActiveTasks) {
-                window.Tasks.pollActiveTasks(15000);
-            }
-        });
-    </script>
     <script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
+    <script>
+        /* 全局任务指示器：使用 GlobalTaskTracker（6.3c） */
+        if (window.GlobalTaskTracker) {
+            window.GlobalTaskTracker.start(15000, 2000);
+        } else if (window.Tasks && window.Tasks.pollActiveTasks) {
+            window.Tasks.pollActiveTasks(15000);
+        }
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

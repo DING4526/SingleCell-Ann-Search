@@ -272,7 +272,7 @@ def api_dataset_status(dataset_id):
     if not dataset:
         return jsonify(ok=False, message="数据集不存在。"), 404
 
-    indexes = AnnIndex.query.filter_by(dataset_id=dataset_id, status="ready").all()
+    indexes = AnnIndex.query.filter_by(dataset_id=dataset_id).all()
     return jsonify(
         ok=True,
         status=dataset.status,

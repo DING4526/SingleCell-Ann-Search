@@ -208,7 +208,12 @@ function renderTaskCenter() {
         return;
     }
 
-    body.innerHTML = filtered.map(function (t) {
+    // 已完成列表限制最多显示 5 条
+    var maxDisplay = (taskCenterFilter === 'success') ? 5 : filtered.length;
+    var displayItems = filtered.slice(0, maxDisplay);
+    var hasMore = filtered.length > maxDisplay;
+
+    var html = displayItems.map(function (t) {
         var typeLabel = t.type === 'process' ? '处理数据' : t.type === 'build_index' ? '构建索引' : t.type;
         var statusBadge = '';
         if (t.status === 'running') {
@@ -235,6 +240,12 @@ function renderTaskCenter() {
             actionHtml +
             '</div>';
     }).join('');
+
+    if (taskCenterFilter === 'success') {
+        html += '<div class="text-muted small mt-2 text-center">仅显示最近 5 条已完成任务</div>';
+    }
+
+    body.innerHTML = html;
 }
 
 function fetchTaskCenter() {

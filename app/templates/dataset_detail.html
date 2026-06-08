@@ -84,20 +84,56 @@
         <div class="card ui-card mb-4 info-level-2">
             <div class="card-header ui-card-header">数据概况</div>
             <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-sm-6">
-                        <table class="table table-sm mb-0">
-                            <tr><td class="fw-bold">文件路径</td><td class="text-break">{{ dataset.file_path }}</td></tr>
-                            <tr><td class="fw-bold">细胞数</td><td id="dsNCells2">{{ dataset.n_cells or 'N/A' }}</td></tr>
-                            <tr><td class="fw-bold">基因数</td><td id="dsNGenes2">{{ dataset.n_genes or 'N/A' }}</td></tr>
-                        </table>
+                <!-- 指标网格 -->
+                <div class="row g-2 mb-3">
+                    <div class="col-sm-3 col-6">
+                        <div class="metric-card text-center py-2 px-2">
+                            <div class="metric-label mb-1" style="font-size:0.72rem;">细胞数</div>
+                            <h5 class="mb-0" id="dsNCells2">{{ dataset.n_cells or 'N/A' }}</h5>
+                        </div>
                     </div>
-                    <div class="col-sm-6">
-                        <table class="table table-sm mb-0">
-                            <tr><td class="fw-bold">向量维度</td><td id="dsVectorDim2">{{ dataset.vector_dim or 'N/A' }}</td></tr>
-                            <tr><td class="fw-bold">创建时间</td><td>{{ dataset.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td></tr>
-                            <tr><td class="fw-bold">索引数量</td><td id="dsIndexCount2">{{ indexes|length }}</td></tr>
-                        </table>
+                    <div class="col-sm-3 col-6">
+                        <div class="metric-card text-center py-2 px-2">
+                            <div class="metric-label mb-1" style="font-size:0.72rem;">基因数</div>
+                            <h5 class="mb-0" id="dsNGenes2">{{ dataset.n_genes or 'N/A' }}</h5>
+                        </div>
+                    </div>
+                    <div class="col-sm-3 col-6">
+                        <div class="metric-card text-center py-2 px-2">
+                            <div class="metric-label mb-1" style="font-size:0.72rem;">PCA 维度</div>
+                            <h5 class="mb-0" id="dsVectorDim2">{{ dataset.vector_dim or 'N/A' }}</h5>
+                        </div>
+                    </div>
+                    <div class="col-sm-3 col-6">
+                        <div class="metric-card text-center py-2 px-2">
+                            <div class="metric-label mb-1" style="font-size:0.72rem;">索引数</div>
+                            <h5 class="mb-0" id="dsIndexCount2">{{ indexes|length }}</h5>
+                        </div>
+                    </div>
+                </div>
+                <div class="d-flex flex-wrap gap-3 small text-muted">
+                    <span>创建时间: <strong>{{ dataset.created_at.strftime('%Y-%m-%d %H:%M') }}</strong></span>
+                    <span>状态: <strong>
+                        {% if dataset.status == 'uploaded' %}已上传
+                        {% elif dataset.status == 'processed' %}已处理
+                        {% elif dataset.status == 'indexed' %}已建索引
+                        {% elif dataset.status == 'error' %}<span class="text-danger">错误</span>
+                        {% else %}{{ dataset.status }}{% endif %}
+                    </strong></span>
+                </div>
+                <!-- 高级信息折叠区 -->
+                <div class="mt-3">
+                    <a class="small text-muted collapsible-hint" data-bs-toggle="collapse" href="#advancedInfoCollapse" aria-expanded="false" style="text-decoration:none;cursor:pointer;">高级信息</a>
+                    <div class="collapse mt-2" id="advancedInfoCollapse">
+                        <div class="stats-block" style="font-size:0.78rem;">
+                            <div class="mb-1"><span class="text-muted">原始文件:</span> <span class="text-break font-monospace">{{ dataset.file_path }}</span></div>
+                            {% if dataset.vector_path %}
+                            <div class="mb-1"><span class="text-muted">向量缓存:</span> <span class="text-break font-monospace">{{ dataset.vector_path }}</span></div>
+                            {% endif %}
+                            {% if dataset.scatter_cache_path %}
+                            <div class="mb-0"><span class="text-muted">散点图缓存:</span> <span class="text-break font-monospace">{{ dataset.scatter_cache_path }}</span></div>
+                            {% endif %}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -159,33 +195,90 @@
 
         <!-- 细胞统计 -->
         {% if stats %}
-        <div class="card ui-card mb-4 info-level-3">
+        <div class="card ui-card mb-4 info-level-2">
             <div class="card-header ui-card-header collapsible-hint" data-bs-toggle="collapse" data-bs-target="#statsCollapse" aria-expanded="true">细胞统计</div>
             <div class="card-body collapse show" id="statsCollapse">
-                <div class="row g-3">
-                    {% for key, items in stats.items() %}
-                    <div class="col-lg-4 col-md-6">
-                        <div class="stats-block h-100">
-                        <h6 class="mb-3">
-                            {% if key == 'cell_type' %}
-                            细胞类型分布
-                            {% elif key == 'disease' %}
-                            疾病分布
-                            {% elif key == 'age_group' %}
-                            年龄组分布
-                            {% else %}
-                            {{ key | replace('_', ' ') | title }}
-                            {% endif %}
-                        </h6>
-                        <table class="table table-sm table-bordered mb-0">
-                            {% for name, count in items[:10] %}
-                            <tr><td>{{ name }}</td><td class="text-end">{{ count }}</td></tr>
-                            {% endfor %}
-                        </table>
+                {% set total_cells = namespace(value=0) %}
+                {% if stats.get('cell_type') %}
+                    {% for name, count in stats['cell_type'] %}
+                        {% set total_cells.value = total_cells.value + count %}
+                    {% endfor %}
+                {% endif %}
+
+                <!-- 细胞类型分布：Top N 条形列表 -->
+                {% if stats.get('cell_type') %}
+                <div class="mb-4">
+                    <h6 class="mb-3" style="font-weight:600;">细胞类型分布</h6>
+                    {% set max_ct_count = stats['cell_type'][0][1] if stats['cell_type'] else 1 %}
+                    {% for name, count in stats['cell_type'][:10] %}
+                    <div class="d-flex align-items-center gap-2 mb-1" style="font-size:0.82rem;">
+                        <span style="min-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ name }}">{{ name }}</span>
+                        <div class="flex-fill" style="height:14px;background:var(--stats-bg);border-radius:4px;overflow:hidden;">
+                            <div style="width:{{ (count / max_ct_count * 100)|round|int }}%;height:100%;background:var(--accent-secondary);border-radius:4px;"></div>
                         </div>
+                        <span class="text-muted" style="min-width:60px;text-align:right;">{{ count }}</span>
                     </div>
                     {% endfor %}
+                    {% if stats['cell_type']|length > 10 %}
+                    <div class="text-muted small mt-1 text-end">共 {{ stats['cell_type']|length }} 种类型，仅显示 Top 10</div>
+                    {% endif %}
                 </div>
+                {% endif %}
+
+                <!-- 疾病分布 -->
+                {% if stats.get('disease') %}
+                <div class="mb-4">
+                    <h6 class="mb-2" style="font-weight:600;">疾病分布</h6>
+                    {% if stats['disease']|length == 1 %}
+                    <div class="text-muted small">
+                        疾病状态: <strong class="text-body">{{ stats['disease'][0][0] }}</strong>，
+                        {{ stats['disease'][0][1] }} 个细胞，占 100%
+                    </div>
+                    {% else %}
+                    {% set max_ds_count = stats['disease'][0][1] if stats['disease'] else 1 %}
+                    {% for name, count in stats['disease'] %}
+                    <div class="d-flex align-items-center gap-2 mb-1" style="font-size:0.82rem;">
+                        <span style="min-width:100px;" title="{{ name }}">{{ name }}</span>
+                        <div class="flex-fill" style="height:14px;background:var(--stats-bg);border-radius:4px;overflow:hidden;">
+                            <div style="width:{{ (count / max_ds_count * 100)|round|int }}%;height:100%;background:#95b1b0;border-radius:4px;"></div>
+                        </div>
+                        <span class="text-muted" style="min-width:80px;text-align:right;">{{ count }} ({{ (count / total_cells.value * 100)|round(1) }}%)</span>
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                <!-- 年龄组分布 -->
+                {% if stats.get('age_group') %}
+                <div>
+                    <h6 class="mb-2" style="font-weight:600;">年龄组分布</h6>
+                    {% if stats['age_group']|length <= 3 %}
+                    <div class="d-flex gap-3 flex-wrap">
+                        {% for name, count in stats['age_group'] %}
+                        {% set ag_color = '#4dd4ff' if name|lower in ['ped', 'pediatric', 'child'] else ('#ffb86b' if name|lower == 'adult' else '#95b1b0') %}
+                        <div class="stats-block flex-fill text-center" style="border-left:3px solid {{ ag_color }};padding:0.6rem 0.8rem;">
+                            <div style="font-size:0.78rem;color:var(--text-secondary);">{{ name }}</div>
+                            <div style="font-size:1.1rem;font-weight:700;">{{ count }}</div>
+                            <div class="text-muted" style="font-size:0.75rem;">{{ (count / total_cells.value * 100)|round(1) }}%</div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    {% set max_ag_count = stats['age_group'][0][1] if stats['age_group'] else 1 %}
+                    {% for name, count in stats['age_group'] %}
+                    {% set ag_color = '#4dd4ff' if name|lower in ['ped', 'pediatric', 'child'] else ('#ffb86b' if name|lower == 'adult' else '#95b1b0') %}
+                    <div class="d-flex align-items-center gap-2 mb-1" style="font-size:0.82rem;">
+                        <span style="min-width:80px;" title="{{ name }}">{{ name }}</span>
+                        <div class="flex-fill" style="height:14px;background:var(--stats-bg);border-radius:4px;overflow:hidden;">
+                            <div style="width:{{ (count / max_ag_count * 100)|round|int }}%;height:100%;background:{{ ag_color }};border-radius:4px;"></div>
+                        </div>
+                        <span class="text-muted" style="min-width:80px;text-align:right;">{{ count }} ({{ (count / total_cells.value * 100)|round(1) }}%)</span>
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                </div>
+                {% endif %}
             </div>
         </div>
         {% endif %}
@@ -237,6 +330,7 @@
                             <tr>
                                 <th>度量</th>
                                 <th>M</th>
+                                <th>ef_construction</th>
                                 <th>ef_search</th>
                                 <th>耗时</th>
                                 <th>状态</th>
@@ -247,9 +341,10 @@
                             <tr>
                                 <td>{{ idx.metric|upper }}</td>
                                 <td>{{ idx.M }}</td>
+                                <td>{{ idx.ef_construction }}</td>
                                 <td>{{ idx.ef_search }}</td>
                                 <td>{{ "%.1f"|format(idx.build_time_ms or 0) }} ms</td>
-                                <td><span class="badge status-badge status-indexed">{{ idx.status }}</span></td>
+                                <td><span class="badge status-badge {% if idx.status == 'ready' %}status-indexed{% elif idx.status == 'building' %}bg-info{% else %}bg-danger{% endif %}">{{ idx.status }}</span></td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -716,7 +811,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         var wrap = document.getElementById('indexTableWrap');
                         if (wrap) {
                             var tableHtml = '<div class="table-responsive ui-table-wrap mb-3"><table class="table table-sm align-middle"><thead><tr>' +
-                                '<th>度量</th><th>M</th><th>ef_search</th><th>耗时</th><th>状态</th>' +
+                                '<th>度量</th><th>M</th><th>ef_construction</th><th>ef_search</th><th>耗时</th><th>状态</th>' +
                                 '</tr></thead><tbody id="indexTbody"></tbody></table></div>';
                             wrap.insertAdjacentHTML('afterbegin', tableHtml);
                             tbody = document.getElementById('indexTbody');
@@ -724,10 +819,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     if (tbody) {
                         tbody.innerHTML = data.indexes.map(function (idx) {
+                            var statusCls = idx.status === 'ready' ? 'status-indexed' : (idx.status === 'building' ? 'bg-info' : 'bg-danger');
                             return '<tr><td>' + idx.metric.toUpperCase() + '</td><td>' + idx.M +
+                                '</td><td>' + idx.ef_construction +
                                 '</td><td>' + idx.ef_search +
                                 '</td><td>' + (idx.build_time_ms ? idx.build_time_ms.toFixed(1) : '0.0') + ' ms</td>' +
-                                '<td><span class="badge status-badge status-indexed">' + idx.status + '</span></td></tr>';
+                                '<td><span class="badge status-badge ' + statusCls + '">' + idx.status + '</span></td></tr>';
                         }).join('');
                     }
                 }

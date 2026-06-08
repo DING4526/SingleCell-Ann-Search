@@ -81,7 +81,7 @@ class AnnIndex(db.Model):
     ef_construction = db.Column(db.Integer, default=200)     # 构建时的 ef
     ef_search = db.Column(db.Integer, default=100)           # 查询时的 ef
     build_time_ms = db.Column(db.Float)                      # 构建耗时（毫秒）
-    status = db.Column(db.String(20), default="ready")       # ready / error
+    status = db.Column(db.String(20), default="building")    # building / ready / error
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     query_logs = db.relationship("QueryLog", backref="index", cascade="all, delete-orphan")
