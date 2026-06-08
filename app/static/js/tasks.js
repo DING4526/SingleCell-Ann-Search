@@ -242,19 +242,30 @@
 
     /**
      * 全局任务指示器：轮询 /api/tasks/active，更新导航栏徽标
-     * @param {number} [interval=15000] 轮询间隔毫秒
+     * 支持自适应间隔：有活跃任务时快速轮询，空闲时降频
+     * @param {number} [interval=15000] 空闲轮询间隔毫秒
+     * @param {number} [activeInterval=500] 活跃轮询间隔毫秒
      */
-    function pollActiveTasks(interval) {
+    function pollActiveTasks(interval, activeInterval) {
         interval = interval || 15000;
+        activeInterval = activeInterval || 500;
         var wrap = document.getElementById("globalTaskWrap");
         var badge = document.getElementById("globalTaskCount");
         if (!wrap || !badge) return;
+
+        var timerHandle = null;
+        var lastActiveCount = 0;
+
+        function scheduleNext(delay) {
+            clearTimeout(timerHandle);
+            timerHandle = setTimeout(update, delay);
+        }
 
         function update() {
             fetch("/api/tasks/active", { credentials: "same-origin" })
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
-                    if (!data.ok) return;
+                    if (!data.ok) { scheduleNext(interval); return; }
                     var count = data.tasks ? data.tasks.length : 0;
                     if (count > 0) {
                         badge.textContent = count;
@@ -262,12 +273,24 @@
                     } else {
                         wrap.style.display = "none";
                     }
+
+                    // 自适应：活跃时快速轮询，空闲时降频
+                    var hadActive = lastActiveCount > 0;
+                    lastActiveCount = count;
+                    if (count > 0) {
+                        scheduleNext(activeInterval);
+                    } else {
+                        // 从活跃变空闲时，通知页面刷新（如果回调存在）
+                        if (hadActive && window._onWorkbenchIdle) {
+                            window._onWorkbenchIdle();
+                        }
+                        scheduleNext(interval);
+                    }
                 })
-                .catch(function () {});
+                .catch(function () { scheduleNext(interval); });
         }
 
         update();
-        setInterval(update, interval);
     }
 
     // 公开接口

@@ -1,5 +1,6 @@
 """API 蓝图：提供 JSON 格式的 AJAX 接口，用于非阻塞操作。"""
 import os
+import uuid
 from datetime import datetime
 from flask import Blueprint, request, jsonify, current_app
 from flask_login import login_required
@@ -52,7 +53,10 @@ def api_upload():
         return jsonify(ok=False, message="仅支持 .h5ad 格式的文件。"), 400
 
     filename = secure_filename(file.filename)
-    file_path = os.path.join(current_app.config["RAW_DIR"], filename)
+    # 使用 时间戳+UUID 前缀保证磁盘文件名唯一，避免同名覆盖
+    unique_prefix = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:8] + "_"
+    disk_filename = unique_prefix + filename
+    file_path = os.path.join(current_app.config["RAW_DIR"], disk_filename)
     file.save(file_path)
 
     name = request.form.get("name", "").strip() or filename.replace(".h5ad", "")

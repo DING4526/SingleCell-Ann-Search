@@ -867,3 +867,44 @@ footer p {
     background: var(--table-hover);
     color: var(--text-main);
 }
+
+/* ===== 检索结果表滚动容器 ===== */
+.search-result-scroll {
+    max-height: 420px;
+    overflow-y: auto;
+    border: 1px solid var(--table-border);
+    border-radius: 14px;
+}
+
+.search-result-scroll .table th,
+.search-result-scroll .table td {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
+
+.search-result-scroll .table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background-color: var(--table-head-bg);
+    color: var(--text-main);
+    border-bottom: 1px solid var(--table-border);
+}
+
+.search-result-scroll .btn-link {
+    color: var(--link-color);
+    text-decoration: none;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.search-result-scroll .btn-link:hover {
+    color: var(--accent-primary);
+}
+
+/* 紧凑结果摘要 */
+.result-summary .rs-stats {
+    display: inline;
+    font-weight: 400;
+}

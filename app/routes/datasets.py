@@ -67,10 +67,14 @@ def delete(dataset_id):
         flash("数据集不存在。", "danger")
         return redirect(url_for("datasets.list_datasets"))
 
-    # 删除物理文件
-    for path_str in [dataset.file_path]:
-        if path_str and os.path.exists(path_str):
-            os.remove(path_str)
+    # 删除物理文件（仅在该文件不被其他数据集引用时才删除）
+    if dataset.file_path:
+        other_refs = Dataset.query.filter(
+            Dataset.id != dataset_id,
+            Dataset.file_path == dataset.file_path,
+        ).count()
+        if other_refs == 0 and os.path.exists(dataset.file_path):
+            os.remove(dataset.file_path)
 
     if dataset.vector_path:
         vec_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.vector_path

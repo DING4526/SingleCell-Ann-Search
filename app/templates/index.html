@@ -167,3 +167,116 @@
     </div>
 </div>
 {% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
+<script>
+/* ===== 工作台自适应刷新 ===== */
+var dashboardTimer = null;
+var dashboardIdleInterval = 12000;   // 空闲时 12s 轮询
+var dashboardActiveInterval = 500;   // 有活跃任务时 0.5s 轮询
+var lastDashboardActive = false;
+
+function refreshDashboard() {
+    fetch('/api/dashboard/summary', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (!data.ok) return;
+
+            /* 更新指标卡片 */
+            var cards = document.querySelectorAll('.metric-card h4');
+            if (cards.length >= 4) {
+                cards[0].textContent = data.datasets_total;
+                cards[1].textContent = data.datasets_processed + data.datasets_indexed;
+                cards[2].textContent = data.indexes_total;
+                cards[3].textContent = data.recent_queries;
+            }
+
+            /* 更新最近数据集表格 */
+            var tbody = document.querySelector('#recent-tasks table tbody');
+            if (tbody && data.recent_datasets) {
+                tbody.innerHTML = data.recent_datasets.map(function (d) {
+                    var badgeCls = { uploaded: 'status-uploaded', processed: 'status-processed', indexed: 'status-indexed', error: 'status-error' }[d.status] || 'status-uploaded';
+                    var badgeText = { uploaded: '已上传', processed: '已处理', indexed: '已建索引', error: '错误' }[d.status] || d.status;
+                    return '<tr>' +
+                        '<td><a href="/datasets/' + d.id + '" class="fw-semibold">' + d.name + '</a></td>' +
+                        '<td><span class="badge status-badge ' + badgeCls + '">' + badgeText + '</span></td>' +
+                        '<td class="text-muted small">' + d.created_at + '</td>' +
+                        '<td><a href="/datasets/' + d.id + '" class="btn btn-sm btn-outline-primary">详情</a></td>' +
+                        '</tr>';
+                }).join('');
+            }
+
+            /* 更新最近任务列表 */
+            var taskContainer = document.querySelector('#recent-tasks .col-lg-6:nth-child(2) .card-body');
+            if (taskContainer && data.recent_tasks) {
+                if (data.recent_tasks.length === 0) {
+                    taskContainer.innerHTML = '<div class="text-muted">暂无任务记录。</div>';
+                } else {
+                    taskContainer.innerHTML = data.recent_tasks.map(function (t) {
+                        var typeLabel = t.type === 'process' ? '处理数据' : t.type === 'build_index' ? '构建索引' : t.type;
+                        var statusBadge = '';
+                        if (t.status === 'running') {
+                            statusBadge = '<span class="badge bg-info">进行中</span>' +
+                                '<div class="task-progress"><div class="progress" style="height:6px;">' +
+                                '<div class="progress-bar progress-bar-striped progress-bar-animated" style="width:' + t.progress + '%;"></div></div></div>';
+                        } else if (t.status === 'success') {
+                            statusBadge = '<span class="badge bg-success">完成</span>';
+                        } else if (t.status === 'error') {
+                            statusBadge = '<span class="badge bg-danger">失败</span>';
+                        } else if (t.status === 'pending') {
+                            statusBadge = '<span class="badge bg-secondary">等待中</span>';
+                        }
+                        var timeStr = t.updated_at ? t.updated_at.substring(5, 16).replace('T', ' ') : '';
+                        return '<div class="task-item">' +
+                            '<span class="task-type">' + typeLabel + '</span>' +
+                            statusBadge +
+                            '<span class="text-muted small ms-auto">' + timeStr + '</span>' +
+                            '</div>';
+                    }).join('');
+                }
+            }
+        })
+        .catch(function () {});
+}
+
+function scheduleDashboardRefresh() {
+    fetch('/api/tasks/active', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            var activeCount = data.ok && data.tasks ? data.tasks.length : 0;
+            var isActive = activeCount > 0;
+            var interval = isActive ? dashboardActiveInterval : dashboardIdleInterval;
+
+            // 活跃→空闲转换时立即刷新一次
+            if (lastDashboardActive && !isActive) {
+                refreshDashboard();
+            }
+            lastDashboardActive = isActive;
+
+            clearTimeout(dashboardTimer);
+            dashboardTimer = setTimeout(function () {
+                refreshDashboard();
+                scheduleDashboardRefresh();
+            }, interval);
+        })
+        .catch(function () {
+            clearTimeout(dashboardTimer);
+            dashboardTimer = setTimeout(function () {
+                refreshDashboard();
+                scheduleDashboardRefresh();
+            }, dashboardIdleInterval);
+        });
+}
+
+/* 全局回调：当全局任务指示器从活跃变空闲时触发刷新 */
+window._onWorkbenchIdle = function () {
+    refreshDashboard();
+};
+
+document.addEventListener('DOMContentLoaded', function () {
+    refreshDashboard();
+    scheduleDashboardRefresh();
+});
+</script>
+{% endblock %}

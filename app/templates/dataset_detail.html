@@ -343,77 +343,6 @@ function statusBadgeHtml(status) {
     return '<span class="badge status-badge ' + info[0] + '">' + info[1] + '</span>';
 }
 
-/* 从 API 拉取数据集最新状态，局部更新 DOM */
-function refreshDatasetStatus() {
-    fetch('/api/datasets/' + DATASET_ID + '/status', { credentials: 'same-origin' })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-            if (!data.ok) return;
-
-            var el;
-            el = document.getElementById('dsNCells'); if (el) el.textContent = data.n_cells || 'N/A';
-            el = document.getElementById('dsNCells2'); if (el) el.textContent = data.n_cells || 'N/A';
-            el = document.getElementById('dsNGenes'); if (el) el.textContent = data.n_genes || 'N/A';
-            el = document.getElementById('dsNGenes2'); if (el) el.textContent = data.n_genes || 'N/A';
-            el = document.getElementById('dsVectorDim'); if (el) el.textContent = data.vector_dim || 'N/A';
-            el = document.getElementById('dsVectorDim2'); if (el) el.textContent = data.vector_dim || 'N/A';
-            el = document.getElementById('dsIndexCount'); if (el) el.textContent = data.indexes ? data.indexes.length : '0';
-            el = document.getElementById('dsIndexCount2'); if (el) el.textContent = data.indexes ? data.indexes.length : '0';
-
-            var errBox = document.getElementById('dsErrorMsg');
-            if (errBox) {
-                if (data.error_message) {
-                    errBox.textContent = data.error_message;
-                    errBox.style.display = 'block';
-                    errBox.className = 'alert alert-danger mt-2';
-                } else {
-                    errBox.style.display = 'none';
-                }
-            }
-
-            /* 显示/隐藏索引区域 */
-            var indexSection = document.getElementById('indexSection');
-            if (indexSection) {
-                indexSection.style.display = (data.status === 'processed' || data.status === 'indexed') ? '' : 'none';
-            }
-
-            /* 更新索引表格 */
-            if (data.indexes && data.indexes.length > 0) {
-                var noAlert = document.getElementById('noIndexAlert');
-                if (noAlert) noAlert.style.display = 'none';
-
-                var tbody = document.getElementById('indexTbody');
-                if (!tbody) {
-                    var wrap = document.getElementById('indexTableWrap');
-                    if (wrap) {
-                        var tableHtml = '<div class="table-responsive ui-table-wrap mb-3"><table class="table table-sm align-middle"><thead><tr>' +
-                            '<th>度量</th><th>M</th><th>ef_search</th><th>耗时</th><th>状态</th>' +
-                            '</tr></thead><tbody id="indexTbody"></tbody></table></div>';
-                        wrap.insertAdjacentHTML('afterbegin', tableHtml);
-                        tbody = document.getElementById('indexTbody');
-                    }
-                }
-                if (tbody) {
-                    tbody.innerHTML = data.indexes.map(function (idx) {
-                        return '<tr><td>' + idx.metric.toUpperCase() + '</td><td>' + idx.M +
-                            '</td><td>' + idx.ef_search +
-                            '</td><td>' + (idx.build_time_ms ? idx.build_time_ms.toFixed(1) : '0.0') + ' ms</td>' +
-                            '<td><span class="badge status-badge status-indexed">' + idx.status + '</span></td></tr>';
-                    }).join('');
-                }
-            }
-
-            /* 更新状态 — 散点图区域可见性 */
-            DATASET_STATUS = data.status;
-            var placeholder = document.getElementById('scatterPlaceholder');
-            var loading = document.getElementById('scatterLoading');
-            var container = document.getElementById('scatterContainer');
-            if (data.status === 'processed' || data.status === 'indexed') {
-                if (placeholder) placeholder.style.display = 'none';
-            }
-        });
-}
-
 document.addEventListener('DOMContentLoaded', function () {
     /* ---- 异步加载散点图 ---- */
     function loadScatter() {
@@ -464,60 +393,222 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     loadScatter();
 
-    /* ---- 处理数据集（顶部流程条按钮） ---- */
-    var processForm = document.getElementById('processForm');
-    if (processForm) {
-        processForm.addEventListener('submit', function (e) {
-            e.preventDefault();
-            var bar = document.getElementById('processProgressBar');
-            var msg = document.getElementById('processMessage');
-            var btn = document.getElementById('processBtn');
+    /* ---- 绑定顶部处理按钮 ---- */
+    function bindProcessForm() {
+        var processForm = document.getElementById('processForm');
+        if (processForm) {
+            processForm.addEventListener('submit', function (e) {
+                e.preventDefault();
+                var bar = document.getElementById('processProgressBar');
+                var msg = document.getElementById('processMessage');
+                var btn = document.getElementById('processBtn');
+                var wrap = document.getElementById('processProgressWrap');
+                if (wrap) wrap.style.display = 'block';
 
-            var wrap = document.getElementById('processProgressWrap');
-            if (wrap) wrap.style.display = 'block';
-
-            Tasks.submitAjaxTask(processForm, {
-                progressBar: bar,
-                messageBox: msg,
-                submitBtn: btn,
-                onSuccess: function (taskData) {
-                    refreshDatasetStatus();
-                    DATASET_STATUS = 'processed';
-                    setTimeout(loadScatter, 500);
-                },
-                onError: function (errMsg) {
-                    refreshDatasetStatus();
-                },
+                Tasks.submitAjaxTask(processForm, {
+                    progressBar: bar,
+                    messageBox: msg,
+                    submitBtn: btn,
+                    onSuccess: onTaskSuccess,
+                    onError: function () { refreshDatasetStatus(); },
+                });
             });
-        });
+        }
     }
 
-    /* ---- 处理数据集（右栏按钮） ---- */
-    var processForm2 = document.getElementById('processForm2');
-    if (processForm2) {
-        processForm2.addEventListener('submit', function (e) {
-            e.preventDefault();
-            var bar = document.getElementById('processProgressBar2');
-            var msg = document.getElementById('processMessage2');
-            var btn = document.getElementById('processBtn2');
-            var wrap = document.getElementById('processProgressWrap2');
-            if (wrap) wrap.style.display = 'block';
+    /* ---- 绑定右栏处理按钮 ---- */
+    function bindProcessForm2() {
+        var processForm2 = document.getElementById('processForm2');
+        if (processForm2) {
+            processForm2.addEventListener('submit', function (e) {
+                e.preventDefault();
+                var bar = document.getElementById('processProgressBar2');
+                var msg = document.getElementById('processMessage2');
+                var btn = document.getElementById('processBtn2');
+                var wrap = document.getElementById('processProgressWrap2');
+                if (wrap) wrap.style.display = 'block';
 
-            Tasks.submitAjaxTask(processForm2, {
-                progressBar: bar,
-                messageBox: msg,
-                submitBtn: btn,
-                onSuccess: function (taskData) {
-                    refreshDatasetStatus();
-                    DATASET_STATUS = 'processed';
-                    setTimeout(loadScatter, 500);
-                },
-                onError: function (errMsg) {
-                    refreshDatasetStatus();
-                },
+                Tasks.submitAjaxTask(processForm2, {
+                    progressBar: bar,
+                    messageBox: msg,
+                    submitBtn: btn,
+                    onSuccess: onTaskSuccess,
+                    onError: function () { refreshDatasetStatus(); },
+                });
             });
-        });
+        }
     }
+
+    /* ---- 刷新全局任务徽标 ---- */
+    function refreshGlobalBadge() {
+        var wrap = document.getElementById('globalTaskWrap');
+        var badge = document.getElementById('globalTaskCount');
+        if (!wrap || !badge) return;
+        fetch('/api/tasks/active', { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.ok) return;
+                var count = data.tasks ? data.tasks.length : 0;
+                if (count > 0) {
+                    badge.textContent = count;
+                    wrap.style.display = '';
+                } else {
+                    wrap.style.display = 'none';
+                }
+            })
+            .catch(function () {});
+    }
+
+    /* ---- 任务完成后的通用回调（后端驱动状态刷新） ---- */
+    function onTaskSuccess() {
+        refreshDatasetStatus();
+        refreshGlobalBadge();
+        /* 延迟加载散点图，等待后端状态更新完成 */
+        setTimeout(function () {
+            if (DATASET_STATUS === 'processed' || DATASET_STATUS === 'indexed') {
+                loadScatter();
+            }
+        }, 500);
+    }
+
+    /* ---- 从 API 拉取数据集最新状态，全面更新 DOM（后端驱动） ---- */
+    function refreshDatasetStatus() {
+        fetch('/api/datasets/' + DATASET_ID + '/status', { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.ok) return;
+
+                var status = data.status;
+                DATASET_STATUS = status;
+
+                var el;
+                el = document.getElementById('dsNCells'); if (el) el.textContent = data.n_cells || 'N/A';
+                el = document.getElementById('dsNCells2'); if (el) el.textContent = data.n_cells || 'N/A';
+                el = document.getElementById('dsNGenes'); if (el) el.textContent = data.n_genes || 'N/A';
+                el = document.getElementById('dsNGenes2'); if (el) el.textContent = data.n_genes || 'N/A';
+                el = document.getElementById('dsVectorDim'); if (el) el.textContent = data.vector_dim || 'N/A';
+                el = document.getElementById('dsVectorDim2'); if (el) el.textContent = data.vector_dim || 'N/A';
+                el = document.getElementById('dsIndexCount'); if (el) el.textContent = data.indexes ? data.indexes.length : '0';
+                el = document.getElementById('dsIndexCount2'); if (el) el.textContent = data.indexes ? data.indexes.length : '0';
+
+                var errBox = document.getElementById('dsErrorMsg');
+                if (errBox) {
+                    if (data.error_message) {
+                        errBox.textContent = data.error_message;
+                        errBox.style.display = 'block';
+                        errBox.className = 'alert alert-danger mt-2';
+                    } else {
+                        errBox.style.display = 'none';
+                    }
+                }
+
+                /* 更新状态流程条 */
+                var steps = document.querySelectorAll('.status-pipeline .sp-step');
+                if (steps.length >= 3) {
+                    steps[0].className = 'sp-step ' + (['processed','indexed','error'].indexOf(status) >= 0 ? 'sp-done' : (status === 'uploaded' ? 'sp-active' : ''));
+                    var circle1 = steps[0].querySelector('.sp-circle');
+                    if (circle1) circle1.innerHTML = (['processed','indexed'].indexOf(status) >= 0 ? '&#10003;' : '1');
+
+                    steps[1].className = 'sp-step ' + (status === 'indexed' ? 'sp-done' : (status === 'processed' ? 'sp-active' : ''));
+                    var circle2 = steps[1].querySelector('.sp-circle');
+                    if (circle2) circle2.innerHTML = (status === 'indexed' ? '&#10003;' : '2');
+
+                    steps[2].className = 'sp-step ' + (status === 'indexed' ? 'sp-active' : '');
+                    var circle3 = steps[2].querySelector('.sp-circle');
+                    if (circle3) circle3.innerHTML = '3';
+                }
+
+                /* 更新主操作按钮区域 */
+                var btnArea = document.querySelector('.status-pipeline').parentElement.querySelector('.d-flex.gap-2');
+                if (btnArea) {
+                    var btnHtml = '';
+                    if (status === 'uploaded') {
+                        btnHtml = '<form id="processForm" action="/api/datasets/' + DATASET_ID + '/process" class="d-inline">' +
+                            '<button type="submit" id="processBtn" class="btn btn-primary btn-cta">处理数据集</button></form>';
+                    } else if (status === 'processed') {
+                        btnHtml = '<a href="#indexSection" class="btn btn-success btn-cta">构建索引</a>';
+                    } else if (status === 'indexed') {
+                        btnHtml = '<a href="/search?dataset_id=' + DATASET_ID + '#search" class="btn btn-primary btn-cta">前往检索</a>';
+                    } else if (status === 'error') {
+                        btnHtml = '<form id="processForm" action="/api/datasets/' + DATASET_ID + '/process" class="d-inline">' +
+                            '<button type="submit" id="processBtn" class="btn btn-warning btn-cta">重新处理</button></form>';
+                    }
+                    btnArea.innerHTML = btnHtml;
+                    bindProcessForm();
+                }
+
+                /* 更新"下一步操作"卡片 */
+                var nextStep = document.getElementById('nextStepContent');
+                if (nextStep) {
+                    var nextHtml = '';
+                    if (status === 'uploaded') {
+                        nextHtml = '<p>数据集已上传，需要提取 PCA 向量才能构建索引和检索。</p>' +
+                            '<form id="processForm2" action="/api/datasets/' + DATASET_ID + '/process">' +
+                            '<button type="submit" id="processBtn2" class="btn btn-primary w-100 btn-cta">处理数据集</button></form>' +
+                            '<div id="processProgressWrap2" class="mt-3" style="display:none;"><div class="progress mb-1" style="height:18px;">' +
+                            '<div id="processProgressBar2" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width:0%;" aria-valuemin="0" aria-valuemax="100">0%</div></div></div>' +
+                            '<div id="processMessage2" class="alert mt-2" style="display:none;"></div>';
+                    } else if (status === 'processed') {
+                        nextHtml = '<p>数据已处理完成，可以构建 HNSW 近似最近邻索引。</p>' +
+                            '<a href="#indexSection" class="btn btn-success w-100 btn-cta">构建索引</a>';
+                    } else if (status === 'indexed') {
+                        nextHtml = '<p>索引已就绪，可以前往检索页面查询相似细胞。</p>' +
+                            '<a href="/search?dataset_id=' + DATASET_ID + '#search" class="btn btn-primary w-100 btn-cta">前往检索</a>';
+                    } else if (status === 'error') {
+                        nextHtml = '<p class="text-danger">处理失败：' + (data.error_message || '未知错误') + '</p>' +
+                            '<form id="processForm2" action="/api/datasets/' + DATASET_ID + '/process">' +
+                            '<button type="submit" id="processBtn2" class="btn btn-warning w-100 btn-cta">重新处理</button></form>' +
+                            '<div id="processProgressWrap2" class="mt-3" style="display:none;"><div class="progress mb-1" style="height:18px;">' +
+                            '<div id="processProgressBar2" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width:0%;" aria-valuemin="0" aria-valuemax="100">0%</div></div></div>' +
+                            '<div id="processMessage2" class="alert mt-2" style="display:none;"></div>';
+                    }
+                    nextStep.innerHTML = nextHtml;
+                    bindProcessForm2();
+                }
+
+                /* 显示/隐藏索引区域 */
+                var indexSection = document.getElementById('indexSection');
+                if (indexSection) {
+                    indexSection.style.display = (status === 'processed' || status === 'indexed') ? '' : 'none';
+                }
+
+                /* 更新索引表格 */
+                if (data.indexes && data.indexes.length > 0) {
+                    var noAlert = document.getElementById('noIndexAlert');
+                    if (noAlert) noAlert.style.display = 'none';
+
+                    var tbody = document.getElementById('indexTbody');
+                    if (!tbody) {
+                        var wrap = document.getElementById('indexTableWrap');
+                        if (wrap) {
+                            var tableHtml = '<div class="table-responsive ui-table-wrap mb-3"><table class="table table-sm align-middle"><thead><tr>' +
+                                '<th>度量</th><th>M</th><th>ef_search</th><th>耗时</th><th>状态</th>' +
+                                '</tr></thead><tbody id="indexTbody"></tbody></table></div>';
+                            wrap.insertAdjacentHTML('afterbegin', tableHtml);
+                            tbody = document.getElementById('indexTbody');
+                        }
+                    }
+                    if (tbody) {
+                        tbody.innerHTML = data.indexes.map(function (idx) {
+                            return '<tr><td>' + idx.metric.toUpperCase() + '</td><td>' + idx.M +
+                                '</td><td>' + idx.ef_search +
+                                '</td><td>' + (idx.build_time_ms ? idx.build_time_ms.toFixed(1) : '0.0') + ' ms</td>' +
+                                '<td><span class="badge status-badge status-indexed">' + idx.status + '</span></td></tr>';
+                        }).join('');
+                    }
+                }
+
+                /* 散点图区域可见性 */
+                var placeholder = document.getElementById('scatterPlaceholder');
+                if (status === 'processed' || status === 'indexed') {
+                    if (placeholder) placeholder.style.display = 'none';
+                }
+            });
+    }
+
+    /* 初始绑定 */
+    bindProcessForm();
+    bindProcessForm2();
 
     /* ---- 构建索引 ---- */
     var buildForm = document.getElementById('buildIndexForm');
@@ -535,13 +626,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 progressBar: bar,
                 messageBox: msg,
                 submitBtn: btn,
-                onSuccess: function (taskData) {
-                    refreshDatasetStatus();
-                    setTimeout(loadScatter, 500);
-                },
-                onError: function (errMsg) {
-                    refreshDatasetStatus();
-                },
+                onSuccess: onTaskSuccess,
+                onError: function () { refreshDatasetStatus(); },
             });
         });
     }
