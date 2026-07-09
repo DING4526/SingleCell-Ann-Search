@@ -1,12 +1,13 @@
 """API 蓝图：提供 JSON 格式的 AJAX 接口，用于非阻塞操作。"""
 import os
 import uuid
+import pathlib
 from datetime import datetime
 from flask import Blueprint, request, jsonify, current_app
-from flask_login import login_required, current_user
+from flask_login import login_required, current_user, login_user, logout_user
 from werkzeug.utils import secure_filename
 from app.extensions import db
-from app.models import Dataset, AnnIndex, Cell, Task, QueryLog
+from app.models import Dataset, AnnIndex, Cell, Task, QueryLog, User
 from app.tasks import executor, run_process_task, run_build_index_task
 from app.services.access_service import (
     accessible_datasets_query,
@@ -63,6 +64,203 @@ def _int_form(name: str, default: int, min_value: int = None, max_value: int = N
     if max_value is not None and value > max_value:
         raise ValueError(f"{name} 不能大于 {max_value}")
     return value
+
+
+def _index_to_dict(idx: AnnIndex) -> dict:
+    return {
+        "id": idx.id,
+        "dataset_id": idx.dataset_id,
+        "algorithm": "HNSW",
+        "metric": idx.metric,
+        "M": idx.M,
+        "ef_construction": idx.ef_construction,
+        "ef_search": idx.ef_search,
+        "build_time_ms": idx.build_time_ms,
+        "status": idx.status,
+        "created_at": idx.created_at.isoformat() if idx.created_at else None,
+    }
+
+
+def _dataset_to_dict(dataset: Dataset, include_indexes: bool = True) -> dict:
+    data = {
+        "id": dataset.id,
+        "name": dataset.name,
+        "description": dataset.description or "",
+        "n_cells": dataset.n_cells,
+        "n_genes": dataset.n_genes,
+        "vector_dim": dataset.vector_dim,
+        "status": dataset.status,
+        "error_message": dataset.error_message,
+        "owner_id": dataset.owner_id,
+        "owner_name": dataset.owner.username if dataset.owner else None,
+        "visibility": dataset.visibility or "private",
+        "created_at": dataset.created_at.isoformat() if dataset.created_at else None,
+        "can_manage": can_manage_dataset(dataset),
+    }
+    if include_indexes:
+        data["indexes"] = [_index_to_dict(idx) for idx in dataset.indexes]
+        data["ready_index_count"] = sum(1 for idx in dataset.indexes if idx.status == "ready")
+    return data
+
+
+def _dataset_stats(dataset_id: int) -> dict:
+    stats = {}
+    for col in ["cell_type", "disease", "age_group"]:
+        rows = (
+            db.session.query(getattr(Cell, col), db.func.count(Cell.id))
+            .filter(Cell.dataset_id == dataset_id)
+            .group_by(getattr(Cell, col))
+            .order_by(db.func.count(Cell.id).desc())
+            .all()
+        )
+        stats[col] = [{"name": key or "N/A", "count": count} for key, count in rows]
+    return stats
+
+
+def _delete_dataset_files(dataset: Dataset):
+    dataset_id = dataset.id
+    if dataset.file_path:
+        other_refs = Dataset.query.filter(
+            Dataset.id != dataset_id,
+            Dataset.file_path == dataset.file_path,
+        ).count()
+        if other_refs == 0 and os.path.exists(dataset.file_path):
+            os.remove(dataset.file_path)
+
+    if dataset.vector_path:
+        vec_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.vector_path
+        if vec_path.exists():
+            os.remove(str(vec_path))
+
+    if dataset.scatter_cache_path:
+        scatter_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.scatter_cache_path
+        if scatter_path.exists():
+            os.remove(str(scatter_path))
+
+    for idx in AnnIndex.query.filter_by(dataset_id=dataset_id).all():
+        idx_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.index_path
+        if idx_path.exists():
+            os.remove(str(idx_path))
+
+
+# ---------------------------------------------------------------------------
+# SPA 认证接口
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/auth/me", methods=["GET"])
+def api_auth_me():
+    if not current_user.is_authenticated:
+        return jsonify(ok=True, authenticated=False, user=None)
+    return jsonify(
+        ok=True,
+        authenticated=True,
+        user={
+            "id": current_user.id,
+            "username": current_user.username,
+            "role": current_user.role,
+            "is_admin": is_admin(),
+        },
+    )
+
+
+@api_bp.route("/auth/login", methods=["POST"])
+def api_auth_login():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    user = User.query.filter_by(username=username).first()
+    if user is None or not user.check_password(password):
+        return jsonify(ok=False, message="用户名或密码错误。"), 401
+    login_user(user, remember=True)
+    return jsonify(ok=True, message="登录成功。", user={
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "is_admin": user.role == "admin",
+    })
+
+
+@api_bp.route("/auth/register", methods=["POST"])
+def api_auth_register():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    confirm = request.form.get("confirm", "")
+
+    if not username or not password:
+        return jsonify(ok=False, message="用户名和密码不能为空。"), 400
+    if len(password) < 4:
+        return jsonify(ok=False, message="密码长度至少为 4 位。"), 400
+    if password != confirm:
+        return jsonify(ok=False, message="两次输入的密码不一致。"), 400
+    if User.query.filter_by(username=username).first():
+        return jsonify(ok=False, message="用户名已存在。"), 400
+
+    user = User(username=username)
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+    login_user(user, remember=True)
+    return jsonify(ok=True, message="注册成功。", user={
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "is_admin": False,
+    })
+
+
+@api_bp.route("/auth/logout", methods=["POST"])
+@login_required
+def api_auth_logout():
+    logout_user()
+    return jsonify(ok=True, message="已退出登录。")
+
+
+# ---------------------------------------------------------------------------
+# SPA 数据集资源接口
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/datasets", methods=["GET"])
+@login_required
+def api_datasets():
+    datasets = accessible_datasets_query().order_by(Dataset.created_at.desc()).all()
+    return jsonify(ok=True, datasets=[_dataset_to_dict(ds) for ds in datasets])
+
+
+@api_bp.route("/datasets/<int:dataset_id>", methods=["GET"])
+@login_required
+def api_dataset_detail(dataset_id):
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_view_dataset(dataset):
+        return jsonify(ok=False, message="没有权限查看该数据集。"), 403
+
+    tasks = (
+        Task.query.filter_by(dataset_id=dataset_id)
+        .order_by(Task.updated_at.desc())
+        .limit(8)
+        .all()
+    )
+    return jsonify(
+        ok=True,
+        dataset=_dataset_to_dict(dataset),
+        stats=_dataset_stats(dataset_id) if dataset.status in ("processed", "indexed") else {},
+        recent_tasks=[_task_to_dict(task) for task in tasks],
+    )
+
+
+@api_bp.route("/datasets/<int:dataset_id>", methods=["DELETE"])
+@login_required
+def api_dataset_delete(dataset_id):
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_manage_dataset(dataset):
+        return jsonify(ok=False, message="没有权限删除该数据集。"), 403
+
+    _delete_dataset_files(dataset)
+    db.session.delete(dataset)
+    db.session.commit()
+    return jsonify(ok=True, message="数据集已删除。")
 
 
 # ---------------------------------------------------------------------------

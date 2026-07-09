@@ -5,6 +5,8 @@ __pycache__/
 dist/
 build/
 *.egg
+frontend/dist/
+frontend/node_modules/
 
 # Virtual environment
 venv/

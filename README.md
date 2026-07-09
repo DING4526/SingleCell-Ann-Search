@@ -7,7 +7,7 @@
 ## 技术栈
 
 - **后端**: Flask, Flask-Login, Flask-SQLAlchemy
-- **前端**: Jinja2, Bootstrap 5
+- **前端**: Vue 3, Vite, TypeScript, Ant Design Vue
 - **数据库**: SQLite + SQLAlchemy
 - **数据处理**: Scanpy, AnnData, NumPy, Pandas
 - **ANN 索引**: HNSWLIB
@@ -23,6 +23,7 @@
 - 构建 HNSW 近似最近邻索引
 - Top-K 相似细胞检索并展示查询耗时
 - 支持按细胞类型过滤检索结果
+- 专业研究者平台式 SPA：Overview、Datasets、Index Lab、Query Lab、Evaluation、Access、AI Analysis
 - UMAP/PCA 散点图可视化，高亮查询细胞和结果细胞
 - 性能评估：ANN vs 精确检索的 Recall@K 和加速比
 
@@ -47,6 +48,10 @@ single-cell-ann-search/
 │   │   └── plot_service.py  # Plotly 图表
 │   ├── templates/           # Jinja2 HTML 模板
 │   └── static/css/          # 样式文件
+├── frontend/
+│   ├── src/                 # Vue 3 SPA 源码
+│   ├── package.json         # 前端依赖与构建脚本
+│   └── dist/                # 前端构建产物（本地生成，不提交）
 ├── data/
 │   ├── raw/                 # 上传的 h5ad 文件
 │   ├── cache/               # 缓存的 npy 向量
@@ -105,31 +110,62 @@ python scripts/create_demo_h5ad.py
 
 ### 6. 启动项目
 
+如果只是运行后端 API：
+
 ```bash
+python run.py
+```
+
+如果需要使用新版 SPA，需要先构建前端：
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
 python run.py
 ```
 
 在浏览器中打开 http://localhost:5000
 
+开发前端时可使用 Vite 代理 Flask API：
+
+```bash
+python run.py
+cd frontend
+npm run dev
+```
+
+然后访问 http://localhost:5173
+
 ## 演示流程
 
 1. 注册新账号并登录
-2. 进入**数据集**页面，上传 `data/raw/demo_liver.h5ad`
-3. 点击**处理数据集**提取向量和细胞元信息
-4. 查看数据集统计信息和 UMAP 可视化
-5. 构建 HNSW 索引（默认：L2, M=16）
-6. 进入**检索**页面
+2. 进入 **Datasets**，上传 `data/raw/demo_liver.h5ad`
+3. 在数据集详情页处理数据集，提取向量和细胞元信息
+4. 查看数据集统计信息和 UMAP/PCA 可视化
+5. 进入 **Index Lab** 构建 HNSW 索引（默认：L2, M=16）
+6. 进入 **Query Lab**
 7. 选择数据集和索引
 8. 输入查询细胞索引（例如 `0`），设置 Top-K（例如 `10`）
 9. 点击**检索**查找相似细胞
 10. 查看结果表格、查询耗时和散点图
 11. 可选：按细胞类型过滤
-12. 点击**运行评估**对比 ANN 与精确检索的性能（Recall@K、加速比）
+12. 进入 **Evaluation** 对比 ANN 与精确检索的性能（Recall@K、加速比）
 
 ## 运行测试
 
 ```bash
 pytest tests/ -v
+```
+
+前端验证：
+
+```bash
+cd frontend
+npm run typecheck
+npm run build
+npm audit --omit=dev
 ```
 
 ## 小组分工建议（3 人团队）

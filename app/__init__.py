@@ -1,5 +1,5 @@
 import os
-from flask import Flask
+from flask import Flask, jsonify, request
 from app.config import Config
 from app.extensions import db, login_manager
 
@@ -19,6 +19,13 @@ def create_app(config_class=Config):
 
     db.init_app(app)
     login_manager.init_app(app)
+
+    @login_manager.unauthorized_handler
+    def unauthorized():
+        if request.path.startswith("/api/"):
+            return jsonify(ok=False, message="请先登录。"), 401
+        from flask import redirect, url_for
+        return redirect(url_for("main.index"))
 
     with app.app_context():
         from app.services.schema_service import ensure_sqlite_schema

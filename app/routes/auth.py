@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, redirect, url_for, flash, request
 from flask_login import login_user, logout_user, login_required, current_user
 from app.extensions import db
 from app.models import User
+from app.spa import render_spa
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -9,6 +10,9 @@ auth_bp = Blueprint("auth", __name__)
 @auth_bp.route("/register", methods=["GET", "POST"])
 def register():
     """用户注册。"""
+    if request.method == "GET":
+        return render_spa()
+
     if current_user.is_authenticated:
         return redirect(url_for("main.index"))
 
@@ -47,6 +51,9 @@ def register():
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
     """用户登录。"""
+    if request.method == "GET":
+        return render_spa()
+
     if current_user.is_authenticated:
         return redirect(url_for("main.index"))
 

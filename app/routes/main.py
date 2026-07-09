@@ -5,6 +5,7 @@ from flask_login import login_required
 from app.models import Dataset, AnnIndex, QueryLog, Task
 from app.extensions import db
 from app.services.access_service import accessible_datasets_query, accessible_tasks_query, is_admin
+from app.spa import render_spa, serve_spa_asset
 
 main_bp = Blueprint("main", __name__)
 
@@ -12,46 +13,26 @@ main_bp = Blueprint("main", __name__)
 @main_bp.route("/")
 @login_required
 def index():
-    """工作台首页：展示系统概览、工作流进度与最近活动。"""
-    datasets = accessible_datasets_query().order_by(Dataset.created_at.desc()).all()
-    dataset_count = len(datasets)
-    datasets_by_status = {
-        "uploaded": sum(1 for d in datasets if d.status == "uploaded"),
-        "processed": sum(1 for d in datasets if d.status == "processed"),
-        "indexed": sum(1 for d in datasets if d.status == "indexed"),
-        "error": sum(1 for d in datasets if d.status == "error"),
-    }
-    dataset_ids = [d.id for d in datasets]
-    index_count = AnnIndex.query.filter(
-        AnnIndex.status == "ready",
-        AnnIndex.dataset_id.in_(dataset_ids) if dataset_ids else False,
-    ).count()
-    query_count = QueryLog.query.count() if is_admin() else QueryLog.query.filter(QueryLog.dataset_id.in_(dataset_ids)).count()
+    """SPA entrypoint."""
+    return render_spa()
 
-    recent_datasets = datasets[:5]
-    recent_tasks = (
-        accessible_tasks_query().order_by(Task.updated_at.desc()).limit(5).all()
-    )
 
-    first_uploaded_id = next(
-        (d.id for d in datasets if d.status == "uploaded"), None
-    )
-    first_processed_id = next(
-        (d.id for d in datasets if d.status == "processed"), None
-    )
+@main_bp.route("/assets/<path:filename>")
+def spa_assets(filename):
+    """Serve Vite production assets."""
+    return serve_spa_asset(filename)
 
-    return render_template(
-        "index.html",
-        nav_active="workbench",
-        dataset_count=dataset_count,
-        datasets_by_status=datasets_by_status,
-        index_count=index_count,
-        query_count=query_count,
-        recent_datasets=recent_datasets,
-        recent_tasks=recent_tasks,
-        first_uploaded_id=first_uploaded_id,
-        first_processed_id=first_processed_id,
-    )
+
+@main_bp.route("/overview")
+@main_bp.route("/index-lab")
+@main_bp.route("/query-lab")
+@main_bp.route("/evaluation")
+@main_bp.route("/access")
+@main_bp.route("/ai-analysis")
+@login_required
+def spa_pages():
+    """Top-level SPA routes."""
+    return render_spa()
 
 
 @main_bp.route("/background")

@@ -1,0 +1,71 @@
+import type { Dataset, EvalMetrics, PlotlyPayload, SearchResult, TaskRecord, User } from "@/types";
+
+type ApiResponse<T> = T & { ok: boolean; message?: string };
+
+async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, {
+    credentials: "same-origin",
+    ...options,
+    headers: {
+      ...(options.body instanceof FormData ? {} : { "Content-Type": "application/x-www-form-urlencoded" }),
+      ...(options.headers || {}),
+    },
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+  if (!response.ok || (typeof payload === "object" && payload && payload.ok === false)) {
+    const message = typeof payload === "object" && payload?.message ? payload.message : `请求失败 (${response.status})`;
+    throw new Error(message);
+  }
+  return payload as T;
+}
+
+function toForm(data: Record<string, string | number | boolean | undefined | null>) {
+  const form = new URLSearchParams();
+  Object.entries(data).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) form.set(key, String(value));
+  });
+  return form;
+}
+
+export const api = {
+  me: () => request<ApiResponse<{ authenticated: boolean; user: User | null }>>("/api/auth/me"),
+  login: (username: string, password: string) =>
+    request<ApiResponse<{ user: User }>>("/api/auth/login", { method: "POST", body: toForm({ username, password }) }),
+  register: (username: string, password: string, confirm: string) =>
+    request<ApiResponse<{ user: User }>>("/api/auth/register", { method: "POST", body: toForm({ username, password, confirm }) }),
+  logout: () => request<ApiResponse<Record<string, never>>>("/api/auth/logout", { method: "POST", body: toForm({}) }),
+
+  dashboardSummary: () => request<ApiResponse<Record<string, unknown>>>("/api/dashboard/summary"),
+  datasets: () => request<ApiResponse<{ datasets: Dataset[] }>>("/api/datasets"),
+  dataset: (id: number) =>
+    request<ApiResponse<{ dataset: Dataset; stats: Record<string, { name: string; count: number }[]>; recent_tasks: TaskRecord[] }>>(`/api/datasets/${id}`),
+  deleteDataset: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/datasets/${id}`, { method: "DELETE" }),
+  uploadDataset: (form: FormData) => request<ApiResponse<{ dataset_id: number; redirect_url: string }>>("/api/datasets/upload", { method: "POST", body: form }),
+  processDataset: (id: number) => request<ApiResponse<{ task_id: number }>>(`/api/datasets/${id}/process`, { method: "POST", body: toForm({}) }),
+  buildIndex: (id: number, params: { metric: string; M: number; ef_construction: number; ef_search: number }) =>
+    request<ApiResponse<{ task_id: number }>>(`/api/datasets/${id}/build-index`, { method: "POST", body: toForm(params) }),
+  datasetStatus: (id: number) => request<ApiResponse<{ status: string; indexes: unknown[] }>>(`/api/datasets/${id}/status`),
+  scatter: (id: number) => request<ApiResponse<{ scatter_plot: PlotlyPayload }>>(`/api/datasets/${id}/scatter`),
+  cellTypes: (id: number) => request<ApiResponse<{ cell_types: string[] }>>(`/api/datasets/${id}/cell-types`),
+  cellMeta: (datasetId: number, cellIndex: number) =>
+    request<ApiResponse<{ cell: { cell_index: number; cell_name: string; cell_type: string; disease: string; age_group: string } }>>(
+      `/api/datasets/${datasetId}/cell-meta/${cellIndex}`,
+    ),
+  tasks: (status = "all", limit = 20) => request<ApiResponse<{ tasks: TaskRecord[] }>>(`/api/tasks?status=${status}&limit=${limit}`),
+  task: (id: number) => request<ApiResponse<TaskRecord>>(`/api/tasks/${id}`),
+  activeTasks: () => request<ApiResponse<{ tasks: TaskRecord[] }>>("/api/tasks/active"),
+  search: (params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string }) =>
+    request<ApiResponse<{ result_data: { results: SearchResult[]; query_time_ms: number; query_cell_index: number; top_k: number }; scatter_plot: PlotlyPayload; interpretation: Record<string, unknown> }>>(
+      "/api/search",
+      { method: "POST", body: toForm(params) },
+    ),
+  multiSearch: (params: FormData) =>
+    request<ApiResponse<{ result_data: { results: SearchResult[]; query_time_ms: number; query_cell_index: number; top_k: number; searched_dataset_count: number; skipped: unknown[]; metric: string } }>>(
+      "/api/search/multi",
+      { method: "POST", body: params },
+    ),
+  evaluate: (params: { dataset_id: number; index_id: number; sample_size: number; eval_top_k: number }) =>
+    request<ApiResponse<{ metrics: EvalMetrics; bar_plot: PlotlyPayload }>>("/api/evaluate", { method: "POST", body: toForm(params) }),
+};
