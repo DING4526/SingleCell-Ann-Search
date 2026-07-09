@@ -1,46 +1,46 @@
 <template>
-  <PageHeader title="Query Lab" description="执行单数据集相似细胞检索或跨数据集 fan-out 合并检索，并查看结果表与嵌入空间高亮。">
+  <PageHeader title="检索实验室" description="执行单数据集相似细胞检索或跨数据集 fan-out 合并检索，并查看结果表与嵌入空间高亮。">
     <template #actions>
-      <a-segmented v-model:value="mode" :options="[{ label: 'Single Dataset', value: 'single' }, { label: 'Cross Dataset', value: 'multi' }]" />
+      <a-segmented v-model:value="mode" :options="[{ label: '单数据集', value: 'single' }, { label: '跨数据集', value: 'multi' }]" />
     </template>
   </PageHeader>
 
   <div class="split-workbench">
     <div class="surface surface-pad">
-      <div class="panel-title">Query Context</div>
+      <div class="panel-title">检索上下文</div>
       <a-form layout="vertical" @finish="run">
-        <a-form-item label="Dataset">
+        <a-form-item label="数据集">
           <a-select v-model:value="datasetId" :options="datasetOptions" placeholder="选择数据集" @change="onDatasetChange" />
         </a-form-item>
-        <a-form-item label="Index">
-          <a-select v-model:value="indexId" :options="indexOptions" placeholder="选择 ready 索引" />
+        <a-form-item label="索引">
+          <a-select v-model:value="indexId" :options="indexOptions" placeholder="选择可用索引" />
         </a-form-item>
-        <a-form-item label="Query Cell Index">
+        <a-form-item label="查询细胞编号">
           <a-input-number v-model:value="queryCellIndex" :min="0" :max="selectedDataset?.n_cells ? selectedDataset.n_cells - 1 : undefined" style="width: 100%" />
           <div class="muted" style="font-size:12px;margin-top:4px">范围 0 ~ {{ selectedDataset?.n_cells ? selectedDataset.n_cells - 1 : "?" }}</div>
         </a-form-item>
         <a-form-item label="Top-K">
           <a-input-number v-model:value="topK" :min="1" :max="100" style="width: 100%" />
         </a-form-item>
-        <a-form-item v-if="mode === 'single'" label="Cell Type Filter">
+        <a-form-item v-if="mode === 'single'" label="细胞类型过滤">
           <a-select v-model:value="cellType" allow-clear placeholder="全部细胞类型" :options="cellTypeOptions" />
         </a-form-item>
-        <a-form-item v-if="mode === 'multi'" label="Target Datasets">
+        <a-form-item v-if="mode === 'multi'" label="目标数据集">
           <a-checkbox-group v-model:value="targetDatasetIds" style="display:flex;flex-direction:column;gap:6px">
             <a-checkbox v-for="dataset in store.indexedDatasets" :key="dataset.id" :value="dataset.id">{{ dataset.name }}</a-checkbox>
           </a-checkbox-group>
         </a-form-item>
-        <a-button type="primary" html-type="submit" block :loading="queryStore.loading">Run Query</a-button>
+        <a-button type="primary" html-type="submit" block :loading="queryStore.loading">运行检索</a-button>
       </a-form>
     </div>
 
     <div class="stack">
       <div class="surface">
         <div class="toolbar">
-          <span class="toolbar-title">Results</span>
+          <span class="toolbar-title">检索结果</span>
           <a-space>
-            <a-tag v-if="queryStore.queryTimeMs !== null">Time {{ queryStore.queryTimeMs }} ms</a-tag>
-            <a-tag>{{ activeResults.length }} cells</a-tag>
+            <a-tag v-if="queryStore.queryTimeMs !== null">耗时 {{ queryStore.queryTimeMs }} ms</a-tag>
+            <a-tag>{{ activeResults.length }} 个细胞</a-tag>
           </a-space>
         </div>
         <a-table class="result-table" :data-source="activeResults" :columns="resultColumns" row-key="rank" size="small" :scroll="{ x: 900, y: 320 }" :pagination="false">
@@ -59,7 +59,7 @@
       </div>
 
       <div class="surface">
-        <div class="toolbar"><span class="toolbar-title">Embedding Highlight</span></div>
+        <div class="toolbar"><span class="toolbar-title">嵌入空间高亮</span></div>
         <div class="surface-pad">
           <PlotlyPanel v-if="queryStore.scatter && mode === 'single'" :payload="queryStore.scatter" />
           <div v-else class="placeholder-panel">
@@ -93,18 +93,18 @@ const cellType = ref<string | undefined>();
 const cellTypes = ref<string[]>([]);
 const targetDatasetIds = ref<number[]>([]);
 
-const datasetOptions = computed(() => store.indexedDatasets.map((dataset) => ({ value: dataset.id, label: `${dataset.name} (${dataset.n_cells || "?"} cells)` })));
+const datasetOptions = computed(() => store.indexedDatasets.map((dataset) => ({ value: dataset.id, label: `${dataset.name}（${dataset.n_cells || "?"} 个细胞）` })));
 const selectedDataset = computed(() => store.datasets.find((dataset) => dataset.id === datasetId.value));
 const indexOptions = computed(() => (selectedDataset.value?.indexes || []).filter((idx) => idx.status === "ready").map((idx) => ({ value: idx.id, label: `${idx.algorithm} · ${idx.metric.toUpperCase()} · M=${idx.M} · ef=${idx.ef_search}` })));
 const cellTypeOptions = computed(() => cellTypes.value.map((value) => ({ value, label: value })));
 const activeResults = computed(() => (mode.value === "single" ? queryStore.results : queryStore.multiResults));
 const resultColumns = [
   { title: "#", dataIndex: "rank", width: 58 },
-  { title: "Dataset", key: "dataset", width: 180 },
-  { title: "Cell", key: "cell", width: 260 },
-  { title: "Distance", dataIndex: "distance", width: 120 },
-  { title: "Disease", dataIndex: "disease", width: 120 },
-  { title: "Age", dataIndex: "age_group", width: 120 },
+  { title: "数据集", key: "dataset", width: 180 },
+  { title: "细胞", key: "cell", width: 260 },
+  { title: "距离", dataIndex: "distance", width: 120 },
+  { title: "疾病", dataIndex: "disease", width: 120 },
+  { title: "年龄组", dataIndex: "age_group", width: 120 },
 ];
 
 async function onDatasetChange() {

@@ -16,6 +16,7 @@ export function statusText(status: string) {
     pending: "等待",
     running: "运行中",
     success: "完成",
+    planned: "规划中",
   }[status] || status;
 }
 
@@ -29,4 +30,26 @@ export function statusColor(status: string) {
 
 export function numberOrDash(value?: number | null) {
   return value === undefined || value === null ? "-" : value.toLocaleString();
+}
+
+export function roleText(role?: string | null) {
+  return {
+    admin: "管理员",
+    user: "普通用户",
+  }[role || ""] || role || "-";
+}
+
+export function taskTypeText(type?: string | null) {
+  return {
+    process: "处理数据集",
+    build_index: "构建索引",
+  }[type || ""] || type || "任务";
+}
+
+export function visibilityText(visibility?: string | null) {
+  return {
+    public: "公开",
+    private: "私有",
+    shared: "共享",
+  }[visibility || ""] || visibility || "-";
 }

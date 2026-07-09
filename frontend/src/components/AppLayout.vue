@@ -4,24 +4,24 @@
       <div class="brand">
         <div class="brand-mark">SC</div>
         <div>
-          <div class="brand-title">ANN Research</div>
-          <div class="brand-subtitle">Single-cell retrieval platform</div>
+          <div class="brand-title">ANN 研究平台</div>
+          <div class="brand-subtitle">单细胞检索研究平台</div>
         </div>
       </div>
       <a-menu class="research-menu" mode="inline" :selected-keys="[activeKey]" @click="onMenuClick">
-        <a-menu-item key="/overview"><DashboardOutlined />Overview</a-menu-item>
-        <a-menu-item key="/datasets"><DatabaseOutlined />Datasets</a-menu-item>
-        <a-menu-item key="/index-lab"><ExperimentOutlined />Index Lab</a-menu-item>
-        <a-menu-item key="/query-lab"><SearchOutlined />Query Lab</a-menu-item>
-        <a-menu-item key="/evaluation"><BarChartOutlined />Evaluation</a-menu-item>
-        <a-menu-item key="/access"><SafetyCertificateOutlined />Access</a-menu-item>
-        <a-menu-item key="/ai-analysis"><RobotOutlined />AI Analysis</a-menu-item>
+        <a-menu-item key="/overview"><DashboardOutlined />概览</a-menu-item>
+        <a-menu-item key="/datasets"><DatabaseOutlined />数据资源</a-menu-item>
+        <a-menu-item key="/index-lab"><ExperimentOutlined />索引实验室</a-menu-item>
+        <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
+        <a-menu-item key="/evaluation"><BarChartOutlined />评估分析</a-menu-item>
+        <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
+        <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
       </a-menu>
       <div class="sider-capability">
-        <div class="capability-title">Capability Map</div>
+        <div class="capability-title">能力地图</div>
         <div v-for="capability in capabilities" :key="capability.key" class="capability-row">
           <span>{{ capability.title }}</span>
-          <a-tag :color="capability.status === 'ready' ? 'green' : 'default'">{{ capability.status }}</a-tag>
+          <a-tag :color="capability.status === 'ready' ? 'green' : 'default'">{{ statusText(capability.status) }}</a-tag>
         </div>
       </div>
     </a-layout-sider>
@@ -31,20 +31,20 @@
           <a-button class="mobile-nav-trigger" @click="openNav = true">
             <MenuOutlined />
           </a-button>
-          <span class="environment-pill">Research Workspace</span>
-          <span class="header-note">HNSW baseline · dataset-scoped access · extensible ANN modules</span>
+          <span class="environment-pill">研究工作台</span>
+          <span class="header-note">HNSW 基线 · 数据集级访问 · 可扩展 ANN 模块</span>
         </div>
         <div class="header-actions">
           <a-badge :count="taskStore.active.length" size="small">
-            <a-button @click="openTasks = true"><ClockCircleOutlined />Tasks</a-button>
+            <a-button @click="openTasks = true"><ClockCircleOutlined />任务</a-button>
           </a-badge>
           <a-dropdown>
             <a-button>{{ auth.user?.username }} <DownOutlined /></a-button>
             <template #overlay>
               <a-menu>
-                <a-menu-item key="role">Role: {{ auth.user?.role }}</a-menu-item>
+                <a-menu-item key="role">角色：{{ roleText(auth.user?.role) }}</a-menu-item>
                 <a-menu-divider />
-                <a-menu-item key="logout" @click="logout">Logout</a-menu-item>
+                <a-menu-item key="logout" @click="logout">退出登录</a-menu-item>
               </a-menu>
             </template>
           </a-dropdown>
@@ -54,18 +54,18 @@
         <router-view />
       </a-layout-content>
     </a-layout>
-    <a-drawer v-model:open="openNav" title="ANN Research" placement="left" width="282">
+    <a-drawer v-model:open="openNav" title="ANN 研究平台" placement="left" width="282">
       <a-menu class="drawer-menu" mode="inline" :selected-keys="[activeKey]" @click="onDrawerMenuClick">
-        <a-menu-item key="/overview"><DashboardOutlined />Overview</a-menu-item>
-        <a-menu-item key="/datasets"><DatabaseOutlined />Datasets</a-menu-item>
-        <a-menu-item key="/index-lab"><ExperimentOutlined />Index Lab</a-menu-item>
-        <a-menu-item key="/query-lab"><SearchOutlined />Query Lab</a-menu-item>
-        <a-menu-item key="/evaluation"><BarChartOutlined />Evaluation</a-menu-item>
-        <a-menu-item key="/access"><SafetyCertificateOutlined />Access</a-menu-item>
-        <a-menu-item key="/ai-analysis"><RobotOutlined />AI Analysis</a-menu-item>
+        <a-menu-item key="/overview"><DashboardOutlined />概览</a-menu-item>
+        <a-menu-item key="/datasets"><DatabaseOutlined />数据资源</a-menu-item>
+        <a-menu-item key="/index-lab"><ExperimentOutlined />索引实验室</a-menu-item>
+        <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
+        <a-menu-item key="/evaluation"><BarChartOutlined />评估分析</a-menu-item>
+        <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
+        <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
       </a-menu>
     </a-drawer>
-    <a-drawer v-model:open="openTasks" title="Task Center" width="420">
+    <a-drawer v-model:open="openTasks" title="任务中心" width="420">
       <a-list :data-source="taskStore.recent" :loading="taskLoading">
         <template #renderItem="{ item }">
           <a-list-item>
@@ -99,7 +99,7 @@ import { message } from "ant-design-vue";
 import { capabilities } from "@/services/capabilities";
 import { useAuthStore } from "@/stores/auth";
 import { useTaskStore } from "@/stores/tasks";
-import { statusColor, statusText } from "@/utils/format";
+import { roleText, statusColor, statusText, taskTypeText } from "@/utils/format";
 import type { TaskRecord } from "@/types";
 
 const route = useRoute();
@@ -125,8 +125,7 @@ function onDrawerMenuClick(event: { key: string }) {
 }
 
 function taskTitle(task: TaskRecord) {
-  const typeMap: Record<string, string> = { process: "Process dataset", build_index: "Build index" };
-  return `${typeMap[task.type] || task.type}${task.dataset_name ? ` · ${task.dataset_name}` : ""}`;
+  return `${taskTypeText(task.type)}${task.dataset_name ? ` · ${task.dataset_name}` : ""}`;
 }
 
 async function logout() {

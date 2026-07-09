@@ -4,8 +4,8 @@
       <div class="brand login-brand">
         <div class="brand-mark">SC</div>
         <div>
-          <div class="brand-title">ANN Research</div>
-          <div class="brand-subtitle">Professional single-cell retrieval workspace</div>
+          <div class="brand-title">ANN 研究平台</div>
+          <div class="brand-subtitle">专业单细胞检索工作台</div>
         </div>
       </div>
       <a-tabs v-model:active-key="mode">

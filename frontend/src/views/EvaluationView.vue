@@ -1,21 +1,21 @@
 <template>
-  <PageHeader title="Evaluation" description="对比 ANN 与精确检索，记录 Recall@K、响应时间和加速比。">
+  <PageHeader title="评估分析" description="对比 ANN 与精确检索，记录 Recall@K、响应时间和加速比。">
     <template #actions>
-      <a-button type="primary" :loading="queryStore.loading" @click="runEvaluation">Run Evaluation</a-button>
+      <a-button type="primary" :loading="queryStore.loading" @click="runEvaluation">运行评估</a-button>
     </template>
   </PageHeader>
 
   <div class="split-workbench">
     <div class="surface surface-pad">
-      <div class="panel-title">Evaluation Setup</div>
+      <div class="panel-title">评估配置</div>
       <a-form layout="vertical">
-        <a-form-item label="Dataset">
+        <a-form-item label="数据集">
           <a-select v-model:value="datasetId" :options="datasetOptions" @change="onDatasetChange" />
         </a-form-item>
-        <a-form-item label="Index">
+        <a-form-item label="索引">
           <a-select v-model:value="indexId" :options="indexOptions" />
         </a-form-item>
-        <a-form-item label="Sample Size">
+        <a-form-item label="样本数">
           <a-input-number v-model:value="sampleSize" :min="1" :max="50" style="width:100%" />
         </a-form-item>
         <a-form-item label="Top-K">
@@ -27,12 +27,12 @@
     <div class="stack">
       <div class="metric-grid" v-if="queryStore.metrics">
         <div class="metric-tile"><div class="metric-label">Recall@{{ queryStore.metrics.top_k }}</div><div class="metric-value">{{ (queryStore.metrics.avg_recall_at_k * 100).toFixed(1) }}%</div></div>
-        <div class="metric-tile"><div class="metric-label">Speedup</div><div class="metric-value">{{ queryStore.metrics.speedup }}x</div></div>
-        <div class="metric-tile"><div class="metric-label">ANN ms</div><div class="metric-value">{{ queryStore.metrics.avg_ann_time_ms }}</div></div>
-        <div class="metric-tile"><div class="metric-label">Exact ms</div><div class="metric-value">{{ queryStore.metrics.avg_exact_time_ms }}</div></div>
+        <div class="metric-tile"><div class="metric-label">加速比</div><div class="metric-value">{{ queryStore.metrics.speedup }}x</div></div>
+        <div class="metric-tile"><div class="metric-label">ANN 耗时 ms</div><div class="metric-value">{{ queryStore.metrics.avg_ann_time_ms }}</div></div>
+        <div class="metric-tile"><div class="metric-label">精确检索 ms</div><div class="metric-value">{{ queryStore.metrics.avg_exact_time_ms }}</div></div>
       </div>
       <div class="surface">
-        <div class="toolbar"><span class="toolbar-title">Performance Chart</span></div>
+        <div class="toolbar"><span class="toolbar-title">性能图表</span></div>
         <div class="surface-pad">
           <PlotlyPanel v-if="queryStore.evaluationPlot" :payload="queryStore.evaluationPlot" />
           <div v-else class="placeholder-panel">运行评估后展示性能图表。</div>

@@ -1,5 +1,5 @@
 <template>
-  <PageHeader title="Index Lab" description="构建和管理索引实验。当前启用 HNSW，预留多算法、参数实验和合并索引能力。">
+  <PageHeader title="索引实验室" description="构建和管理索引实验。当前启用 HNSW，预留多算法、参数实验和合并索引能力。">
     <template #actions>
       <a-space>
         <a-select v-model:value="selectedDatasetId" style="width: 280px" placeholder="选择数据集" :options="datasetOptions" @change="loadDetail" />
@@ -9,15 +9,15 @@
   </PageHeader>
 
   <div class="metric-grid">
-    <div class="metric-tile"><div class="metric-label">Dataset Status</div><div class="metric-value small-value">{{ dataset?.status || "-" }}</div></div>
-    <div class="metric-tile"><div class="metric-label">Vector Dim</div><div class="metric-value">{{ numberOrDash(dataset?.vector_dim) }}</div></div>
-    <div class="metric-tile"><div class="metric-label">Ready Indexes</div><div class="metric-value">{{ dataset?.ready_index_count || 0 }}</div></div>
-    <div class="metric-tile"><div class="metric-label">Algorithms</div><div class="metric-value small-value">HNSW + planned</div></div>
+    <div class="metric-tile"><div class="metric-label">数据集状态</div><div class="metric-value small-value">{{ dataset ? statusText(dataset.status) : "-" }}</div></div>
+    <div class="metric-tile"><div class="metric-label">向量维度</div><div class="metric-value">{{ numberOrDash(dataset?.vector_dim) }}</div></div>
+    <div class="metric-tile"><div class="metric-label">可用索引</div><div class="metric-value">{{ dataset?.ready_index_count || 0 }}</div></div>
+    <div class="metric-tile"><div class="metric-label">算法能力</div><div class="metric-value small-value">HNSW + 规划中</div></div>
   </div>
 
   <div class="two-column">
     <div class="surface">
-      <div class="toolbar"><span class="toolbar-title">Index Inventory</span></div>
+      <div class="toolbar"><span class="toolbar-title">索引清单</span></div>
       <a-table :data-source="dataset?.indexes || []" :columns="columns" row-key="id" size="middle" :pagination="false">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'status'"><StatusTag :status="record.status" /></template>
@@ -26,10 +26,10 @@
     </div>
 
     <div class="surface">
-      <div class="toolbar"><span class="toolbar-title">Algorithm Roadmap</span></div>
+      <div class="toolbar"><span class="toolbar-title">算法路线图</span></div>
       <div class="surface-pad capability-list">
         <div v-for="capability in indexCapabilities" :key="capability.key" class="capability-card">
-          <a-tag :color="capability.status === 'ready' ? 'green' : 'default'">{{ capability.status }}</a-tag>
+          <a-tag :color="capability.status === 'ready' ? 'green' : 'default'">{{ statusText(capability.status) }}</a-tag>
           <h3>{{ capability.title }}</h3>
           <p class="muted">{{ capability.description }}</p>
         </div>
@@ -37,10 +37,10 @@
     </div>
   </div>
 
-  <a-drawer v-model:open="drawerOpen" title="Build HNSW Index" width="460">
+  <a-drawer v-model:open="drawerOpen" title="构建 HNSW 索引" width="460">
     <a-form layout="vertical" @finish="build">
       <a-alert message="当前实现为 HNSW baseline；多算法切换会接入同一构建面板。" type="info" show-icon />
-      <a-form-item label="Distance Metric" style="margin-top: 16px">
+      <a-form-item label="距离度量" style="margin-top: 16px">
         <a-segmented v-model:value="form.metric" :options="['l2', 'cosine']" />
       </a-form-item>
       <a-form-item label="M">
@@ -67,7 +67,7 @@ import { api } from "@/services/api";
 import { capabilities } from "@/services/capabilities";
 import { useDatasetStore } from "@/stores/datasets";
 import { useTaskStore } from "@/stores/tasks";
-import { numberOrDash } from "@/utils/format";
+import { numberOrDash, statusText } from "@/utils/format";
 
 const route = useRoute();
 const store = useDatasetStore();
@@ -78,16 +78,16 @@ const building = ref(false);
 const form = reactive({ metric: "l2", M: 16, ef_construction: 200, ef_search: 100 });
 const dataset = computed(() => store.current);
 const canBuild = computed(() => !!dataset.value && ["processed", "indexed"].includes(dataset.value.status));
-const datasetOptions = computed(() => store.datasets.map((dataset) => ({ value: dataset.id, label: `${dataset.name} (${dataset.status})` })));
+const datasetOptions = computed(() => store.datasets.map((dataset) => ({ value: dataset.id, label: `${dataset.name}（${statusText(dataset.status)}）` })));
 const indexCapabilities = capabilities.filter((capability) => ["hnsw", "merged-index", "multi-algorithm"].includes(capability.key));
 const columns = [
   { title: "ID", dataIndex: "id", width: 70 },
-  { title: "Algorithm", dataIndex: "algorithm" },
-  { title: "Metric", dataIndex: "metric" },
+  { title: "算法", dataIndex: "algorithm" },
+  { title: "距离度量", dataIndex: "metric" },
   { title: "M", dataIndex: "M" },
   { title: "ef_search", dataIndex: "ef_search" },
-  { title: "Build ms", dataIndex: "build_time_ms" },
-  { title: "Status", key: "status" },
+  { title: "构建耗时 ms", dataIndex: "build_time_ms" },
+  { title: "状态", key: "status" },
 ];
 
 async function loadDetail() {
