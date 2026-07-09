@@ -19,6 +19,17 @@
         <div class="metric-tile"><div class="metric-label">可用索引</div><div class="metric-value">{{ dataset.ready_index_count }}</div></div>
       </div>
 
+      <div v-if="currentTask" class="surface surface-pad" style="margin-bottom: 18px">
+        <div class="panel-title">当前任务</div>
+        <a-alert
+          :message="currentTask.message || '任务执行中...'"
+          :description="currentTask.status === 'error' ? currentTask.error : undefined"
+          :type="currentTask.status === 'error' ? 'error' : currentTask.status === 'success' ? 'success' : 'info'"
+          show-icon
+        />
+        <a-progress style="margin-top: 12px" :percent="currentTask.progress || 0" :status="currentTask.status === 'error' ? 'exception' : currentTask.status === 'success' ? 'success' : 'active'" />
+      </div>
+
       <div class="two-column">
         <div class="stack">
           <div class="surface surface-pad">
@@ -63,6 +74,7 @@
               <a-button size="small" :disabled="!canPlot" :loading="plotLoading" @click="loadScatter">重新加载</a-button>
             </div>
             <div class="surface-pad">
+              <a-alert v-if="plotError" style="margin-bottom: 12px" type="error" show-icon :message="plotError" />
               <PlotlyPanel v-if="scatter" :payload="scatter" />
               <div v-else class="placeholder-panel">{{ canPlot ? "加载细胞分布图" : "处理数据集后可查看 UMAP/PCA 分布" }}</div>
             </div>
@@ -96,13 +108,15 @@ import { api } from "@/services/api";
 import { useDatasetStore } from "@/stores/datasets";
 import { useTaskStore } from "@/stores/tasks";
 import { formatDate, numberOrDash, taskTypeText } from "@/utils/format";
-import type { PlotlyPayload } from "@/types";
+import type { PlotlyPayload, TaskRecord } from "@/types";
 
 const route = useRoute();
 const store = useDatasetStore();
 const taskStore = useTaskStore();
 const actionLoading = ref(false);
 const plotLoading = ref(false);
+const plotError = ref("");
+const currentTask = ref<TaskRecord | null>(null);
 const scatter = ref<PlotlyPayload | null>(null);
 const datasetId = computed(() => Number(route.params.id));
 const dataset = computed(() => store.current);
@@ -146,11 +160,13 @@ async function reload() {
 async function loadScatter() {
   if (!canPlot.value) return;
   plotLoading.value = true;
+  plotError.value = "";
   try {
     const data = await api.scatter(datasetId.value);
     scatter.value = data.scatter_plot;
   } catch (error) {
-    message.error((error as Error).message);
+    plotError.value = (error as Error).message;
+    message.error(plotError.value);
   } finally {
     plotLoading.value = false;
   }
@@ -158,9 +174,12 @@ async function loadScatter() {
 
 async function process() {
   actionLoading.value = true;
+  currentTask.value = null;
   try {
     const data = await api.processDataset(datasetId.value);
-    await taskStore.waitForTask(data.task_id);
+    await taskStore.waitForTask(data.task_id, (task) => {
+      currentTask.value = task;
+    });
     message.success("数据集处理完成");
     await reload();
   } catch (error) {

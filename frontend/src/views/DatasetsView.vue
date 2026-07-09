@@ -38,7 +38,7 @@
   </div>
 
   <a-drawer v-model:open="uploadOpen" title="上传 AnnData 数据集" width="520">
-    <a-form layout="vertical" @finish="submitUpload">
+    <a-form layout="vertical">
       <a-form-item label="数据集名称">
         <a-input v-model:value="uploadForm.name" placeholder="例如 demo_liver" />
       </a-form-item>
@@ -50,7 +50,7 @@
       </a-form-item>
       <a-alert message="建议上传前确认 AnnData 包含 X_pca；X_umap 可用于更好的可视化。" type="info" show-icon />
       <div style="margin-top: 18px">
-        <a-button type="primary" html-type="submit" :loading="uploading" block>上传并注册</a-button>
+        <a-button type="primary" :loading="uploading" block @click="submitUpload">上传并注册</a-button>
       </div>
     </a-form>
   </a-drawer>

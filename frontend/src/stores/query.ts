@@ -12,11 +12,17 @@ export const useQueryStore = defineStore("query", {
     metrics: null as EvalMetrics | null,
     queryTimeMs: null as number | null,
     interpretation: {} as Record<string, unknown>,
+    multiMeta: null as { searched_dataset_count: number; skipped: unknown[]; metric: string } | null,
   }),
   actions: {
     async runSearch(params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string }) {
       this.loading = true;
       try {
+        this.results = [];
+        this.multiResults = [];
+        this.scatter = null;
+        this.queryTimeMs = null;
+        this.multiMeta = null;
         const data = await api.search(params);
         this.results = data.result_data.results;
         this.queryTimeMs = data.result_data.query_time_ms;
@@ -29,9 +35,18 @@ export const useQueryStore = defineStore("query", {
     async runMultiSearch(params: FormData) {
       this.loading = true;
       try {
+        this.results = [];
+        this.multiResults = [];
+        this.scatter = null;
+        this.queryTimeMs = null;
         const data = await api.multiSearch(params);
         this.multiResults = data.result_data.results;
         this.queryTimeMs = data.result_data.query_time_ms;
+        this.multiMeta = {
+          searched_dataset_count: data.result_data.searched_dataset_count,
+          skipped: data.result_data.skipped,
+          metric: data.result_data.metric,
+        };
       } finally {
         this.loading = false;
       }

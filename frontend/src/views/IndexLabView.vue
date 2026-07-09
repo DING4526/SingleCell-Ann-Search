@@ -38,8 +38,16 @@
   </div>
 
   <a-drawer v-model:open="drawerOpen" title="构建 HNSW 索引" width="460">
-    <a-form layout="vertical" @finish="build">
+    <a-form layout="vertical">
       <a-alert message="当前实现为 HNSW baseline；多算法切换会接入同一构建面板。" type="info" show-icon />
+      <a-alert
+        v-if="currentTask"
+        style="margin-top: 12px"
+        :message="currentTask.message || '任务执行中...'"
+        :type="currentTask.status === 'error' ? 'error' : currentTask.status === 'success' ? 'success' : 'info'"
+        show-icon
+      />
+      <a-progress v-if="currentTask" style="margin-top: 12px" :percent="currentTask.progress || 0" :status="currentTask.status === 'error' ? 'exception' : currentTask.status === 'success' ? 'success' : 'active'" />
       <a-form-item label="距离度量" style="margin-top: 16px">
         <a-segmented v-model:value="form.metric" :options="['l2', 'cosine']" />
       </a-form-item>
@@ -52,7 +60,7 @@
       <a-form-item label="ef_search">
         <a-input-number v-model:value="form.ef_search" :min="1" :max="1000" style="width: 100%" />
       </a-form-item>
-      <a-button type="primary" html-type="submit" block :loading="building">构建索引</a-button>
+      <a-button type="primary" block :loading="building" @click="build">构建索引</a-button>
     </a-form>
   </a-drawer>
 </template>
@@ -68,6 +76,7 @@ import { capabilities } from "@/services/capabilities";
 import { useDatasetStore } from "@/stores/datasets";
 import { useTaskStore } from "@/stores/tasks";
 import { numberOrDash, statusText } from "@/utils/format";
+import type { TaskRecord } from "@/types";
 
 const route = useRoute();
 const store = useDatasetStore();
@@ -75,6 +84,7 @@ const taskStore = useTaskStore();
 const selectedDatasetId = ref<number | undefined>(undefined);
 const drawerOpen = ref(false);
 const building = ref(false);
+const currentTask = ref<TaskRecord | null>(null);
 const form = reactive({ metric: "l2", M: 16, ef_construction: 200, ef_search: 100 });
 const dataset = computed(() => store.current);
 const canBuild = computed(() => !!dataset.value && ["processed", "indexed"].includes(dataset.value.status));
@@ -98,9 +108,12 @@ async function loadDetail() {
 async function build() {
   if (!selectedDatasetId.value) return;
   building.value = true;
+  currentTask.value = null;
   try {
     const data = await api.buildIndex(selectedDatasetId.value, form);
-    await taskStore.waitForTask(data.task_id);
+    await taskStore.waitForTask(data.task_id, (task) => {
+      currentTask.value = task;
+    });
     message.success("索引构建完成");
     drawerOpen.value = false;
     await loadDetail();

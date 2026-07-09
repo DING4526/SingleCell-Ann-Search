@@ -39,6 +39,8 @@ export const useTaskStore = defineStore("tasks", {
     async waitForTask(taskId: number, onTick?: (task: TaskRecord) => void) {
       for (;;) {
         const task = await api.task(taskId);
+        await this.refreshActive();
+        await this.refreshRecent();
         onTick?.(task);
         if (task.status === "success") return task;
         if (task.status === "error") throw new Error(task.error || task.message || "任务失败");

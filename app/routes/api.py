@@ -331,7 +331,7 @@ def api_process(dataset_id):
     db.session.add(task)
     db.session.commit()
 
-    executor.submit(run_process_task, task.id, dataset_id)
+    executor.submit(run_process_task, task.id, dataset_id, current_app._get_current_object())
     return jsonify(ok=True, task_id=task.id)
 
 
@@ -378,7 +378,7 @@ def api_build_index(dataset_id):
     db.session.add(task)
     db.session.commit()
 
-    executor.submit(run_build_index_task, task.id, dataset_id, params)
+    executor.submit(run_build_index_task, task.id, dataset_id, params, current_app._get_current_object())
     return jsonify(ok=True, task_id=task.id)
 
 

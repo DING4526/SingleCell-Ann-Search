@@ -33,14 +33,14 @@ def update_task(task_id: int, progress: int, message: str, status: str = None):
         db.session.commit()
 
 
-def run_process_task(task_id: int, dataset_id: int):
+def run_process_task(task_id: int, dataset_id: int, app=None):
     """在线程中执行处理数据集任务。"""
     from app import create_app
     from app.extensions import db
     from app.models import Task
     from app.services.data_service import process_h5ad_dataset
 
-    app = create_app()
+    app = app or create_app()
     with app.app_context():
         task = db.session.get(Task, task_id)
         if not task:
@@ -88,14 +88,14 @@ def run_process_task(task_id: int, dataset_id: int):
             db.session.commit()
 
 
-def run_build_index_task(task_id: int, dataset_id: int, params: dict):
+def run_build_index_task(task_id: int, dataset_id: int, params: dict, app=None):
     """在线程中执行构建 HNSW 索引任务。"""
     from app import create_app
     from app.extensions import db
     from app.models import Task
     from app.services.ann_service import build_hnsw_index
 
-    app = create_app()
+    app = app or create_app()
     with app.app_context():
         task = db.session.get(Task, task_id)
         if not task:
