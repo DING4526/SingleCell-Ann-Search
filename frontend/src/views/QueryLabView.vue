@@ -81,6 +81,22 @@
         <div class="toolbar"><span class="toolbar-title">嵌入空间高亮</span></div>
         <div class="surface-pad">
           <PlotlyPanel v-if="queryStore.scatter && mode === 'single'" :payload="queryStore.scatter" />
+          <div v-else-if="mode === 'single' && queryStore.plotLoading" class="placeholder-panel">
+            <a-space direction="vertical" style="width: min(520px, 100%)">
+              <a-alert
+                :message="queryStore.plotTask?.message || '检索结果已显示，正在异步生成高亮图...'"
+                type="info"
+                show-icon
+              />
+              <a-progress
+                :percent="queryStore.plotTask?.progress || 0"
+                :status="queryStore.plotTask?.status === 'error' ? 'exception' : 'active'"
+              />
+            </a-space>
+          </div>
+          <div v-else-if="mode === 'single' && queryStore.plotError" class="placeholder-panel">
+            <a-alert type="warning" show-icon :message="queryStore.plotError" />
+          </div>
           <div v-else class="placeholder-panel">
             {{ mode === 'multi' ? '跨数据集检索结果以合并表排序展示；后续可接入跨数据集嵌入对齐图。' : '运行单数据集检索后显示查询细胞和相似细胞。' }}
           </div>

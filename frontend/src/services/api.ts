@@ -1,24 +1,39 @@
-import type { Dataset, EvalMetrics, MultiSearchPayload, PlotlyPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
+import type { Dataset, EvalMetrics, MultiSearchPayload, PlotlyPayload, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
 
 type ApiResponse<T> = T & { ok: boolean; message?: string };
+type ApiRequestInit = RequestInit & { timeoutMs?: number };
 
-async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
-    credentials: "same-origin",
-    ...options,
-    headers: {
-      ...(options.body instanceof FormData ? {} : { "Content-Type": "application/x-www-form-urlencoded" }),
-      ...(options.headers || {}),
-    },
-  });
+async function request<T>(url: string, options: ApiRequestInit = {}): Promise<T> {
+  const { timeoutMs, ...fetchOptions } = options;
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timeoutId = timeoutMs ? window.setTimeout(() => controller?.abort(), timeoutMs) : undefined;
 
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : await response.text();
-  if (!response.ok || (typeof payload === "object" && payload && payload.ok === false)) {
-    const message = typeof payload === "object" && payload?.message ? payload.message : `请求失败 (${response.status})`;
-    throw new Error(message);
+  try {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      ...fetchOptions,
+      signal: controller?.signal || fetchOptions.signal,
+      headers: {
+        ...(fetchOptions.body instanceof FormData ? {} : { "Content-Type": "application/x-www-form-urlencoded" }),
+        ...(fetchOptions.headers || {}),
+      },
+    });
+
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+    if (!response.ok || (typeof payload === "object" && payload && payload.ok === false)) {
+      const message = typeof payload === "object" && payload?.message ? payload.message : `请求失败 (${response.status})`;
+      throw new Error(message);
+    }
+    return payload as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("请求超时，请稍后查看任务中心或重试");
+    }
+    throw error;
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
   }
-  return payload as T;
 }
 
 function toForm(data: Record<string, string | number | boolean | undefined | null>) {
@@ -26,6 +41,15 @@ function toForm(data: Record<string, string | number | boolean | undefined | nul
   Object.entries(data).forEach(([key, value]) => {
     if (value !== undefined && value !== null) form.set(key, String(value));
   });
+  return form;
+}
+
+function toSearchPlotForm(params: { dataset_id: number; query_cell_index: number; result_cell_indices: number[]; max_background_points?: number }) {
+  const form = new FormData();
+  form.set("dataset_id", String(params.dataset_id));
+  form.set("query_cell_index", String(params.query_cell_index));
+  form.set("max_background_points", String(params.max_background_points ?? 15_000));
+  params.result_cell_indices.forEach((cellIndex) => form.append("result_cell_indices", String(cellIndex)));
   return form;
 }
 
@@ -53,23 +77,25 @@ export const api = {
     request<ApiResponse<{ cell: { cell_index: number; cell_name: string; cell_type: string; disease: string; age_group: string } }>>(
       `/api/datasets/${datasetId}/cell-meta/${cellIndex}`,
     ),
-  tasks: (status = "all", limit = 20) => request<ApiResponse<{ tasks: TaskRecord[] }>>(`/api/tasks?status=${status}&limit=${limit}`),
-  task: (id: number) => request<ApiResponse<TaskRecord>>(`/api/tasks/${id}`),
-  activeTasks: () => request<ApiResponse<{ tasks: TaskRecord[] }>>("/api/tasks/active"),
+  tasks: (status = "all", limit = 20) => request<ApiResponse<{ tasks: TaskRecord[] }>>(`/api/tasks?status=${status}&limit=${limit}`, { timeoutMs: 5000 }),
+  task: (id: number) => request<ApiResponse<TaskRecord>>(`/api/tasks/${id}`, { timeoutMs: 15000 }),
+  activeTasks: () => request<ApiResponse<{ tasks: TaskRecord[] }>>("/api/tasks/active", { timeoutMs: 5000 }),
   search: (params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string }) =>
     request<ApiResponse<SingleSearchPayload>>(
       "/api/search",
       { method: "POST", body: toForm(params) },
     ),
   searchTask: (params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string; max_background_points?: number }) =>
-    request<ApiResponse<{ task_id: number }>>("/api/search/task", { method: "POST", body: toForm(params) }),
+    request<ApiResponse<{ task_id: number }>>("/api/search/task", { method: "POST", body: toForm(params), timeoutMs: 15000 }),
+  searchPlotTask: (params: { dataset_id: number; query_cell_index: number; result_cell_indices: number[]; max_background_points?: number }) =>
+    request<ApiResponse<{ task_id: number }>>("/api/search/plot/task", { method: "POST", body: toSearchPlotForm(params), timeoutMs: 15000 }),
   multiSearch: (params: FormData) =>
     request<ApiResponse<MultiSearchPayload>>(
       "/api/search/multi",
       { method: "POST", body: params },
     ),
   multiSearchTask: (params: FormData) =>
-    request<ApiResponse<{ task_id: number }>>("/api/search/multi/task", { method: "POST", body: params }),
+    request<ApiResponse<{ task_id: number }>>("/api/search/multi/task", { method: "POST", body: params, timeoutMs: 15000 }),
   evaluate: (params: { dataset_id: number; index_id: number; sample_size: number; eval_top_k: number }) =>
     request<ApiResponse<{ metrics: EvalMetrics; bar_plot: PlotlyPayload }>>("/api/evaluate", { method: "POST", body: toForm(params) }),
 };

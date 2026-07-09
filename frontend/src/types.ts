@@ -85,8 +85,12 @@ export type SingleSearchPayload = {
     query_cell_index: number;
     top_k: number;
   };
-  scatter_plot: PlotlyPayload;
+  scatter_plot?: PlotlyPayload;
   interpretation: Record<string, unknown>;
+};
+
+export type SearchPlotPayload = {
+  scatter_plot: PlotlyPayload;
 };
 
 export type MultiSearchPayload = {

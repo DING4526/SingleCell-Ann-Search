@@ -6,6 +6,8 @@ from datetime import datetime
 
 # 全局线程池，最多 2 个工作线程
 executor = ThreadPoolExecutor(max_workers=2)
+# Keep expensive Plotly serialization out of the main task pool.
+plot_executor = ThreadPoolExecutor(max_workers=1)
 
 
 def _get_app():
@@ -184,7 +186,7 @@ def run_search_task(task_id: int, params: dict, app=None):
                 query_cell_index=params["query_cell_index"],
                 top_k=params.get("top_k", 10),
                 filter_cell_type=params.get("filter_cell_type"),
-                max_background_points=params.get("max_background_points", 15_000),
+                include_plot=False,
                 progress_cb=progress_cb,
             )
             result_count = len(payload["result_data"].get("results", []))
@@ -198,6 +200,52 @@ def run_search_task(task_id: int, params: dict, app=None):
         except Exception as e:
             task.status = "error"
             task.message = "检索失败"
+            task.error_message = f"{str(e)}\n{traceback.format_exc()}"
+            task.updated_at = datetime.utcnow()
+            db.session.commit()
+
+
+def run_search_plot_task(task_id: int, params: dict, app=None):
+    """在线程中生成单数据集检索高亮图。"""
+    from app import create_app
+    from app.extensions import db
+    from app.models import Task
+    from app.services.search_service import execute_search_plot
+
+    app = app or create_app()
+    with app.app_context():
+        task = db.session.get(Task, task_id)
+        if not task:
+            return
+        task.status = "running"
+        task.progress = 5
+        task.message = "开始生成检索高亮图..."
+        task.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        def progress_cb(progress: int, message: str):
+            task.progress = progress
+            task.message = message
+            task.updated_at = datetime.utcnow()
+            db.session.commit()
+
+        try:
+            payload = execute_search_plot(
+                dataset_id=params["dataset_id"],
+                query_cell_index=params["query_cell_index"],
+                result_cell_indices=params.get("result_cell_indices", []),
+                max_background_points=params.get("max_background_points", 15_000),
+                progress_cb=progress_cb,
+            )
+            task.status = "success"
+            task.progress = 100
+            task.message = "检索高亮图生成完成。"
+            task.result_json = json.dumps(payload, ensure_ascii=False)
+            task.updated_at = datetime.utcnow()
+            db.session.commit()
+        except Exception as e:
+            task.status = "error"
+            task.message = "检索高亮图生成失败"
             task.error_message = f"{str(e)}\n{traceback.format_exc()}"
             task.updated_at = datetime.utcnow()
             db.session.commit()

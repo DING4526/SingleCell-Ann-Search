@@ -1,11 +1,15 @@
 import { defineStore } from "pinia";
 import { api } from "@/services/api";
 import { useTaskStore } from "@/stores/tasks";
-import type { EvalMetrics, MultiSearchPayload, PlotlyPayload, SearchResult, SingleSearchPayload, TaskRecord } from "@/types";
+import type { EvalMetrics, MultiSearchPayload, PlotlyPayload, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord } from "@/types";
 
 export const useQueryStore = defineStore("query", {
   state: () => ({
     loading: false,
+    plotLoading: false,
+    plotError: "",
+    plotTask: null as TaskRecord | null,
+    searchRunId: 0,
     results: [] as SearchResult[],
     multiResults: [] as SearchResult[],
     scatter: null as PlotlyPayload | null,
@@ -17,9 +21,13 @@ export const useQueryStore = defineStore("query", {
   }),
   actions: {
     resetSearchState() {
+      this.searchRunId += 1;
       this.results = [];
       this.multiResults = [];
       this.scatter = null;
+      this.plotLoading = false;
+      this.plotError = "";
+      this.plotTask = null;
       this.queryTimeMs = null;
       this.interpretation = {};
       this.multiMeta = null;
@@ -27,7 +35,7 @@ export const useQueryStore = defineStore("query", {
     applySingleSearchPayload(payload: SingleSearchPayload) {
       this.results = payload.result_data.results;
       this.queryTimeMs = payload.result_data.query_time_ms;
-      this.scatter = payload.scatter_plot;
+      this.scatter = payload.scatter_plot || null;
       this.interpretation = payload.interpretation || {};
       this.multiResults = [];
       this.multiMeta = null;
@@ -47,11 +55,40 @@ export const useQueryStore = defineStore("query", {
       this.loading = true;
       try {
         this.resetSearchState();
-        const data = await api.searchTask({ ...params, max_background_points: 15_000 });
-        const task = await useTaskStore().waitForTask(data.task_id, onTick);
+        const runId = this.searchRunId;
+        const data = await api.searchTask(params);
+        const task = await useTaskStore().waitForTask(data.task_id, onTick, { timeoutMs: 120_000 });
         this.applySingleSearchPayload(task.result as SingleSearchPayload);
+        const resultCellIndices = this.results.map((row) => row.cell_index);
+        if (resultCellIndices.length > 0) {
+          void this.runSearchPlot({
+            dataset_id: params.dataset_id,
+            query_cell_index: params.query_cell_index,
+            result_cell_indices: resultCellIndices,
+          }, runId);
+        }
       } finally {
         this.loading = false;
+      }
+    },
+    async runSearchPlot(params: { dataset_id: number; query_cell_index: number; result_cell_indices: number[] }, expectedRunId?: number) {
+      const runId = expectedRunId ?? this.searchRunId;
+      this.plotLoading = true;
+      this.plotError = "";
+      this.plotTask = null;
+      try {
+        const data = await api.searchPlotTask({ ...params, max_background_points: 15_000 });
+        const task = await useTaskStore().waitForTask(data.task_id, (nextTask) => {
+          if (this.searchRunId === runId) this.plotTask = nextTask;
+        }, { timeoutMs: 180_000 });
+        if (this.searchRunId === runId) {
+          const payload = task.result as SearchPlotPayload;
+          this.scatter = payload.scatter_plot;
+        }
+      } catch (error) {
+        if (this.searchRunId === runId) this.plotError = (error as Error).message;
+      } finally {
+        if (this.searchRunId === runId) this.plotLoading = false;
       }
     },
     async runMultiSearch(params: FormData, onTick?: (task: TaskRecord) => void) {
@@ -59,7 +96,7 @@ export const useQueryStore = defineStore("query", {
       try {
         this.resetSearchState();
         const data = await api.multiSearchTask(params);
-        const task = await useTaskStore().waitForTask(data.task_id, onTick);
+        const task = await useTaskStore().waitForTask(data.task_id, onTick, { timeoutMs: 120_000 });
         this.applyMultiSearchPayload(task.result as MultiSearchPayload);
       } finally {
         this.loading = false;

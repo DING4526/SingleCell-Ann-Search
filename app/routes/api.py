@@ -8,7 +8,15 @@ from flask_login import login_required, current_user, login_user, logout_user
 from werkzeug.utils import secure_filename
 from app.extensions import db
 from app.models import Dataset, AnnIndex, Cell, Task, QueryLog, User
-from app.tasks import executor, run_process_task, run_build_index_task, run_search_task, run_multi_search_task
+from app.tasks import (
+    executor,
+    plot_executor,
+    run_process_task,
+    run_build_index_task,
+    run_search_task,
+    run_search_plot_task,
+    run_multi_search_task,
+)
 from app.services.access_service import (
     accessible_datasets_query,
     accessible_tasks_query,
@@ -481,6 +489,54 @@ def api_search_task():
     db.session.commit()
 
     executor.submit(run_search_task, task.id, params, current_app._get_current_object())
+    return jsonify(ok=True, task_id=task.id)
+
+
+@api_bp.route("/search/plot/task", methods=["POST"])
+@login_required
+def api_search_plot_task():
+    """提交单数据集检索高亮图生成任务，独立于检索结果表格。"""
+    try:
+        dataset_id = _int_form("dataset_id", 0, min_value=1)
+        dataset = db.session.get(Dataset, dataset_id)
+        if not dataset:
+            return jsonify(ok=False, message="数据集不存在。"), 404
+        if not can_view_dataset(dataset):
+            return jsonify(ok=False, message="没有权限查看该数据集图表。"), 403
+
+        raw_indices = request.form.getlist("result_cell_indices")
+        if len(raw_indices) == 1 and "," in raw_indices[0]:
+            raw_indices = [item for item in raw_indices[0].split(",") if item.strip()]
+        result_cell_indices = []
+        for raw_index in raw_indices:
+            try:
+                result_cell_indices.append(int(raw_index))
+            except ValueError:
+                raise ValueError("result_cell_indices 包含非法细胞编号")
+        if len(result_cell_indices) > 100:
+            raise ValueError("result_cell_indices 最多支持 100 个细胞")
+
+        params = {
+            "dataset_id": dataset_id,
+            "query_cell_index": _int_form("query_cell_index", 0, min_value=0),
+            "result_cell_indices": result_cell_indices,
+            "max_background_points": _int_form("max_background_points", 15_000, min_value=1_000, max_value=50_000),
+        }
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
+    task = Task(
+        type="search_plot",
+        status="pending",
+        progress=0,
+        message="检索高亮图任务已提交，等待执行...",
+        dataset_id=dataset_id,
+        updated_at=datetime.utcnow(),
+    )
+    db.session.add(task)
+    db.session.commit()
+
+    plot_executor.submit(run_search_plot_task, task.id, params, current_app._get_current_object())
     return jsonify(ok=True, task_id=task.id)
 
 

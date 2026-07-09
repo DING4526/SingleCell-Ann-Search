@@ -36,15 +36,20 @@ export const useTaskStore = defineStore("tasks", {
       activeTimer = undefined;
       this.polling = false;
     },
-    async waitForTask(taskId: number, onTick?: (task: TaskRecord) => void) {
+    async waitForTask(taskId: number, onTick?: (task: TaskRecord) => void, options: { timeoutMs?: number; intervalMs?: number } = {}) {
+      const startedAt = Date.now();
+      const timeoutMs = options.timeoutMs ?? 0;
+      const intervalMs = options.intervalMs ?? 1000;
       for (;;) {
         const task = await api.task(taskId);
-        await this.refreshActive();
-        await this.refreshRecent();
+        await Promise.allSettled([this.refreshActive(), this.refreshRecent()]);
         onTick?.(task);
         if (task.status === "success") return task;
         if (task.status === "error") throw new Error(task.error || task.message || "任务失败");
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        if (timeoutMs > 0 && Date.now() - startedAt > timeoutMs) {
+          throw new Error(task.message ? `任务等待超时：${task.message}` : "任务等待超时");
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
       }
     },
   },

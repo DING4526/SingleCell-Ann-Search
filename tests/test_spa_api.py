@@ -149,8 +149,22 @@ def test_spa_processing_index_search_and_scatter_baseline():
             assert search_task.status_code == 200
             search_task_payload = _wait_for_task(client, search_task.get_json()["task_id"])
             assert search_task_payload["status"] == "success"
-            assert len(search_task_payload["result"]["result_data"]["results"]) == 5
-            assert search_task_payload["result"]["scatter_plot"]["data"]
+            search_results = search_task_payload["result"]["result_data"]["results"]
+            assert len(search_results) == 5
+            assert "scatter_plot" not in search_task_payload["result"]
+
+            plot_task = client.post(
+                "/api/search/plot/task",
+                data={
+                    "dataset_id": dataset_id,
+                    "query_cell_index": 0,
+                    "result_cell_indices": ",".join(str(row["cell_index"]) for row in search_results),
+                },
+            )
+            assert plot_task.status_code == 200
+            plot_payload = _wait_for_task(client, plot_task.get_json()["task_id"])
+            assert plot_payload["status"] == "success"
+            assert plot_payload["result"]["scatter_plot"]["data"]
 
             sync_search = client.post(
                 "/api/search",
