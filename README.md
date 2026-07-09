@@ -1,186 +1,266 @@
 # 单细胞 ANN 检索系统
 
-基于高维向量的单细胞近似最近邻检索平台
+基于 Flask + Vue 3 的单细胞近似最近邻检索平台，用于读取 `.h5ad` 数据集、提取 PCA 向量、构建 HNSW 索引，并支持 Top-K 相似细胞检索、跨数据集检索、可视化和评估。
 
-基于 Flask 的 Web 系统，用于读取 `.h5ad` 单细胞数据、提取 PCA 向量、使用 HNSWLIB 构建索引，并支持 Top-K 相似细胞检索与交互式可视化。
+前端已重构为专业研究者平台式 SPA，核心页面包括 Overview、Datasets、Index Lab、Query Lab、Evaluation、Access、AI Analysis。
 
 ## 技术栈
 
-- **后端**: Flask, Flask-Login, Flask-SQLAlchemy
-- **前端**: Vue 3, Vite, TypeScript, Ant Design Vue
-- **数据库**: SQLite + SQLAlchemy
-- **数据处理**: Scanpy, AnnData, NumPy, Pandas
-- **ANN 索引**: HNSWLIB
-- **可视化**: Plotly
-- **测试**: pytest
-
-## 主要功能
-
-- 用户注册、登录、退出
-- 上传并处理 `.h5ad` 单细胞数据集
-- 提取 PCA 向量并缓存为 `.npy`
-- 将细胞元信息（cell_type、disease、AgeGroup）保存到 SQLite
-- 构建 HNSW 近似最近邻索引
-- Top-K 相似细胞检索并展示查询耗时
-- 支持按细胞类型过滤检索结果
-- 专业研究者平台式 SPA：Overview、Datasets、Index Lab、Query Lab、Evaluation、Access、AI Analysis
-- UMAP/PCA 散点图可视化，高亮查询细胞和结果细胞
-- 性能评估：ANN vs 精确检索的 Recall@K 和加速比
+- 后端：Flask, Flask-Login, Flask-SQLAlchemy
+- 前端：Vue 3, Vite, TypeScript, Pinia, Vue Router, Ant Design Vue
+- 数据库：SQLite + SQLAlchemy
+- 数据处理：Scanpy, AnnData, NumPy, Pandas
+- ANN 索引：HNSWLIB
+- 可视化：Plotly
+- 测试：pytest, vue-tsc, Vite build
 
 ## 目录结构
 
-```
+```text
 single-cell-ann-search/
 ├── app/
 │   ├── __init__.py          # Flask 应用工厂
 │   ├── config.py            # 配置
 │   ├── extensions.py        # db, login_manager
-│   ├── models.py            # User, Dataset, Cell, AnnIndex, QueryLog
-│   ├── routes/
-│   │   ├── main.py          # 首页、文档页
-│   │   ├── auth.py          # 登录、注册
-│   │   ├── datasets.py      # 上传、处理、详情、建索引
-│   │   └── search.py        # 检索、评估
-│   ├── services/
-│   │   ├── data_service.py  # h5ad 读取、PCA 提取
-│   │   ├── ann_service.py   # HNSW 构建、加载、查询
-│   │   ├── eval_service.py  # 精确检索、Recall@K
-│   │   └── plot_service.py  # Plotly 图表
-│   ├── templates/           # Jinja2 HTML 模板
-│   └── static/css/          # 样式文件
+│   ├── models.py            # User, Dataset, Cell, AnnIndex, QueryLog, Task
+│   ├── routes/              # 页面路由与 API 路由
+│   ├── services/            # 数据处理、索引、评估、绘图服务
+│   ├── spa.py               # Flask 托管 Vite SPA
+│   ├── templates/           # 旧 Jinja 模板，保留部分兼容页面
+│   └── static/              # 旧静态资源
 ├── frontend/
 │   ├── src/                 # Vue 3 SPA 源码
-│   ├── package.json         # 前端依赖与构建脚本
-│   └── dist/                # 前端构建产物（本地生成，不提交）
+│   ├── package.json         # 前端依赖与脚本
+│   └── dist/                # 前端构建产物，本地生成，不提交
 ├── data/
 │   ├── raw/                 # 上传的 h5ad 文件
 │   ├── cache/               # 缓存的 npy 向量
 │   └── indexes/             # HNSW 索引文件
+├── instance/                # SQLite 数据库，本地生成，不提交
 ├── scripts/
 │   ├── init_db.py           # 初始化数据库
 │   ├── seed_admin.py        # 创建管理员用户
 │   └── create_demo_h5ad.py  # 生成 demo 数据集
 ├── tests/
-│   ├── test_data_service.py
-│   └── test_ann_service.py
 ├── requirements.txt
 ├── run.py
 └── README.md
 ```
 
-## 安装与运行
+## 环境要求
 
-### 1. 创建并激活 conda/venv 虚拟环境
+- Python 3.10 推荐
+- Node.js 18+ 推荐
+- Windows PowerShell、Git Bash 或 macOS/Linux Shell 均可
 
-```bash
+以下命令默认在项目根目录执行：
+
+```powershell
+cd D:\03_Courses\3_2_01_Software_Engineering\lab5_final\single-cell-ann-search
+```
+
+## 首次初始化
+
+### 1. 创建 Python 虚拟环境
+
+PowerShell：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+如果使用 conda：
+
+```powershell
 conda create -n sc-ann python=3.10
 conda activate sc-ann
 ```
 
-```
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
+### 2. 安装后端依赖
 
-### 2. 安装依赖
-
-```bash
+```powershell
 pip install -r requirements.txt
 ```
 
 ### 3. 初始化数据库
 
-```bash
+```powershell
 python scripts/init_db.py
 ```
 
-### 4. （可选）创建管理员用户
+### 4. 创建管理员账号
 
-```bash
+```powershell
 python scripts/seed_admin.py
 ```
 
-预置管理员账号：`admin` / `admin123`
+默认管理员账号：
+
+```text
+用户名：admin
+密码：admin123
+```
 
 ### 5. 生成 demo 数据
 
-```bash
+```powershell
 python scripts/create_demo_h5ad.py
 ```
 
-### 6. 启动项目
+生成后可在平台中上传：
 
-如果只是运行后端 API：
-
-```bash
-python run.py
+```text
+data/raw/demo_liver.h5ad
 ```
 
-如果需要使用新版 SPA，需要先构建前端：
+### 6. 安装前端依赖
 
-```bash
+```powershell
 cd frontend
 npm install
+cd ..
+```
+
+## 本地浏览器运行
+
+本项目支持两种本地运行方式。
+
+### 方式 A：生产构建模式，推荐用于演示和验收
+
+先构建前端 SPA，再由 Flask 托管静态文件：
+
+```powershell
+cd frontend
 npm run build
 cd ..
 python run.py
 ```
 
-在浏览器中打开 http://localhost:5000
+然后在本地浏览器打开：
 
-开发前端时可使用 Vite 代理 Flask API：
+```text
+http://127.0.0.1:5000
+```
 
-```bash
+登录：
+
+```text
+admin / admin123
+```
+
+这个模式最接近课程演示和部署形态。Flask 会返回 Vue SPA，并继续提供 `/api/*` 接口。
+
+### 方式 B：前端开发模式，推荐用于改 UI
+
+开两个终端。
+
+终端 1：启动 Flask API：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 python run.py
+```
+
+终端 2：启动 Vite：
+
+```powershell
 cd frontend
 npm run dev
 ```
 
-然后访问 http://localhost:5173
+然后在本地浏览器打开：
+
+```text
+http://127.0.0.1:5173
+```
+
+Vite 会把 `/api` 请求代理到 Flask，因此前端热更新更快，适合继续调页面、交互和组件。
+
+## 常见初始化问题
+
+### PowerShell 不允许激活虚拟环境
+
+如果 `Activate.ps1` 被执行策略拦截，可以在当前 PowerShell 会话中执行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+### 访问页面看到旧内容或资源 404
+
+生产构建模式下需要先执行：
+
+```powershell
+cd frontend
+npm run build
+cd ..
+python run.py
+```
+
+如果刚改过前端但仍看到旧页面，重跑 `npm run build` 后刷新浏览器。
+
+### 端口被占用
+
+默认端口：
+
+```text
+Flask: 5000
+Vite: 5173
+```
+
+如果端口被占用，先关闭旧的 Python 或 Node 进程，再重新启动。
 
 ## 演示流程
 
-1. 注册新账号并登录
-2. 进入 **Datasets**，上传 `data/raw/demo_liver.h5ad`
-3. 在数据集详情页处理数据集，提取向量和细胞元信息
-4. 查看数据集统计信息和 UMAP/PCA 可视化
-5. 进入 **Index Lab** 构建 HNSW 索引（默认：L2, M=16）
-6. 进入 **Query Lab**
-7. 选择数据集和索引
-8. 输入查询细胞索引（例如 `0`），设置 Top-K（例如 `10`）
-9. 点击**检索**查找相似细胞
-10. 查看结果表格、查询耗时和散点图
-11. 可选：按细胞类型过滤
-12. 进入 **Evaluation** 对比 ANN 与精确检索的性能（Recall@K、加速比）
+1. 打开 `http://127.0.0.1:5000` 或 `http://127.0.0.1:5173`
+2. 使用 `admin / admin123` 登录
+3. 进入 Datasets，上传 `data/raw/demo_liver.h5ad`
+4. 在数据集详情页处理数据集，提取向量和细胞元信息
+5. 查看数据集统计信息和 UMAP/PCA 可视化
+6. 进入 Index Lab，选择数据集并构建 HNSW 索引
+7. 进入 Query Lab，选择数据集和索引
+8. 输入查询细胞索引，例如 `0`
+9. 设置 Top-K，例如 `10`
+10. 运行检索并查看结果表格、耗时和散点图联动
+11. 可选：使用跨数据集检索
+12. 进入 Evaluation，对比 ANN 与精确检索的 Recall@K、耗时和加速比
 
-## 运行测试
+## 验证命令
 
-```bash
-pytest tests/ -v
+后端测试：
+
+```powershell
+pytest tests -q
 ```
 
-前端验证：
+前端类型检查：
 
-```bash
+```powershell
 cd frontend
 npm run typecheck
+```
+
+前端生产构建：
+
+```powershell
+cd frontend
 npm run build
+```
+
+前端生产依赖安全检查：
+
+```powershell
+cd frontend
 npm audit --omit=dev
 ```
 
-## 小组分工建议（3 人团队）
-
-| 角色 | 负责内容 |
-|------|---------|
-| 组长 | 整体架构设计与维护、Flask 框架搭建、数据库模型、路由集成、代码审查、部署、开发文档撰写、最终汇报 |
-| 组员 A | 数据处理服务（data_service）、HNSW 索引服务（ann_service）、评估服务（eval_service）、demo 数据生成、单元测试、参数对比实验 |
-| 组员 B | 前端模板开发、Plotly 可视化增强、检索交互 UI、CSS 样式优化、用户验收测试、演示视频录制 |
-
 ## 后续扩展方向
 
-- 支持多种 ANN 算法（IVF、PQ）
-- 支持向量输入查询（不限于细胞索引）
-- 跨数据集联合检索
-- 批量查询支持
-- 结果导出为 CSV
-- 管理员用户管理面板
+- 多 ANN 算法选择：FAISS IVF/PQ/HNSW 参数实验
+- 索引合并：多数据集物理联合索引与全局 cell id
+- 权限管理：用户、共享、数据集可见性和操作权限
+- 大模型集成：自然语言查询、RAG 分析和检索结果解释
+- 批量查询与结果导出
+- Plotly 按需加载，降低首屏构建包体积
