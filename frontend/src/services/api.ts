@@ -1,4 +1,4 @@
-import type { Dataset, EvalMetrics, PlotlyPayload, SearchResult, TaskRecord, User } from "@/types";
+import type { Dataset, EvalMetrics, MultiSearchPayload, PlotlyPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
 
 type ApiResponse<T> = T & { ok: boolean; message?: string };
 
@@ -57,15 +57,19 @@ export const api = {
   task: (id: number) => request<ApiResponse<TaskRecord>>(`/api/tasks/${id}`),
   activeTasks: () => request<ApiResponse<{ tasks: TaskRecord[] }>>("/api/tasks/active"),
   search: (params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string }) =>
-    request<ApiResponse<{ result_data: { results: SearchResult[]; query_time_ms: number; query_cell_index: number; top_k: number }; scatter_plot: PlotlyPayload; interpretation: Record<string, unknown> }>>(
+    request<ApiResponse<SingleSearchPayload>>(
       "/api/search",
       { method: "POST", body: toForm(params) },
     ),
+  searchTask: (params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string; max_background_points?: number }) =>
+    request<ApiResponse<{ task_id: number }>>("/api/search/task", { method: "POST", body: toForm(params) }),
   multiSearch: (params: FormData) =>
-    request<ApiResponse<{ result_data: { results: SearchResult[]; query_time_ms: number; query_cell_index: number; top_k: number; searched_dataset_count: number; skipped: unknown[]; metric: string } }>>(
+    request<ApiResponse<MultiSearchPayload>>(
       "/api/search/multi",
       { method: "POST", body: params },
     ),
+  multiSearchTask: (params: FormData) =>
+    request<ApiResponse<{ task_id: number }>>("/api/search/multi/task", { method: "POST", body: params }),
   evaluate: (params: { dataset_id: number; index_id: number; sample_size: number; eval_top_k: number }) =>
     request<ApiResponse<{ metrics: EvalMetrics; bar_plot: PlotlyPayload }>>("/api/evaluate", { method: "POST", body: toForm(params) }),
 };

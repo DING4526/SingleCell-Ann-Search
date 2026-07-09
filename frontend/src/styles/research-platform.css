@@ -262,6 +262,12 @@ body {
   gap: 14px;
 }
 
+.task-inline {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #eef2f7;
+}
+
 .plot-box {
   min-height: 520px;
 }

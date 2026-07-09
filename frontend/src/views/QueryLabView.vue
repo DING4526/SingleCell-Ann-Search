@@ -31,6 +31,18 @@
           </a-checkbox-group>
         </a-form-item>
         <a-button type="primary" block :loading="queryStore.loading" @click="run">运行检索</a-button>
+        <div v-if="currentTask" class="task-inline">
+          <a-alert
+            :message="currentTask.message || '检索任务执行中...'"
+            :type="currentTask.status === 'error' ? 'error' : currentTask.status === 'success' ? 'success' : 'info'"
+            show-icon
+          />
+          <a-progress
+            style="margin-top: 10px"
+            :percent="currentTask.progress || 0"
+            :status="currentTask.status === 'error' ? 'exception' : currentTask.status === 'success' ? 'success' : 'active'"
+          />
+        </div>
       </a-form>
     </div>
 
@@ -101,7 +113,7 @@ import PlotlyPanel from "@/components/PlotlyPanel.vue";
 import { api } from "@/services/api";
 import { useDatasetStore } from "@/stores/datasets";
 import { useQueryStore } from "@/stores/query";
-import type { SearchResult } from "@/types";
+import type { SearchResult, TaskRecord } from "@/types";
 
 const route = useRoute();
 const store = useDatasetStore();
@@ -115,6 +127,7 @@ const cellType = ref<string | undefined>();
 const cellTypes = ref<string[]>([]);
 const targetDatasetIds = ref<number[]>([]);
 const queryError = ref("");
+const currentTask = ref<TaskRecord | null>(null);
 const detailOpen = ref(false);
 const selectedResult = ref<SearchResult | null>(null);
 const cellDetailError = ref("");
@@ -152,6 +165,7 @@ async function run() {
     return;
   }
   queryError.value = "";
+  currentTask.value = null;
   try {
     if (mode.value === "single") {
       await queryStore.runSearch({
@@ -160,6 +174,8 @@ async function run() {
         query_cell_index: queryCellIndex.value,
         top_k: topK.value,
         filter_cell_type: cellType.value,
+      }, (task) => {
+        currentTask.value = task;
       });
     } else {
       const form = new FormData();
@@ -169,7 +185,9 @@ async function run() {
       form.set("top_k", String(topK.value));
       form.set("target_scope", "selected");
       targetDatasetIds.value.forEach((id) => form.append("target_dataset_ids", String(id)));
-      await queryStore.runMultiSearch(form);
+      await queryStore.runMultiSearch(form, (task) => {
+        currentTask.value = task;
+      });
     }
   } catch (error) {
     queryError.value = (error as Error).message;

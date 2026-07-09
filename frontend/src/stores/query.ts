@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { api } from "@/services/api";
-import type { EvalMetrics, PlotlyPayload, SearchResult } from "@/types";
+import { useTaskStore } from "@/stores/tasks";
+import type { EvalMetrics, MultiSearchPayload, PlotlyPayload, SearchResult, SingleSearchPayload, TaskRecord } from "@/types";
 
 export const useQueryStore = defineStore("query", {
   state: () => ({
@@ -15,38 +16,51 @@ export const useQueryStore = defineStore("query", {
     multiMeta: null as { searched_dataset_count: number; skipped: unknown[]; metric: string } | null,
   }),
   actions: {
-    async runSearch(params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string }) {
+    resetSearchState() {
+      this.results = [];
+      this.multiResults = [];
+      this.scatter = null;
+      this.queryTimeMs = null;
+      this.interpretation = {};
+      this.multiMeta = null;
+    },
+    applySingleSearchPayload(payload: SingleSearchPayload) {
+      this.results = payload.result_data.results;
+      this.queryTimeMs = payload.result_data.query_time_ms;
+      this.scatter = payload.scatter_plot;
+      this.interpretation = payload.interpretation || {};
+      this.multiResults = [];
+      this.multiMeta = null;
+    },
+    applyMultiSearchPayload(payload: MultiSearchPayload) {
+      this.multiResults = payload.result_data.results;
+      this.queryTimeMs = payload.result_data.query_time_ms;
+      this.results = [];
+      this.scatter = null;
+      this.multiMeta = {
+        searched_dataset_count: payload.result_data.searched_dataset_count,
+        skipped: payload.result_data.skipped,
+        metric: payload.result_data.metric,
+      };
+    },
+    async runSearch(params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string }, onTick?: (task: TaskRecord) => void) {
       this.loading = true;
       try {
-        this.results = [];
-        this.multiResults = [];
-        this.scatter = null;
-        this.queryTimeMs = null;
-        this.multiMeta = null;
-        const data = await api.search(params);
-        this.results = data.result_data.results;
-        this.queryTimeMs = data.result_data.query_time_ms;
-        this.scatter = data.scatter_plot;
-        this.interpretation = data.interpretation || {};
+        this.resetSearchState();
+        const data = await api.searchTask({ ...params, max_background_points: 15_000 });
+        const task = await useTaskStore().waitForTask(data.task_id, onTick);
+        this.applySingleSearchPayload(task.result as SingleSearchPayload);
       } finally {
         this.loading = false;
       }
     },
-    async runMultiSearch(params: FormData) {
+    async runMultiSearch(params: FormData, onTick?: (task: TaskRecord) => void) {
       this.loading = true;
       try {
-        this.results = [];
-        this.multiResults = [];
-        this.scatter = null;
-        this.queryTimeMs = null;
-        const data = await api.multiSearch(params);
-        this.multiResults = data.result_data.results;
-        this.queryTimeMs = data.result_data.query_time_ms;
-        this.multiMeta = {
-          searched_dataset_count: data.result_data.searched_dataset_count,
-          skipped: data.result_data.skipped,
-          metric: data.result_data.metric,
-        };
+        this.resetSearchState();
+        const data = await api.multiSearchTask(params);
+        const task = await useTaskStore().waitForTask(data.task_id, onTick);
+        this.applyMultiSearchPayload(task.result as MultiSearchPayload);
       } finally {
         this.loading = false;
       }

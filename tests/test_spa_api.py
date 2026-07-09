@@ -142,14 +142,40 @@ def test_spa_processing_index_search_and_scatter_baseline():
             assert build_task["status"] == "success"
             index_id = build_task["result"]["index_id"]
 
-            search = client.post(
+            search_task = client.post(
+                "/api/search/task",
+                data={"dataset_id": dataset_id, "index_id": index_id, "query_cell_index": 0, "top_k": 5},
+            )
+            assert search_task.status_code == 200
+            search_task_payload = _wait_for_task(client, search_task.get_json()["task_id"])
+            assert search_task_payload["status"] == "success"
+            assert len(search_task_payload["result"]["result_data"]["results"]) == 5
+            assert search_task_payload["result"]["scatter_plot"]["data"]
+
+            sync_search = client.post(
                 "/api/search",
                 data={"dataset_id": dataset_id, "index_id": index_id, "query_cell_index": 0, "top_k": 5},
             )
-            assert search.status_code == 200
-            search_payload = search.get_json()
+            assert sync_search.status_code == 200
+            search_payload = sync_search.get_json()
             assert len(search_payload["result_data"]["results"]) == 5
             assert search_payload["scatter_plot"]["data"]
+
+            multi_task = client.post(
+                "/api/search/multi/task",
+                data={
+                    "dataset_id": dataset_id,
+                    "index_id": index_id,
+                    "query_cell_index": 0,
+                    "top_k": 5,
+                    "target_scope": "selected",
+                    "target_dataset_ids": str(dataset_id),
+                },
+            )
+            assert multi_task.status_code == 200
+            multi_payload = _wait_for_task(client, multi_task.get_json()["task_id"])
+            assert multi_payload["status"] == "success"
+            assert len(multi_payload["result"]["result_data"]["results"]) == 5
 
             scatter = client.get(f"/api/datasets/{dataset_id}/scatter")
             assert scatter.status_code == 200

@@ -43,6 +43,8 @@ export function taskTypeText(type?: string | null) {
   return {
     process: "处理数据集",
     build_index: "构建索引",
+    search: "运行检索",
+    multi_search: "跨数据集检索",
   }[type || ""] || type || "任务";
 }
 

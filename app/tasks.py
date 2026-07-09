@@ -151,3 +151,96 @@ def run_build_index_task(task_id: int, dataset_id: int, params: dict, app=None):
             task.error_message = f"{str(e)}\n{traceback.format_exc()}"
             task.updated_at = datetime.utcnow()
             db.session.commit()
+
+
+def run_search_task(task_id: int, params: dict, app=None):
+    """在线程中执行单数据集检索任务。"""
+    from app import create_app
+    from app.extensions import db
+    from app.models import Task
+    from app.services.search_service import execute_single_search
+
+    app = app or create_app()
+    with app.app_context():
+        task = db.session.get(Task, task_id)
+        if not task:
+            return
+        task.status = "running"
+        task.progress = 5
+        task.message = "开始检索..."
+        task.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        def progress_cb(progress: int, message: str):
+            task.progress = progress
+            task.message = message
+            task.updated_at = datetime.utcnow()
+            db.session.commit()
+
+        try:
+            payload = execute_single_search(
+                dataset_id=params["dataset_id"],
+                index_id=params["index_id"],
+                query_cell_index=params["query_cell_index"],
+                top_k=params.get("top_k", 10),
+                filter_cell_type=params.get("filter_cell_type"),
+                max_background_points=params.get("max_background_points", 15_000),
+                progress_cb=progress_cb,
+            )
+            result_count = len(payload["result_data"].get("results", []))
+            query_time_ms = payload["result_data"].get("query_time_ms")
+            task.status = "success"
+            task.progress = 100
+            task.message = f"检索完成：返回 {result_count} 个细胞，ANN 查询耗时 {query_time_ms} ms。"
+            task.result_json = json.dumps(payload, ensure_ascii=False)
+            task.updated_at = datetime.utcnow()
+            db.session.commit()
+        except Exception as e:
+            task.status = "error"
+            task.message = "检索失败"
+            task.error_message = f"{str(e)}\n{traceback.format_exc()}"
+            task.updated_at = datetime.utcnow()
+            db.session.commit()
+
+
+def run_multi_search_task(task_id: int, params: dict, app=None):
+    """在线程中执行跨数据集检索任务。"""
+    from app import create_app
+    from app.extensions import db
+    from app.models import Task
+    from app.services.multi_search_service import search_across_datasets
+
+    app = app or create_app()
+    with app.app_context():
+        task = db.session.get(Task, task_id)
+        if not task:
+            return
+        task.status = "running"
+        task.progress = 10
+        task.message = "开始跨数据集检索..."
+        task.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        try:
+            result_data = search_across_datasets(
+                source_dataset_id=params["dataset_id"],
+                source_index_id=params["index_id"],
+                query_cell_index=params["query_cell_index"],
+                top_k=params.get("top_k", 20),
+                target_dataset_ids=params.get("target_dataset_ids"),
+            )
+            task.status = "success"
+            task.progress = 100
+            task.message = (
+                f"跨数据集检索完成：检索 {result_data.get('searched_dataset_count', 0)} 个数据集，"
+                f"返回 {len(result_data.get('results', []))} 个细胞。"
+            )
+            task.result_json = json.dumps({"result_data": result_data}, ensure_ascii=False)
+            task.updated_at = datetime.utcnow()
+            db.session.commit()
+        except Exception as e:
+            task.status = "error"
+            task.message = "跨数据集检索失败"
+            task.error_message = f"{str(e)}\n{traceback.format_exc()}"
+            task.updated_at = datetime.utcnow()
+            db.session.commit()

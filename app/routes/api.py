@@ -8,7 +8,7 @@ from flask_login import login_required, current_user, login_user, logout_user
 from werkzeug.utils import secure_filename
 from app.extensions import db
 from app.models import Dataset, AnnIndex, Cell, Task, QueryLog, User
-from app.tasks import executor, run_process_task, run_build_index_task
+from app.tasks import executor, run_process_task, run_build_index_task, run_search_task, run_multi_search_task
 from app.services.access_service import (
     accessible_datasets_query,
     accessible_tasks_query,
@@ -408,8 +408,7 @@ def api_task_status(task_id):
 @login_required
 def api_search():
     """AJAX 检索：执行 Top-K 相似细胞检索，返回结果及 Plotly JSON 图数据。"""
-    from app.services.ann_service import search_by_cell_index
-    from app.services.plot_service import search_scatter_json
+    from app.services.search_service import execute_single_search
 
     try:
         dataset_id = _int_form("dataset_id", 0, min_value=1)
@@ -426,55 +425,63 @@ def api_search():
         top_k = _int_form("top_k", 10, min_value=1, max_value=100)
         filter_cell_type = request.form.get("filter_cell_type", "").strip() or None
 
-        result_data = search_by_cell_index(
+        payload = execute_single_search(
             dataset_id=dataset_id,
             index_id=index_id,
             query_cell_index=query_cell_index,
             top_k=top_k,
             filter_cell_type=filter_cell_type,
+            max_background_points=15_000,
         )
-        result_cell_indices = [r["cell_index"] for r in result_data["results"]]
-        scatter_plot = search_scatter_json(dataset_id, query_cell_index, result_cell_indices)
-
-        # 5.3a: 计算检索结果解释性指标
-        results = result_data.get("results", [])
-        interpretation = {}
-        if results:
-            distances = [r["distance"] for r in results if "distance" in r]
-            if distances:
-                interpretation["distance_range"] = {
-                    "min": min(distances),
-                    "max": max(distances),
-                }
-
-            diseases = [r.get("disease") or "N/A" for r in results]
-            age_groups = [r.get("age_group") or "N/A" for r in results]
-            interpretation["disease_uniform"] = len(set(diseases)) == 1
-            interpretation["age_group_uniform"] = len(set(age_groups)) == 1
-
-            disease_dist = {}
-            for d in diseases:
-                disease_dist[d] = disease_dist.get(d, 0) + 1
-            interpretation["disease_distribution"] = disease_dist
-
-            age_dist = {}
-            for a in age_groups:
-                age_dist[a] = age_dist.get(a, 0) + 1
-            interpretation["age_group_distribution"] = age_dist
-
-            query_cell = Cell.query.filter_by(
-                dataset_id=dataset_id, cell_index=query_cell_index
-            ).first()
-            if query_cell and query_cell.cell_type:
-                same_count = sum(1 for r in results if r.get("cell_type") == query_cell.cell_type)
-                interpretation["same_type_ratio"] = f"{same_count}/{len(results)} 结果与查询细胞同类型"
-
-        return jsonify(ok=True, result_data=result_data, scatter_plot=scatter_plot,
-                       interpretation=interpretation)
+        return jsonify(ok=True, **payload)
     except ValueError as e:
         return jsonify(ok=False, message=str(e)), 400
     except Exception as e:
         return jsonify(ok=False, message=f"检索失败：{str(e)}"), 500
+
+
+@api_bp.route("/search/task", methods=["POST"])
+@login_required
+def api_search_task():
+    """提交单数据集检索后台任务，避免同步生成图表阻塞页面。"""
+    try:
+        dataset_id = _int_form("dataset_id", 0, min_value=1)
+        dataset = db.session.get(Dataset, dataset_id)
+        if not dataset:
+            return jsonify(ok=False, message="数据集不存在。"), 404
+        if not can_view_dataset(dataset):
+            return jsonify(ok=False, message="没有权限检索该数据集。"), 403
+        raw_index_id = request.form.get("index_id", "").strip()
+        if not raw_index_id:
+            return jsonify(ok=False, message="请先选择可用索引。"), 400
+        index_id = int(raw_index_id)
+        index = db.session.get(AnnIndex, index_id)
+        if not index or index.dataset_id != dataset_id or index.status != "ready":
+            return jsonify(ok=False, message="请选择该数据集下可用的 ready 索引。"), 400
+        params = {
+            "dataset_id": dataset_id,
+            "index_id": index_id,
+            "query_cell_index": _int_form("query_cell_index", 0, min_value=0),
+            "top_k": _int_form("top_k", 10, min_value=1, max_value=100),
+            "filter_cell_type": request.form.get("filter_cell_type", "").strip() or None,
+            "max_background_points": _int_form("max_background_points", 15_000, min_value=1_000, max_value=50_000),
+        }
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
+    task = Task(
+        type="search",
+        status="pending",
+        progress=0,
+        message="检索任务已提交，等待执行...",
+        dataset_id=dataset_id,
+        updated_at=datetime.utcnow(),
+    )
+    db.session.add(task)
+    db.session.commit()
+
+    executor.submit(run_search_task, task.id, params, current_app._get_current_object())
+    return jsonify(ok=True, task_id=task.id)
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +551,79 @@ def api_multi_search():
         return jsonify(ok=False, message=str(e)), 400
     except Exception as e:
         return jsonify(ok=False, message=f"跨数据集检索失败：{str(e)}"), 500
+
+
+@api_bp.route("/search/multi/task", methods=["POST"])
+@login_required
+def api_multi_search_task():
+    """提交跨数据集检索后台任务。"""
+    try:
+        source_dataset_id = _int_form("dataset_id", 0, min_value=1)
+        source_dataset = db.session.get(Dataset, source_dataset_id)
+        if not source_dataset:
+            return jsonify(ok=False, message="源数据集不存在。"), 404
+        if not can_view_dataset(source_dataset):
+            return jsonify(ok=False, message="没有权限检索该数据集。"), 403
+
+        raw_index_id = request.form.get("index_id", "").strip()
+        if not raw_index_id:
+            return jsonify(ok=False, message="请先选择源索引。"), 400
+        source_index_id = int(raw_index_id)
+        source_index = db.session.get(AnnIndex, source_index_id)
+        if not source_index or source_index.dataset_id != source_dataset_id or source_index.status != "ready":
+            return jsonify(ok=False, message="请选择源数据集下可用的 ready 索引。"), 400
+
+        target_dataset_ids = None
+        scope = request.form.get("target_scope", "all").strip()
+        if scope == "selected":
+            target_dataset_ids = []
+            for raw_id in request.form.getlist("target_dataset_ids"):
+                try:
+                    target_dataset_ids.append(int(raw_id))
+                except ValueError:
+                    raise ValueError("target_dataset_ids 包含非法数据集 ID")
+            if not target_dataset_ids:
+                raise ValueError("请选择至少一个目标数据集")
+
+        accessible_ids = [
+            row.id
+            for row in accessible_datasets_query(
+                Dataset.query
+                .with_entities(Dataset.id)
+                .filter(Dataset.status.in_(["processed", "indexed"]))
+            ).all()
+        ]
+        if target_dataset_ids is None:
+            target_dataset_ids = accessible_ids
+        else:
+            allowed = set(accessible_ids)
+            target_dataset_ids = [ds_id for ds_id in target_dataset_ids if ds_id in allowed]
+        if not target_dataset_ids:
+            return jsonify(ok=False, message="没有可用于跨数据集检索的目标数据集。"), 400
+
+        params = {
+            "dataset_id": source_dataset_id,
+            "index_id": source_index_id,
+            "query_cell_index": _int_form("query_cell_index", 0, min_value=0),
+            "top_k": _int_form("top_k", 20, min_value=1, max_value=100),
+            "target_dataset_ids": target_dataset_ids,
+        }
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
+    task = Task(
+        type="multi_search",
+        status="pending",
+        progress=0,
+        message="跨数据集检索任务已提交，等待执行...",
+        dataset_id=source_dataset_id,
+        updated_at=datetime.utcnow(),
+    )
+    db.session.add(task)
+    db.session.commit()
+
+    executor.submit(run_multi_search_task, task.id, params, current_app._get_current_object())
+    return jsonify(ok=True, task_id=task.id)
 
 
 # ---------------------------------------------------------------------------

@@ -77,3 +77,26 @@ export type EvalMetrics = {
   sample_size: number;
   top_k: number;
 };
+
+export type SingleSearchPayload = {
+  result_data: {
+    results: SearchResult[];
+    query_time_ms: number;
+    query_cell_index: number;
+    top_k: number;
+  };
+  scatter_plot: PlotlyPayload;
+  interpretation: Record<string, unknown>;
+};
+
+export type MultiSearchPayload = {
+  result_data: {
+    results: SearchResult[];
+    query_time_ms: number;
+    query_cell_index: number;
+    top_k: number;
+    searched_dataset_count: number;
+    skipped: unknown[];
+    metric: string;
+  };
+};

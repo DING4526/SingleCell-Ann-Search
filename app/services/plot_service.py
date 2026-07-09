@@ -88,23 +88,27 @@ def _muted_color(hex_color: str, alpha: float = 0.28, darken: float = 0.62) -> s
 def _apply_dark_layout(fig: go.Figure, title: str, xaxis_title: str, yaxis_title: str, height: int = 620):
     fig.update_layout(
         title=title,
-        template="plotly_dark",
-        paper_bgcolor=CHART_BG,
-        plot_bgcolor=PLOT_BG,
-        font=dict(color=FONT_COLOR, size=12),
+        template="plotly_white",
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font=dict(color="#172033", size=12),
         height=height,
-        margin=dict(l=18, r=18, t=58, b=70),
-        xaxis=dict(title=xaxis_title, gridcolor=GRID_COLOR, zeroline=False, showline=True,
-                   linecolor="rgba(144, 180, 233, 0.22)"),
-        yaxis=dict(title=yaxis_title, gridcolor=GRID_COLOR, zeroline=False, showline=True,
-                   linecolor="rgba(144, 180, 233, 0.22)"),
+        margin=dict(l=54, r=156, t=58, b=58),
+        xaxis=dict(title=xaxis_title, gridcolor="#edf2f7", zeroline=False, showline=True,
+                   linecolor="#d8e1ec", mirror=False),
+        yaxis=dict(title=yaxis_title, gridcolor="#edf2f7", zeroline=False, showline=True,
+                   linecolor="#d8e1ec", mirror=False),
         legend=dict(
-            orientation="h", y=-0.18, x=0,
-            bgcolor="rgba(12, 22, 40, 0.55)",
-            bordercolor="rgba(148, 180, 228, 0.22)",
+            orientation="v", y=1, x=1.02,
+            xanchor="left", yanchor="top",
+            title=dict(text="图例"),
+            bgcolor="rgba(255, 255, 255, 0.92)",
+            bordercolor="#e5eaf2",
             borderwidth=1,
-            font=dict(size=11)
+            font=dict(size=11, color="#334155"),
         ),
+        hovermode="closest",
+        dragmode="pan",
     )
 
 
@@ -202,7 +206,7 @@ def generate_scatter_cache(dataset_id: int) -> str:
 
 
 # ------------------ 检索结果散点图 ------------------
-def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indices: list, max_background_points: int = 100_000) -> dict:
+def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indices: list, max_background_points: int = 15_000) -> dict:
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         raise ValueError("数据集不存在")
@@ -252,7 +256,7 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
         custom_data=["cell_index", "cell_type"],
         render_mode="webgl",
     )
-    fig.update_traces(marker=dict(size=3.2, opacity=1.0), hovertemplate="cell_type: %{customdata[1]}<br>cell_index: %{customdata[0]}<extra></extra>")
+    fig.update_traces(marker=dict(size=3, opacity=0.92), hovertemplate="cell_type: %{customdata[1]}<br>cell_index: %{customdata[0]}<extra></extra>")
 
     # 结果点高亮
     result_positions = [pos_by_cell_index[ci] for ci in result_set if ci != query_cell_index]
@@ -274,7 +278,7 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
             fig.add_trace(go.Scattergl(
                 x=result_x, y=result_y,
                 mode="markers",
-                marker=dict(size=8, color="#69d9c0", opacity=0.98, line=dict(width=1.2, color="rgba(255,255,255,0.65)")),
+                marker=dict(size=8, color="#0891b2", opacity=0.98, line=dict(width=1.4, color="#ffffff")),
                 name="相似细胞",
                 customdata=result_customdata,
                 hovertemplate="cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>age_group: %{customdata[4]}<extra></extra>",
@@ -293,7 +297,7 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
     fig.add_trace(go.Scattergl(
         x=[float(coords[query_pos, 0])], y=[float(coords[query_pos, 1])],
         mode="markers",
-        marker=dict(size=16, color="#f9f871", symbol="star", line=dict(width=2.4, color="#ffd166"), opacity=1.0),
+        marker=dict(size=16, color="#d97706", symbol="star", line=dict(width=2.4, color="#ffffff"), opacity=1.0),
         name="查询细胞",
         customdata=query_customdata,
         hovertemplate="查询细胞<br>cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>age_group: %{customdata[4]}<extra></extra>",
