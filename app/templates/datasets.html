@@ -77,6 +77,7 @@
                         <th>细胞数</th>
                         <th>基因数</th>
                         <th>PCA 维度</th>
+                        <th>权限</th>
                         <th>状态</th>
                         <th>创建时间</th>
                         <th>操作</th>
@@ -92,6 +93,13 @@
                         <td>{{ ds.n_cells or '-' }}</td>
                         <td>{{ ds.n_genes or '-' }}</td>
                         <td>{{ ds.vector_dim or '-' }}</td>
+                        <td>
+                            {% if ds.owner_id %}
+                                <span class="badge status-badge status-processed">私有</span>
+                            {% else %}
+                                <span class="badge status-badge status-uploaded">历史数据</span>
+                            {% endif %}
+                        </td>
                         <td>
                             {% if ds.status == 'uploaded' %}
                                 <span class="badge status-badge status-uploaded">已上传</span>

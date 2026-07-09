@@ -20,6 +20,10 @@ def create_app(config_class=Config):
     db.init_app(app)
     login_manager.init_app(app)
 
+    with app.app_context():
+        from app.services.schema_service import ensure_sqlite_schema
+        ensure_sqlite_schema()
+
     from app.routes.main import main_bp
     from app.routes.auth import auth_bp
     from app.routes.datasets import datasets_bp

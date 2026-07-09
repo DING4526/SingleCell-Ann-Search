@@ -3,11 +3,18 @@ import os
 import uuid
 from datetime import datetime
 from flask import Blueprint, request, jsonify, current_app
-from flask_login import login_required
+from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 from app.extensions import db
-from app.models import Dataset, AnnIndex, Cell, Task
+from app.models import Dataset, AnnIndex, Cell, Task, QueryLog
 from app.tasks import executor, run_process_task, run_build_index_task
+from app.services.access_service import (
+    accessible_datasets_query,
+    accessible_tasks_query,
+    can_manage_dataset,
+    can_view_dataset,
+    is_admin,
+)
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -87,6 +94,8 @@ def api_upload():
         description=description,
         file_path=file_path,
         status="uploaded",
+        owner_id=current_user.id,
+        visibility="private",
     )
     db.session.add(dataset)
     db.session.commit()
@@ -110,6 +119,8 @@ def api_process(dataset_id):
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_manage_dataset(dataset):
+        return jsonify(ok=False, message="没有权限处理该数据集。"), 403
 
     task = Task(
         type="process",
@@ -137,6 +148,8 @@ def api_build_index(dataset_id):
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_manage_dataset(dataset):
+        return jsonify(ok=False, message="没有权限为该数据集构建索引。"), 403
 
     if dataset.status not in ("processed", "indexed"):
         return jsonify(ok=False, message="数据集需要先完成处理才能构建索引。"), 400
@@ -182,6 +195,10 @@ def api_task_status(task_id):
     task = db.session.get(Task, task_id)
     if not task:
         return jsonify(ok=False, message="任务不存在。"), 404
+    if task.dataset_id:
+        dataset = db.session.get(Dataset, task.dataset_id)
+        if dataset and not can_view_dataset(dataset):
+            return jsonify(ok=False, message="没有权限查看该任务。"), 403
     return jsonify(ok=True, **_task_to_dict(task))
 
 
@@ -198,6 +215,11 @@ def api_search():
 
     try:
         dataset_id = _int_form("dataset_id", 0, min_value=1)
+        dataset = db.session.get(Dataset, dataset_id)
+        if not dataset:
+            return jsonify(ok=False, message="数据集不存在。"), 404
+        if not can_view_dataset(dataset):
+            return jsonify(ok=False, message="没有权限检索该数据集。"), 403
         raw_index_id = request.form.get("index_id", "").strip()
         if not raw_index_id:
             return jsonify(ok=False, message="请先选择可用索引。"), 400
@@ -258,6 +280,75 @@ def api_search():
 
 
 # ---------------------------------------------------------------------------
+# AJAX 跨数据集检索（fan-out 合并）
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/search/multi", methods=["POST"])
+@login_required
+def api_multi_search():
+    """跨多个可访问数据集执行 fan-out 检索并合并排序。"""
+    from app.services.multi_search_service import search_across_datasets
+
+    try:
+        source_dataset_id = _int_form("dataset_id", 0, min_value=1)
+        source_dataset = db.session.get(Dataset, source_dataset_id)
+        if not source_dataset:
+            return jsonify(ok=False, message="源数据集不存在。"), 404
+        if not can_view_dataset(source_dataset):
+            return jsonify(ok=False, message="没有权限检索该数据集。"), 403
+
+        raw_index_id = request.form.get("index_id", "").strip()
+        if not raw_index_id:
+            return jsonify(ok=False, message="请先选择源索引。"), 400
+        source_index_id = int(raw_index_id)
+        query_cell_index = _int_form("query_cell_index", 0, min_value=0)
+        top_k = _int_form("top_k", 20, min_value=1, max_value=100)
+
+        scope = request.form.get("target_scope", "all").strip()
+        target_dataset_ids = None
+        if scope == "selected":
+            raw_ids = request.form.getlist("target_dataset_ids")
+            target_dataset_ids = []
+            for raw_id in raw_ids:
+                try:
+                    target_dataset_ids.append(int(raw_id))
+                except ValueError:
+                    raise ValueError("target_dataset_ids 包含非法数据集 ID")
+            if not target_dataset_ids:
+                raise ValueError("请选择至少一个目标数据集")
+
+        accessible_ids = [
+            row.id
+            for row in accessible_datasets_query(
+                Dataset.query
+                .with_entities(Dataset.id)
+                .filter(Dataset.status.in_(["processed", "indexed"]))
+            ).all()
+        ]
+        if target_dataset_ids is None:
+            target_dataset_ids = accessible_ids
+        else:
+            allowed = set(accessible_ids)
+            target_dataset_ids = [ds_id for ds_id in target_dataset_ids if ds_id in allowed]
+
+        if not target_dataset_ids:
+            return jsonify(ok=False, message="没有可用于跨数据集检索的目标数据集。"), 400
+
+        result_data = search_across_datasets(
+            source_dataset_id=source_dataset_id,
+            source_index_id=source_index_id,
+            query_cell_index=query_cell_index,
+            top_k=top_k,
+            target_dataset_ids=target_dataset_ids,
+        )
+        return jsonify(ok=True, result_data=result_data)
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+    except Exception as e:
+        return jsonify(ok=False, message=f"跨数据集检索失败：{str(e)}"), 500
+
+
+# ---------------------------------------------------------------------------
 # AJAX 评估（同步，直接返回结果）
 # ---------------------------------------------------------------------------
 
@@ -270,6 +361,11 @@ def api_evaluate():
 
     try:
         dataset_id = _int_form("dataset_id", 0, min_value=1)
+        dataset = db.session.get(Dataset, dataset_id)
+        if not dataset:
+            return jsonify(ok=False, message="数据集不存在。"), 404
+        if not can_view_dataset(dataset):
+            return jsonify(ok=False, message="没有权限评估该数据集。"), 403
         raw_index_id = request.form.get("index_id", "").strip()
         if not raw_index_id:
             return jsonify(ok=False, message="请先选择可用索引。"), 400
@@ -297,6 +393,8 @@ def api_dataset_status(dataset_id):
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_view_dataset(dataset):
+        return jsonify(ok=False, message="没有权限查看该数据集。"), 403
 
     indexes = AnnIndex.query.filter_by(dataset_id=dataset_id).all()
     return jsonify(
@@ -329,6 +427,11 @@ def api_dataset_status(dataset_id):
 @login_required
 def api_cell_types(dataset_id):
     """返回数据集中所有 cell_type 值，用于检索页过滤器动态更新。"""
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_view_dataset(dataset):
+        return jsonify(ok=False, message="没有权限查看该数据集。"), 403
     types = (
         db.session.query(Cell.cell_type)
         .filter(Cell.dataset_id == dataset_id, Cell.cell_type.isnot(None))
@@ -355,6 +458,8 @@ def api_dataset_scatter(dataset_id):
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_view_dataset(dataset):
+        return jsonify(ok=False, message="没有权限查看该数据集。"), 403
 
     if dataset.status not in ("processed", "indexed"):
         return jsonify(ok=False, message="数据集尚未处理完成，暂无散点图。"), 400
@@ -393,7 +498,7 @@ def api_dataset_scatter(dataset_id):
 def api_active_tasks():
     """返回所有进行中（pending/running）的任务列表。"""
     tasks = (
-        Task.query
+        accessible_tasks_query(Task.query)
         .filter(Task.status.in_(["pending", "running"]))
         .order_by(Task.updated_at.desc())
         .all()
@@ -412,7 +517,7 @@ def api_tasks():
     status_filter = request.args.get("status", "all").strip()
     limit = min(int(request.args.get("limit", 20)), 100)
 
-    query = Task.query.order_by(Task.updated_at.desc())
+    query = accessible_tasks_query(Task.query).order_by(Task.updated_at.desc())
     if status_filter != "all" and status_filter in ("pending", "running", "success", "error"):
         query = query.filter_by(status=status_filter)
 
@@ -428,6 +533,11 @@ def api_tasks():
 @login_required
 def api_cell_meta(dataset_id, cell_index):
     """返回指定数据集中某个细胞的元信息，用于检索页输入索引后预览。"""
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_view_dataset(dataset):
+        return jsonify(ok=False, message="没有权限查看该数据集。"), 403
     cell = Cell.query.filter_by(
         dataset_id=dataset_id, cell_index=cell_index
     ).first()
@@ -453,15 +563,17 @@ def api_cell_meta(dataset_id, cell_index):
 @login_required
 def api_dashboard_summary():
     """返回工作台页面所需的聚合统计数据。"""
-    from app.models import QueryLog
-
-    datasets = Dataset.query.order_by(Dataset.created_at.desc()).all()
+    datasets = accessible_datasets_query().order_by(Dataset.created_at.desc()).all()
+    dataset_ids = [d.id for d in datasets]
     datasets_total = len(datasets)
     datasets_uploaded = sum(1 for d in datasets if d.status == "uploaded")
     datasets_processed = sum(1 for d in datasets if d.status == "processed")
     datasets_indexed = sum(1 for d in datasets if d.status == "indexed")
-    indexes_total = AnnIndex.query.filter_by(status="ready").count()
-    recent_queries = QueryLog.query.count()
+    indexes_total = AnnIndex.query.filter(
+        AnnIndex.status == "ready",
+        AnnIndex.dataset_id.in_(dataset_ids) if dataset_ids else False,
+    ).count()
+    recent_queries = QueryLog.query.count() if is_admin() else QueryLog.query.filter(QueryLog.dataset_id.in_(dataset_ids)).count()
 
     recent_datasets = [
         {
@@ -476,7 +588,7 @@ def api_dashboard_summary():
 
     recent_tasks = [
         _task_to_dict(t)
-        for t in Task.query.order_by(Task.updated_at.desc()).limit(5).all()
+        for t in accessible_tasks_query(Task.query).order_by(Task.updated_at.desc()).limit(5).all()
     ]
 
     first_uploaded = next((d.id for d in datasets if d.status == "uploaded"), None)

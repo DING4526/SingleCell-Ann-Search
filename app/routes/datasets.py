@@ -1,9 +1,10 @@
 import os
 import pathlib
-from flask import Blueprint, render_template, redirect, url_for, flash, current_app
+from flask import Blueprint, render_template, redirect, url_for, flash, current_app, abort
 from flask_login import login_required
 from app.extensions import db
 from app.models import Dataset, AnnIndex, Cell, Task
+from app.services.access_service import accessible_datasets_query, can_manage_dataset, can_view_dataset
 
 datasets_bp = Blueprint("datasets", __name__)
 
@@ -12,7 +13,7 @@ datasets_bp = Blueprint("datasets", __name__)
 @login_required
 def list_datasets():
     """数据集列表页。"""
-    datasets = Dataset.query.order_by(Dataset.created_at.desc()).all()
+    datasets = accessible_datasets_query().order_by(Dataset.created_at.desc()).all()
     return render_template("datasets.html", nav_active="datasets", datasets=datasets)
 
 
@@ -24,6 +25,8 @@ def detail(dataset_id):
     if not dataset:
         flash("数据集不存在。", "danger")
         return redirect(url_for("datasets.list_datasets"))
+    if not can_view_dataset(dataset):
+        abort(403)
 
     indexes = AnnIndex.query.filter_by(dataset_id=dataset_id).all()
 
@@ -66,6 +69,8 @@ def delete(dataset_id):
     if not dataset:
         flash("数据集不存在。", "danger")
         return redirect(url_for("datasets.list_datasets"))
+    if not can_manage_dataset(dataset):
+        abort(403)
 
     # 删除物理文件（仅在该文件不被其他数据集引用时才删除）
     if dataset.file_path:

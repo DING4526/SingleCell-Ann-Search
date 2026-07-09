@@ -43,8 +43,11 @@ class Dataset(db.Model):
     status = db.Column(db.String(20), default="uploaded")    # uploaded / processed / indexed / error
     error_message = db.Column(db.Text)
     scatter_cache_path = db.Column(db.String(256))            # 散点图 Plotly JSON 缓存文件名
+    owner_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    visibility = db.Column(db.String(20), default="private")   # private / shared
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    owner = db.relationship("User", backref="datasets")
     cells = db.relationship("Cell", backref="dataset", cascade="all, delete-orphan")
     indexes = db.relationship("AnnIndex", backref="dataset", cascade="all, delete-orphan")
     query_logs = db.relationship("QueryLog", backref="dataset", cascade="all, delete-orphan")

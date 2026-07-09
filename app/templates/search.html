@@ -59,6 +59,10 @@
         <button class="nav-link" id="eval-tab" data-bs-toggle="tab"
                 data-bs-target="#evalPane" type="button" role="tab">索引性能评估</button>
     </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="multi-tab" data-bs-toggle="tab"
+                data-bs-target="#multiPane" type="button" role="tab">跨数据集检索</button>
+    </li>
 </ul>
 
 <div class="tab-content" id="workbenchTabContent">
@@ -183,6 +187,67 @@
             </div>
         </div>
     </div>
+
+    <!-- ========== 跨数据集检索 Tab ========== -->
+    <div class="tab-pane fade" id="multiPane" role="tabpanel">
+        <div class="row g-4">
+            <div class="col-lg-4">
+                <div class="card ui-card info-level-1">
+                    <div class="card-header ui-card-header">合并检索参数</div>
+                    <div class="card-body">
+                        <form id="multiSearchForm" action="{{ url_for('api.api_multi_search') }}">
+                            <input type="hidden" name="dataset_id" id="multiDatasetId">
+                            <input type="hidden" name="index_id" id="multiIndexId">
+                            <div class="mb-3">
+                                <label class="form-label">查询细胞索引</label>
+                                <input type="number" name="query_cell_index" id="multiQueryCellInput"
+                                       class="form-control ui-input" value="{{ prefill_cell_index }}" min="0" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">合并 Top-K</label>
+                                <input type="number" name="top_k" class="form-control ui-input" value="20" min="1" max="100">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">目标范围</label>
+                                <select name="target_scope" id="multiTargetScope" class="form-select ui-select">
+                                    <option value="all">全部可访问数据集</option>
+                                    <option value="selected">手动选择数据集</option>
+                                </select>
+                            </div>
+                            <div id="multiTargetList" class="multi-target-list mb-3" style="display:none;">
+                                {% for ds in datasets %}
+                                <label class="multi-target-item">
+                                    <input class="form-check-input" type="checkbox" name="target_dataset_ids"
+                                           value="{{ ds.id }}" checked>
+                                    <span>{{ ds.name }}</span>
+                                    <small class="text-muted">{{ ds.n_cells or "?" }} cells</small>
+                                </label>
+                                {% endfor %}
+                            </div>
+                            <div class="d-grid">
+                                <button type="submit" id="multiSearchBtn" class="btn btn-primary btn-cta">运行合并检索</button>
+                            </div>
+                        </form>
+                        <div id="multiSearchMessage" class="alert mt-2" style="display:none;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-8">
+                <div id="multiResultSection" style="display:none;">
+                    <div id="multiResultSummary"></div>
+                    <div class="card ui-card info-level-2">
+                        <div class="card-header ui-card-header d-flex justify-content-between align-items-center py-2">
+                            <span class="small">合并检索结果</span>
+                            <span class="badge bg-info" id="multiTopKBadge"></span>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="search-result-scroll" id="multiResultTable"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 {% endif %}
@@ -224,6 +289,7 @@ function syncContext() {
 
         var searchBtn = document.getElementById('searchBtn');
         var evalBtn = document.getElementById('evalBtn');
+        var multiBtn = document.getElementById('multiSearchBtn');
         var noIndexHint = document.getElementById('searchNoIndexHint');
         var hint = document.getElementById('contextHint');
 
@@ -233,6 +299,7 @@ function syncContext() {
             if (hint) hint.textContent = '当前数据集暂无可用索引';
             if (searchBtn) searchBtn.disabled = true;
             if (evalBtn) evalBtn.disabled = true;
+            if (multiBtn) multiBtn.disabled = true;
             if (noIndexHint) noIndexHint.style.display = 'block';
         } else {
             indexSelect.disabled = false;
@@ -248,6 +315,7 @@ function syncContext() {
             if (hint) hint.textContent = visibleOptions.length + ' 个可用索引';
             if (searchBtn) searchBtn.disabled = false;
             if (evalBtn) evalBtn.disabled = false;
+            if (multiBtn) multiBtn.disabled = false;
             if (noIndexHint) noIndexHint.style.display = 'none';
         }
         initialIndexId = indexSelect.value;
@@ -257,10 +325,14 @@ function syncContext() {
         var searchIxId = document.getElementById('searchIndexId');
         var evalDsId = document.getElementById('evalDatasetId');
         var evalIxId = document.getElementById('evalIndexId');
+        var multiDsId = document.getElementById('multiDatasetId');
+        var multiIxId = document.getElementById('multiIndexId');
         if (searchDsId) searchDsId.value = datasetSelect.value;
         if (searchIxId) searchIxId.value = indexSelect.value;
         if (evalDsId) evalDsId.value = datasetSelect.value;
         if (evalIxId) evalIxId.value = indexSelect.value;
+        if (multiDsId) multiDsId.value = datasetSelect.value;
+        if (multiIxId) multiIxId.value = indexSelect.value;
 
         /* 更新细胞索引范围提示 */
         var selOpt = datasetSelect.options[datasetSelect.selectedIndex];
@@ -271,6 +343,10 @@ function syncContext() {
         if (queryInput && nCells > 0) {
             queryInput.max = String(nCells - 1);
         }
+        var multiQueryInput = document.getElementById('multiQueryCellInput');
+        if (multiQueryInput && nCells > 0) {
+            multiQueryInput.max = String(nCells - 1);
+        }
     }
 
     datasetSelect.addEventListener('change', function () {
@@ -280,8 +356,10 @@ function syncContext() {
     indexSelect.addEventListener('change', function () {
         var searchIxId = document.getElementById('searchIndexId');
         var evalIxId = document.getElementById('evalIndexId');
+        var multiIxId = document.getElementById('multiIndexId');
         if (searchIxId) searchIxId.value = this.value;
         if (evalIxId) evalIxId.value = this.value;
+        if (multiIxId) multiIxId.value = this.value;
     });
     applyFilter();
 }
@@ -548,6 +626,60 @@ function renderEvalMetrics(metrics) {
         '<div class="col-md-6"><div class="card text-center metric-card h-100"><div class="card-body"><h4>' + metrics.avg_exact_time_ms.toFixed(4) + ' ms</h4><small class="text-muted">精确检索平均耗时</small></div></div></div>';
 }
 
+function renderMultiResults(data) {
+    var section = document.getElementById('multiResultSection');
+    if (!section) return;
+    section.style.display = '';
+
+    var summary = document.getElementById('multiResultSummary');
+    if (summary) {
+        var skipped = data.skipped || [];
+        var skippedText = skipped.length ? ' | 跳过 ' + skipped.length + ' 个数据集' : '';
+        summary.innerHTML = '<div class="result-summary">' +
+            '<div class="rs-query">源细胞 #' + escapeHtml(data.query_cell_index) +
+            ' <span class="rs-stats" style="margin-left:0.5rem;">Top-K ' + escapeHtml(data.top_k) +
+            ' | 检索 ' + escapeHtml(data.searched_dataset_count) + ' 个数据集' +
+            ' | 耗时 ' + escapeHtml(data.query_time_ms) + ' ms' + skippedText + '</span></div>' +
+            '<div class="rs-type-dist">度量: ' + escapeHtml(String(data.metric || '').toUpperCase()) + '</div>' +
+            '</div>';
+    }
+
+    var container = document.getElementById('multiResultTable');
+    if (!container) return;
+    if (!data.results || data.results.length === 0) {
+        container.innerHTML = '<div class="alert alert-secondary mb-0">当前范围内没有检索到结果。</div>';
+    } else {
+        var rows = data.results.map(function (r) {
+            var name = r.cell_name || '-';
+            if (name.length > 18) name = name.substring(0, 16) + '...';
+            return '<tr>' +
+                '<td class="text-center">' + escapeHtml(r.rank) + '</td>' +
+                '<td>' + escapeHtml(r.dataset_name) + '</td>' +
+                '<td>' + escapeHtml(r.cell_index) + '</td>' +
+                '<td title="' + escapeHtml(r.cell_name || '') + '">' + escapeHtml(name) + '</td>' +
+                '<td class="font-monospace small">' + escapeHtml(r.distance) + '</td>' +
+                '<td>' + escapeHtml(r.cell_type) + '</td>' +
+                '<td><a class="btn btn-link btn-sm p-0" href="/search?dataset_id=' + encodeURIComponent(r.dataset_id) +
+                '&index_id=' + encodeURIComponent(r.index_id) +
+                '&cell_index=' + encodeURIComponent(r.cell_index) + '#search">检索</a></td>' +
+                '</tr>';
+        }).join('');
+        container.innerHTML = '<table class="table table-sm table-hover align-middle mb-0">' +
+            '<thead><tr>' +
+            '<th class="text-center" style="width:2rem">#</th>' +
+            '<th>数据集</th>' +
+            '<th style="width:4rem">索引</th>' +
+            '<th>名称</th>' +
+            '<th>距离</th>' +
+            '<th>类型</th>' +
+            '<th style="width:3rem"></th>' +
+            '</tr></thead><tbody>' + rows + '</tbody></table>';
+    }
+
+    var badge = document.getElementById('multiTopKBadge');
+    if (badge) badge.textContent = 'Top-K ' + data.top_k;
+}
+
 /* ===== Tab 初始化与 URL hash 联动 ===== */
 function setupTabs() {
     /* 根据 hash 更新导航栏 active 状态 */
@@ -576,6 +708,12 @@ function setupTabs() {
             var evalTabEl = document.getElementById('eval-tab');
             if (evalTabEl) {
                 var tab = bootstrap.Tab.getOrCreateInstance(evalTabEl);
+                tab.show();
+            }
+        } else if (hash === '#multi') {
+            var multiTabEl = document.getElementById('multi-tab');
+            if (multiTabEl) {
+                var tab = bootstrap.Tab.getOrCreateInstance(multiTabEl);
                 tab.show();
             }
         } else if (hash === '#search') {
@@ -607,6 +745,9 @@ function setupTabs() {
             } else if (target === '#evalPane') {
                 history.replaceState(null, '', window.location.pathname + '#eval');
                 syncNavbarActive('#eval');
+            } else if (target === '#multiPane') {
+                history.replaceState(null, '', window.location.pathname + '#multi');
+                syncNavbarActive('#search');
             }
         });
     });
@@ -617,6 +758,14 @@ document.addEventListener('DOMContentLoaded', function () {
     syncContext();
     setupCellMetaPreview();
     setupTabs();
+
+    var targetScope = document.getElementById('multiTargetScope');
+    if (targetScope) {
+        targetScope.addEventListener('change', function () {
+            var list = document.getElementById('multiTargetList');
+            if (list) list.style.display = this.value === 'selected' ? 'block' : 'none';
+        });
+    }
 
     /* ---- 检索表单 ---- */
     var searchForm = document.getElementById('searchForm');
@@ -750,6 +899,52 @@ document.addEventListener('DOMContentLoaded', function () {
                             window.applyThemeToPlotlyCharts && window.applyThemeToPlotlyCharts();
                         }, 100);
                     }
+                })
+                .catch(function (err) {
+                    if (btn) btn.disabled = false;
+                    Tasks.setMessage(msg, '网络错误：' + String(err), 'danger');
+                });
+        });
+    }
+
+    /* ---- 跨数据集检索表单 ---- */
+    var multiForm = document.getElementById('multiSearchForm');
+    if (multiForm) {
+        multiForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var msg = document.getElementById('multiSearchMessage');
+            var btn = document.getElementById('multiSearchBtn');
+
+            var dsSelect = document.getElementById('contextDatasetSelect');
+            var ixSelect = document.getElementById('contextIndexSelect');
+            var multiDsId = document.getElementById('multiDatasetId');
+            var multiIxId = document.getElementById('multiIndexId');
+            if (dsSelect && multiDsId) multiDsId.value = dsSelect.value;
+            if (ixSelect && multiIxId) multiIxId.value = ixSelect.value;
+
+            if (!ixSelect.value) {
+                Tasks.setMessage(msg, '请先选择源索引。', 'danger');
+                return;
+            }
+
+            Tasks.setMessage(msg, '正在执行跨数据集检索，请稍候...', 'info');
+            if (btn) btn.disabled = true;
+
+            fetch(multiForm.action, {
+                method: 'POST',
+                body: new FormData(multiForm),
+                credentials: 'same-origin',
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (btn) btn.disabled = false;
+                    if (!data.ok) {
+                        Tasks.setMessage(msg, data.message || '跨数据集检索失败。', 'danger');
+                        return;
+                    }
+                    Tasks.setMessage(msg, '', 'info');
+                    msg.style.display = 'none';
+                    renderMultiResults(data.result_data);
                 })
                 .catch(function (err) {
                     if (btn) btn.disabled = false;

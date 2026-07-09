@@ -1,16 +1,19 @@
 import os
 import markdown as md
 from flask import Blueprint, render_template, abort
+from flask_login import login_required
 from app.models import Dataset, AnnIndex, QueryLog, Task
 from app.extensions import db
+from app.services.access_service import accessible_datasets_query, accessible_tasks_query, is_admin
 
 main_bp = Blueprint("main", __name__)
 
 
 @main_bp.route("/")
+@login_required
 def index():
     """工作台首页：展示系统概览、工作流进度与最近活动。"""
-    datasets = Dataset.query.order_by(Dataset.created_at.desc()).all()
+    datasets = accessible_datasets_query().order_by(Dataset.created_at.desc()).all()
     dataset_count = len(datasets)
     datasets_by_status = {
         "uploaded": sum(1 for d in datasets if d.status == "uploaded"),
@@ -18,12 +21,16 @@ def index():
         "indexed": sum(1 for d in datasets if d.status == "indexed"),
         "error": sum(1 for d in datasets if d.status == "error"),
     }
-    index_count = AnnIndex.query.filter_by(status="ready").count()
-    query_count = QueryLog.query.count()
+    dataset_ids = [d.id for d in datasets]
+    index_count = AnnIndex.query.filter(
+        AnnIndex.status == "ready",
+        AnnIndex.dataset_id.in_(dataset_ids) if dataset_ids else False,
+    ).count()
+    query_count = QueryLog.query.count() if is_admin() else QueryLog.query.filter(QueryLog.dataset_id.in_(dataset_ids)).count()
 
     recent_datasets = datasets[:5]
     recent_tasks = (
-        Task.query.order_by(Task.updated_at.desc()).limit(5).all()
+        accessible_tasks_query().order_by(Task.updated_at.desc()).limit(5).all()
     )
 
     first_uploaded_id = next(

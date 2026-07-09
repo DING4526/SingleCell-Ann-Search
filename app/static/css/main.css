@@ -887,6 +887,36 @@ footer p {
     margin-right: 0.3rem;
 }
 
+.multi-target-list {
+    max-height: 180px;
+    overflow-y: auto;
+    border: 1px solid var(--table-border);
+    border-radius: 12px;
+    padding: 0.45rem;
+    background: color-mix(in srgb, var(--glass-bg) 78%, transparent 22%);
+}
+
+.multi-target-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.35rem 0.4rem;
+    border-radius: 8px;
+    font-size: 0.84rem;
+    cursor: pointer;
+}
+
+.multi-target-item:hover {
+    background: var(--table-hover);
+}
+
+.multi-target-item span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* ===== 导航栏 active 状态 ===== */
 .app-navbar .nav-link.active {
     color: var(--accent-primary) !important;

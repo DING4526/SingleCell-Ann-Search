@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, request
 from flask_login import login_required
 from app.extensions import db
 from app.models import Dataset, AnnIndex, Cell
+from app.services.access_service import accessible_datasets_query
 
 search_bp = Blueprint("search", __name__)
 
@@ -11,7 +12,7 @@ search_bp = Blueprint("search", __name__)
 def search():
     """检索页面：选择数据集和索引，展示检索/评估 UI（内容通过 AJAX 填充）。"""
     indexed_datasets = (
-        Dataset.query.filter(Dataset.status.in_(["processed", "indexed"]))
+        accessible_datasets_query(Dataset.query.filter(Dataset.status.in_(["processed", "indexed"])))
         .order_by(Dataset.name)
         .all()
     )
