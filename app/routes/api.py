@@ -44,6 +44,20 @@ def _task_to_dict(task: Task) -> dict:
     }
 
 
+def _int_form(name: str, default: int, min_value: int = None, max_value: int = None) -> int:
+    """读取并约束表单中的整数参数。"""
+    raw = request.form.get(name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} 必须是整数")
+    if min_value is not None and value < min_value:
+        raise ValueError(f"{name} 不能小于 {min_value}")
+    if max_value is not None and value > max_value:
+        raise ValueError(f"{name} 不能大于 {max_value}")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # 数据集上传
 # ---------------------------------------------------------------------------
@@ -127,12 +141,20 @@ def api_build_index(dataset_id):
     if dataset.status not in ("processed", "indexed"):
         return jsonify(ok=False, message="数据集需要先完成处理才能构建索引。"), 400
 
-    params = {
-        "metric": request.form.get("metric", "l2"),
-        "M": int(request.form.get("M", 16)),
-        "ef_construction": int(request.form.get("ef_construction", 200)),
-        "ef_search": int(request.form.get("ef_search", 100)),
-    }
+    try:
+        metric = request.form.get("metric", "l2")
+        if metric not in ("l2", "cosine"):
+            raise ValueError("metric 仅支持 l2 或 cosine")
+        params = {
+            "metric": metric,
+            "M": _int_form("M", 16, min_value=2, max_value=128),
+            "ef_construction": _int_form("ef_construction", 200, min_value=2, max_value=1000),
+            "ef_search": _int_form("ef_search", 100, min_value=1, max_value=1000),
+        }
+        if params["ef_construction"] < params["M"]:
+            raise ValueError("ef_construction 必须大于等于 M")
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
 
     task = Task(
         type="build_index",
@@ -174,16 +196,16 @@ def api_search():
     from app.services.ann_service import search_by_cell_index
     from app.services.plot_service import search_scatter_json
 
-    dataset_id = int(request.form.get("dataset_id", 0))
-    raw_index_id = request.form.get("index_id", "").strip()
-    if not raw_index_id:
-        return jsonify(ok=False, message="请先选择可用索引。"), 400
-    index_id = int(raw_index_id)
-    query_cell_index = int(request.form.get("query_cell_index", 0))
-    top_k = int(request.form.get("top_k", 10))
-    filter_cell_type = request.form.get("filter_cell_type", "").strip() or None
-
     try:
+        dataset_id = _int_form("dataset_id", 0, min_value=1)
+        raw_index_id = request.form.get("index_id", "").strip()
+        if not raw_index_id:
+            return jsonify(ok=False, message="请先选择可用索引。"), 400
+        index_id = int(raw_index_id)
+        query_cell_index = _int_form("query_cell_index", 0, min_value=0)
+        top_k = _int_form("top_k", 10, min_value=1, max_value=100)
+        filter_cell_type = request.form.get("filter_cell_type", "").strip() or None
+
         result_data = search_by_cell_index(
             dataset_id=dataset_id,
             index_id=index_id,
@@ -229,6 +251,8 @@ def api_search():
 
         return jsonify(ok=True, result_data=result_data, scatter_plot=scatter_plot,
                        interpretation=interpretation)
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
     except Exception as e:
         return jsonify(ok=False, message=f"检索失败：{str(e)}"), 500
 
@@ -244,18 +268,20 @@ def api_evaluate():
     from app.services.eval_service import evaluate_index
     from app.services.plot_service import eval_bar_json
 
-    dataset_id = int(request.form.get("dataset_id", 0))
-    raw_index_id = request.form.get("index_id", "").strip()
-    if not raw_index_id:
-        return jsonify(ok=False, message="请先选择可用索引。"), 400
-    index_id = int(raw_index_id)
-    sample_size = int(request.form.get("sample_size", 10))
-    top_k = int(request.form.get("eval_top_k", 10))
-
     try:
+        dataset_id = _int_form("dataset_id", 0, min_value=1)
+        raw_index_id = request.form.get("index_id", "").strip()
+        if not raw_index_id:
+            return jsonify(ok=False, message="请先选择可用索引。"), 400
+        index_id = int(raw_index_id)
+        sample_size = _int_form("sample_size", 10, min_value=1, max_value=50)
+        top_k = _int_form("eval_top_k", 10, min_value=1, max_value=100)
+
         metrics = evaluate_index(dataset_id, index_id, sample_size=sample_size, top_k=top_k)
         bar_plot = eval_bar_json(metrics)
         return jsonify(ok=True, metrics=metrics, bar_plot=bar_plot)
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
     except Exception as e:
         return jsonify(ok=False, message=f"评估失败：{str(e)}"), 500
 

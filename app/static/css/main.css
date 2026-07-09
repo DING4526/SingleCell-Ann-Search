@@ -291,6 +291,18 @@ a:hover {
     z-index: 1;
 }
 
+#contextForm {
+    position: relative;
+    z-index: 20;
+}
+
+#contextDatasetSelect,
+#contextIndexSelect {
+    position: relative;
+    z-index: 21;
+    min-width: 0;
+}
+
 .page-hero {
     background: var(--hero-bg);
     border: 1px solid var(--hero-border);
@@ -510,7 +522,8 @@ a:hover {
 }
 
 #searchIndexSelect,
-#evalIndexSelect {
+#evalIndexSelect,
+#contextIndexSelect {
     position: relative;
     z-index: 5;
 }
@@ -542,6 +555,15 @@ footer p {
     .step-connector::before {
         width: 2px;
         height: 100%;
+    }
+
+    #contextHint {
+        display: block;
+        margin-top: 0.35rem;
+    }
+
+    .search-result-scroll {
+        overflow-x: auto;
     }
 }
 

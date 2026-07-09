@@ -45,9 +45,16 @@ def evaluate_index(
 
     if not dataset or not ann_index_record:
         raise ValueError("数据集或索引不存在")
+    if ann_index_record.dataset_id != dataset_id:
+        raise ValueError("索引不属于当前数据集")
+    if ann_index_record.status != "ready":
+        raise ValueError("索引尚未就绪")
 
     vectors = load_vectors(dataset)
     n_cells = vectors.shape[0]
+    if n_cells < 2:
+        raise ValueError("数据集至少需要 2 个细胞才能评估索引")
+    top_k = max(1, min(int(top_k), n_cells - 1))
 
     hnsw_index = load_hnsw_index(ann_index_record, vectors.shape[1])
 

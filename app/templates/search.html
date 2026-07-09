@@ -189,7 +189,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
 <script>
 /* ===== 上下文选择器同步 ===== */
 function syncContext() {
@@ -197,20 +196,30 @@ function syncContext() {
     var indexSelect = document.getElementById('contextIndexSelect');
     if (!datasetSelect || !indexSelect) return;
 
-    var options = Array.from(indexSelect.querySelectorAll('option'));
+    var allIndexOptions = Array.from(indexSelect.querySelectorAll('option')).map(function (opt) {
+        return {
+            value: opt.value,
+            datasetId: opt.dataset.dataset,
+            text: opt.textContent,
+            selected: opt.selected,
+        };
+    });
+    var initialIndexId = indexSelect.value;
 
     function applyFilter() {
         var ds = datasetSelect.value;
-        var visibleCount = 0;
-        var firstVisible = null;
+        var visibleOptions = allIndexOptions.filter(function (opt) {
+            return String(opt.datasetId) === String(ds);
+        });
+        var previousValue = indexSelect.value || initialIndexId;
 
-        options.forEach(function (opt) {
-            var visible = String(opt.dataset.dataset) === String(ds);
-            opt.hidden = !visible;
-            if (visible) {
-                visibleCount += 1;
-                if (!firstVisible) firstVisible = opt;
-            }
+        indexSelect.innerHTML = '';
+        visibleOptions.forEach(function (item) {
+            var opt = document.createElement('option');
+            opt.value = item.value;
+            opt.dataset.dataset = item.datasetId;
+            opt.textContent = item.text;
+            indexSelect.appendChild(opt);
         });
 
         var searchBtn = document.getElementById('searchBtn');
@@ -218,7 +227,7 @@ function syncContext() {
         var noIndexHint = document.getElementById('searchNoIndexHint');
         var hint = document.getElementById('contextHint');
 
-        if (visibleCount === 0) {
+        if (visibleOptions.length === 0) {
             indexSelect.value = '';
             indexSelect.disabled = true;
             if (hint) hint.textContent = '当前数据集暂无可用索引';
@@ -227,15 +236,21 @@ function syncContext() {
             if (noIndexHint) noIndexHint.style.display = 'block';
         } else {
             indexSelect.disabled = false;
-            var selectedVisible = options.some(function (opt) { return !opt.hidden && opt.value === indexSelect.value; });
-            if (!selectedVisible && firstVisible) {
-                indexSelect.value = firstVisible.value;
+            var selectedVisible = visibleOptions.some(function (opt) {
+                return opt.value === previousValue;
+            });
+            if (selectedVisible) {
+                indexSelect.value = previousValue;
+            } else {
+                var preselected = visibleOptions.find(function (opt) { return opt.selected; });
+                indexSelect.value = (preselected || visibleOptions[0]).value;
             }
-            if (hint) hint.textContent = visibleCount + ' 个可用索引';
+            if (hint) hint.textContent = visibleOptions.length + ' 个可用索引';
             if (searchBtn) searchBtn.disabled = false;
             if (evalBtn) evalBtn.disabled = false;
             if (noIndexHint) noIndexHint.style.display = 'none';
         }
+        initialIndexId = indexSelect.value;
 
         /* 同步隐藏字段 */
         var searchDsId = document.getElementById('searchDatasetId');
@@ -252,6 +267,10 @@ function syncContext() {
         var nCells = selOpt ? parseInt(selOpt.dataset.nCells, 10) : 0;
         var rangeHint = document.getElementById('cellRangeHint');
         if (rangeHint) rangeHint.textContent = '范围: 0 ~ ' + (nCells > 0 ? nCells - 1 : '?');
+        var queryInput = document.getElementById('queryCellInput');
+        if (queryInput && nCells > 0) {
+            queryInput.max = String(nCells - 1);
+        }
     }
 
     datasetSelect.addEventListener('change', function () {
@@ -455,13 +474,13 @@ function renderSearchResults(data, interpretation) {
                 var dist = typeof r.distance === 'number' ? r.distance.toFixed(6) : r.distance;
                 var name = r.cell_name || '-';
                 if (name.length > 18) name = name.substring(0, 16) + '...';
-                return '<tr data-cell-index="' + r.cell_index + '" style="cursor:pointer;">' +
-                    '<td class="text-center">' + r.rank + '</td>' +
-                    '<td>' + r.cell_index + '</td>' +
-                    '<td title="' + (r.cell_name || '') + '">' + name + '</td>' +
-                    '<td class="font-monospace small">' + dist + '</td>' +
-                    '<td>' + r.cell_type + '</td>' +
-                    '<td><button class="btn btn-link btn-sm p-0 requery-btn" data-cell="' + r.cell_index + '" title="设为查询细胞">&#x21BB;</button></td>' +
+                return '<tr data-cell-index="' + escapeHtml(r.cell_index) + '" style="cursor:pointer;">' +
+                    '<td class="text-center">' + escapeHtml(r.rank) + '</td>' +
+                    '<td>' + escapeHtml(r.cell_index) + '</td>' +
+                    '<td title="' + escapeHtml(r.cell_name || '') + '">' + escapeHtml(name) + '</td>' +
+                    '<td class="font-monospace small">' + escapeHtml(dist) + '</td>' +
+                    '<td>' + escapeHtml(r.cell_type) + '</td>' +
+                    '<td><button class="btn btn-link btn-sm p-0 requery-btn" data-cell="' + escapeHtml(r.cell_index) + '" title="设为查询细胞">&#x21BB;</button></td>' +
                     '</tr>';
             }).join('');
             container.innerHTML = '<table class="table table-sm table-hover align-middle mb-0">' +
@@ -504,6 +523,18 @@ function renderSearchResults(data, interpretation) {
 
     var badge = document.getElementById('searchTopKBadge');
     if (badge) badge.textContent = 'Top-K ' + data.top_k;
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, function (ch) {
+        return {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+        }[ch];
+    });
 }
 
 /* ===== 渲染评估结果 ===== */

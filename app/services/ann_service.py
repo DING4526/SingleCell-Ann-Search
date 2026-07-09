@@ -30,6 +30,15 @@ def build_hnsw_index(
         if progress_cb:
             progress_cb(p, msg)
 
+    if metric not in ("l2", "cosine"):
+        raise ValueError("metric 仅支持 l2 或 cosine")
+    if M < 2:
+        raise ValueError("M 必须大于等于 2")
+    if ef_construction < M:
+        raise ValueError("ef_construction 必须大于等于 M")
+    if ef_search < 1:
+        raise ValueError("ef_search 必须大于等于 1")
+
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset or dataset.status not in ("processed", "indexed"):
         raise ValueError("数据集需要先处理才能构建索引")
@@ -115,11 +124,20 @@ def search_by_cell_index(
 
     if not dataset or not ann_index:
         raise ValueError("数据集或索引不存在")
+    if ann_index.dataset_id != dataset_id:
+        raise ValueError("索引不属于当前数据集")
+    if ann_index.status != "ready":
+        raise ValueError("索引尚未就绪")
 
     vectors = load_vectors(dataset)
+    n_cells = vectors.shape[0]
+    if n_cells == 0:
+        raise ValueError("数据集没有可检索的向量")
 
-    if query_cell_index < 0 or query_cell_index >= vectors.shape[0]:
-        raise ValueError(f"query_cell_index 必须在 [0, {vectors.shape[0] - 1}] 范围内")
+    top_k = max(1, min(int(top_k), min(100, max(1, n_cells - 1 if exclude_self else n_cells))))
+
+    if query_cell_index < 0 or query_cell_index >= n_cells:
+        raise ValueError(f"query_cell_index 必须在 [0, {n_cells - 1}] 范围内")
 
     query_vector = vectors[query_cell_index : query_cell_index + 1]
 
@@ -130,6 +148,7 @@ def search_by_cell_index(
         fetch_k = max(top_k * 20, 50)
     else:
         fetch_k = top_k + (1 if exclude_self else 0)
+    fetch_k = min(fetch_k, n_cells)
 
     t0 = time.time()
     labels, distances = hnsw_index.knn_query(query_vector, k=fetch_k)
@@ -144,11 +163,21 @@ def search_by_cell_index(
     else:
         filtered = list(zip(labels, distances))
 
+    candidate_indices = [int(cell_idx) for cell_idx, _ in filtered]
+    cells = {}
+    if candidate_indices:
+        cell_rows = (
+            Cell.query
+            .filter(Cell.dataset_id == dataset_id, Cell.cell_index.in_(candidate_indices))
+            .all()
+        )
+        cells = {cell.cell_index: cell for cell in cell_rows}
+
     # 按 cell_type 过滤
     if filter_cell_type:
         type_filtered = []
         for cell_idx, dist in filtered:
-            cell = Cell.query.filter_by(dataset_id=dataset_id, cell_index=cell_idx).first()
+            cell = cells.get(int(cell_idx))
             if cell and cell.cell_type == filter_cell_type:
                 type_filtered.append((cell_idx, dist))
             if len(type_filtered) >= top_k:
@@ -160,7 +189,7 @@ def search_by_cell_index(
     # 构建结果列表，附带细胞元信息
     results = []
     for rank, (cell_idx, dist) in enumerate(filtered, 1):
-        cell = Cell.query.filter_by(dataset_id=dataset_id, cell_index=cell_idx).first()
+        cell = cells.get(int(cell_idx))
         results.append(
             {
                 "rank": rank,
