@@ -16,7 +16,7 @@ export function reduceAiStreamEvent(
   if (eventType === "run.stage") {
     return { ...state, stageMessage: String(payload.message || payload.label || ""), refresh: false };
   }
-  if (eventType === "plan.ready" || eventType === "answer.replace") {
+  if (["plan.ready", "answer.replace", "action.proposed", "action.status", "ui.navigate", "assistant.handoff"].includes(eventType)) {
     return { ...state, enhancement: "", refresh: true };
   }
   if (eventType === "answer.completed" || eventType === "run.completed") {

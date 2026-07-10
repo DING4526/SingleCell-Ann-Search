@@ -23,4 +23,14 @@ describe("AI stream UI reducer", () => {
     expect(analysisModeForTool("run_fanout_search")).toBe("fanout");
     expect(toolForAnalysisMode("single")).toBe("run_single_cell_search");
   });
+
+  it("refreshes action and navigation events without ending the run", () => {
+    const initial = { enhancement: "", terminal: false, refresh: false, stageMessage: null };
+    const proposed = reduceAiStreamEvent(initial, "action.proposed", { tool_call_id: 3 });
+    expect(proposed.refresh).toBe(true);
+    expect(proposed.terminal).toBe(false);
+    const navigation = reduceAiStreamEvent(initial, "ui.navigate", { path: "/query-lab" });
+    expect(navigation.refresh).toBe(true);
+    expect(navigation.terminal).toBe(false);
+  });
 });

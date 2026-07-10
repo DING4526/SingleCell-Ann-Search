@@ -28,8 +28,8 @@ class AssistantTurnDecision(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     intent: AssistantIntent = "answer_only"
-    direct_answer: str = Field(default="", max_length=1800)
-    supporting_points: list[str] = Field(default_factory=list, max_length=6)
+    direct_answer: str = Field(default="", max_length=1000)
+    supporting_points: list[str] = Field(default_factory=list, max_length=4)
     clarification_question: str | None = Field(default=None, max_length=500)
     navigation_target: AssistantRoute | None = None
     navigation_params: dict[str, str | int | bool | None] = Field(default_factory=dict)

@@ -6,7 +6,7 @@ import json
 import re
 from urllib.parse import urlencode
 
-from app.ai.prompts import ASSISTANT_EXAMPLES, GLOBAL_ASSISTANT_SYSTEM, PROMPT_REVISION, QUALITY_REPAIR_SYSTEM
+from app.ai.prompts import ASSISTANT_EXAMPLES, GLOBAL_ASSISTANT_SYSTEM, PLATFORM_INVARIANTS, PROMPT_REVISION, QUALITY_REPAIR_SYSTEM
 from app.ai.schemas import AssistantTurnDecision
 from app.extensions import db
 from app.models import (
@@ -19,6 +19,7 @@ from app.services.access_service import (
 )
 from app.services.audit_service import record_audit
 from app.services.platform_action_service import idempotency_key, normalize_action
+from app.ai.tools import write_tool_contracts
 
 
 ROUTE_REGISTRY = {
@@ -159,6 +160,50 @@ def _explicit_navigation(prompt: str) -> bool:
     return bool(re.search(r"(?:打开|进入|跳转|带我去|前往|导航到)", prompt or ""))
 
 
+def _deterministic_decision(prompt: str, resource_context: dict) -> AssistantTurnDecision | None:
+    """Resolve unambiguous, safety-critical turns without paying model latency."""
+    text = (prompt or "").strip()
+    if re.search(r"(?:删除|转移所有权|公开.*私有|分享给所有人|API\s*Key|密钥)", text, re.I):
+        return AssistantTurnDecision(
+            intent="answer_only",
+            direct_answer="这个请求涉及删除、权限、所有权或敏感凭据，AI 助手不会执行。请使用对应管理页面的人工入口，并在操作前核对影响。",
+        )
+    if re.search(r"(?:最相似|相似细胞|近邻细胞|跨数据集.*比较)", text):
+        return AssistantTurnDecision(
+            intent="analysis_handoff",
+            direct_answer="这个请求需要真实单细胞检索，我会将原始问题移交 AI Analysis，并在执行 ANN 前让你确认完整计划。",
+            handoff_prompt=text,
+        )
+    if not _explicit_navigation(text):
+        return None
+    route_terms = [
+        ("数据资源", "datasets"), ("数据集列表", "datasets"),
+        ("联合索引", "joint_indexes"), ("检索实验室", "query_lab"),
+        ("索引实验室", "index_lab"), ("权限管理", "access"),
+        ("AI Analysis", "ai_analysis"), ("AI 分析", "ai_analysis"),
+        ("知识库", "ai_knowledge"), ("全局 AI 助手", "ai_assistant"), ("概览", "overview"),
+    ]
+    matches = [(term, target) for term, target in route_terms if term.lower() in text.lower()]
+    params: dict = {}
+    if len(matches) == 1:
+        target = matches[0][1]
+        page_dataset_id = ((resource_context.get("page") or {}).get("resources") or {}).get("dataset_id")
+        if target in {"query_lab", "index_lab", "ai_analysis", "ai_knowledge"} and page_dataset_id:
+            params["dataset_id"] = page_dataset_id
+        return AssistantTurnDecision(
+            intent="navigate", direct_answer=f"正在打开{matches[0][0]}。",
+            navigation_target=target, navigation_params=params,
+        )
+    if "数据集" in text:
+        named = [row for row in resource_context.get("datasets") or [] if str(row.get("name") or "").lower() in text.lower()]
+        if len(named) == 1:
+            return AssistantTurnDecision(
+                intent="navigate", direct_answer=f"正在打开数据集「{named[0]['name']}」。",
+                navigation_target="dataset_detail", navigation_params={"dataset_id": named[0]["id"]},
+            )
+    return None
+
+
 def _chinese_dominant(text: str) -> bool:
     sentences = [part.strip() for part in re.split(r"[。！？.!?]+", text or "") if part.strip()]
     if not sentences:
@@ -179,11 +224,21 @@ def _render_evidence(text: str, evidence: dict) -> str | None:
     return None if unknown else rendered
 
 
+def _numbers_grounded(text: str, resource_context: dict) -> bool:
+    """Resource numbers may be repeated, but every one must exist in trusted context."""
+    observed = re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?", text or "")
+    trusted = set(re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?", json.dumps(resource_context, ensure_ascii=False)))
+    return all(value in trusted for value in observed)
+
+
 def resolve_navigation(target: str | None, params: dict, user: User) -> dict | None:
     definition = ROUTE_REGISTRY.get(str(target or ""))
     if not definition:
         return None
     params = params if isinstance(params, dict) else {}
+    params = dict(params)
+    if target in {"query_lab", "index_lab", "ai_knowledge", "ai_analysis"} and params.get("dataset") is None:
+        params["dataset"] = params.get("dataset_id")
     allowed = definition["params"]
     clean: dict[str, str | int] = {}
     for key in allowed:
@@ -264,26 +319,33 @@ def run_assistant(app, run_id: int) -> None:
             messages = [
                 {"role": "system", "content": GLOBAL_ASSISTANT_SYSTEM},
                 {"role": "system", "content": ASSISTANT_EXAMPLES},
+                {"role": "system", "content": PLATFORM_INVARIANTS},
                 {"role": "system", "content": "实时平台上下文：" + json_dumps(resource_context)},
                 {"role": "system", "content": "最近对话：" + json_dumps(_recent_dialogue(run.conversation_id, run.input_message_id))},
                 {"role": "system", "content": "可引用知识：" + json_dumps(knowledge_context)},
+                {"role": "system", "content": "安全写操作参数契约：" + json_dumps(write_tool_contracts())},
                 {"role": "user", "content": prompt},
             ]
-            provider = configured_provider(model)
-            completion = provider.complete_structured(
-                model=model.model_id, messages=messages, schema_model=AssistantTurnDecision, max_tokens=1400,
-            )
-            _update_usage(run, completion.usage)
-            _record_run_provider_call(run, model, "assistant_decision", completion.usage, "success")
-            decision = completion.value
+            decision = _deterministic_decision(prompt, resource_context)
+            completion = None
+            provider = None
+            if decision is None:
+                provider = configured_provider(model)
+                completion = provider.complete_structured(
+                    model=model.model_id, messages=messages, schema_model=AssistantTurnDecision, max_tokens=1400,
+                )
+                _update_usage(run, completion.usage)
+                _record_run_provider_call(run, model, "assistant_decision", completion.usage, "success")
+                decision = completion.value
             answer = _assistant_text(decision, "我已读取当前页面，但还需要更具体的问题。")
             rendered = _render_evidence(answer, resource_context["evidence"])
             allowed_knowledge = {row["key"] for row in hits}
             cited = set(re.findall(r"\[(K:[^\]]+)\]", answer)) | set(decision.knowledge_keys)
             valid = rendered is not None and (not cited or cited.issubset(allowed_knowledge))
+            valid = valid and _numbers_grounded(rendered or "", resource_context)
             if not _chinese_dominant(rendered or ""):
                 valid = False
-            if not valid:
+            if not valid and completion is not None and provider is not None:
                 repair = provider.complete_structured(
                     model=model.model_id,
                     messages=[*messages, {"role": "assistant", "content": completion.raw_text},
@@ -297,6 +359,7 @@ def run_assistant(app, run_id: int) -> None:
                 rendered = _render_evidence(answer, resource_context["evidence"])
                 cited = set(re.findall(r"\[(K:[^\]]+)\]", answer)) | set(decision.knowledge_keys)
                 valid = rendered is not None and _chinese_dominant(rendered or "") and cited.issubset(allowed_knowledge)
+                valid = valid and _numbers_grounded(rendered or "", resource_context)
             answer = rendered if valid and rendered else "我暂时无法可靠完成这次理解。请明确说明目标页面、数据集或希望执行的操作。"
 
             structured: dict = {"type": "assistant_answer", "intent": decision.intent, "prompt_revision": PROMPT_REVISION}
@@ -315,19 +378,25 @@ def run_assistant(app, run_id: int) -> None:
                     structured["client_action"] = client_action
             elif decision.intent == "propose_action" and decision.action:
                 args = _merge_page_action_args(decision.action_args, page_context)
-                canonical, preconditions, impact = normalize_action(decision.action, args, user)
-                proposed_tool = AiToolCall(
-                    run_id=run.id, name=decision.action, status="proposed", args_json=json_dumps(canonical),
-                    risk_level="write", idempotency_key=idempotency_key(run.id, user.id, decision.action, canonical),
-                    expires_at=datetime.utcnow() + timedelta(minutes=10), precondition_json=json_dumps(preconditions),
-                )
-                db.session.add(proposed_tool)
-                db.session.flush()
-                structured["action"] = {
-                    "tool_call_id": proposed_tool.id, "name": proposed_tool.name, "args": canonical,
-                    "impact": impact, "expires_at": proposed_tool.expires_at.isoformat(), "requires_confirmation": True,
-                }
-                answer = answer + "\n\n该操作尚未执行。请检查操作卡中的参数和影响后确认。"
+                try:
+                    canonical, preconditions, impact = normalize_action(decision.action, args, user)
+                    proposed_tool = AiToolCall(
+                        run_id=run.id, name=decision.action, status="proposed", args_json=json_dumps(canonical),
+                        risk_level="write", idempotency_key=idempotency_key(run.id, user.id, decision.action, canonical),
+                        expires_at=datetime.utcnow() + timedelta(minutes=10), precondition_json=json_dumps(preconditions),
+                    )
+                    db.session.add(proposed_tool)
+                    db.session.flush()
+                    structured["action"] = {
+                        "tool_call_id": proposed_tool.id, "name": proposed_tool.name, "args": canonical,
+                        "impact": impact, "expires_at": proposed_tool.expires_at.isoformat(), "requires_confirmation": True,
+                    }
+                    answer = answer + "\n\n该操作尚未执行。请检查操作卡中的参数和影响后确认。"
+                except (ValueError, PermissionError) as exc:
+                    decision.intent = "need_clarification"
+                    structured["intent"] = "need_clarification"
+                    structured["action_validation_error"] = str(exc)
+                    answer = f"当前不能提交这个操作：{str(exc)} 请调整目标资源或参数后重试。"
 
             output = AiMessage(conversation_id=run.conversation_id, role="assistant", content=answer,
                                structured_json=json_dumps(structured))
@@ -377,4 +446,3 @@ def assistant_bootstrap(user: User) -> dict:
         "conversation_kind": "assistant",
         "prompt_revision": PROMPT_REVISION,
     }
-

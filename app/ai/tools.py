@@ -103,6 +103,26 @@ WRITE_TOOLS = {
     "create_personal_knowledge_note": "创建一份当前用户私有的 Markdown 知识笔记。",
 }
 
+WRITE_TOOL_ARGUMENTS = {
+    "submit_dataset_processing": {"required": ["dataset_id"], "optional": []},
+    "submit_index_build": {"required": ["dataset_id"], "optional": ["algorithm", "metric", "M", "ef_construction", "ef_search", "params"]},
+    "submit_index_experiment": {"required": ["dataset_id"], "optional": ["metric", "sample_size", "top_k", "seed", "repetitions", "warmup_count", "candidate_keys"]},
+    "submit_index_evaluation": {"required": ["dataset_id", "index_id"], "optional": ["sample_size", "top_k", "seed"]},
+    "submit_joint_index_build": {"required": ["dataset_ids"], "optional": ["name", "metric", "M", "ef_construction", "ef_search", "n_pcs", "n_top_genes", "min_common_genes"]},
+    "reindex_knowledge_document": {"required": ["document_id"], "optional": []},
+    "create_personal_knowledge_note": {"required": ["title", "content"], "optional": []},
+}
+
+WRITE_TOOL_LABELS = {
+    "submit_dataset_processing": "处理数据集",
+    "submit_index_build": "构建单索引",
+    "submit_index_experiment": "运行索引实验",
+    "submit_index_evaluation": "评估索引",
+    "submit_joint_index_build": "构建联合索引",
+    "reindex_knowledge_document": "重建知识索引",
+    "create_personal_knowledge_note": "创建个人知识笔记",
+}
+
 for _name, _description in CLIENT_ACTIONS.items():
     TOOL_REGISTRY[_name] = {
         "label": _name.replace("_", " "), "description": _description,
@@ -111,8 +131,9 @@ for _name, _description in CLIENT_ACTIONS.items():
 
 for _name, _description in WRITE_TOOLS.items():
     TOOL_REGISTRY[_name] = {
-        "label": _name.replace("_", " "), "description": _description,
+        "label": WRITE_TOOL_LABELS[_name], "description": _description,
         "requires_confirmation": True, "kind": "write", "risk_level": "write",
+        "arguments": WRITE_TOOL_ARGUMENTS[_name],
     }
 
 
@@ -126,3 +147,10 @@ def is_ann_tool(name: str) -> bool:
 
 def is_write_tool(name: str) -> bool:
     return name in WRITE_TOOLS
+
+
+def write_tool_contracts() -> dict:
+    return {
+        name: {"description": WRITE_TOOLS[name], **WRITE_TOOL_ARGUMENTS[name]}
+        for name in WRITE_TOOLS
+    }
