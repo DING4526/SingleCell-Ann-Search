@@ -16,6 +16,7 @@
         <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
         <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
         <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
+        <a-menu-item key="/ai-knowledge"><BookOutlined />AI 知识库</a-menu-item>
       </a-menu>
       <div class="sider-capability">
         <div class="capability-title">能力地图</div>
@@ -64,6 +65,7 @@
         <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
         <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
         <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
+        <a-menu-item key="/ai-knowledge"><BookOutlined />AI 知识库</a-menu-item>
       </a-menu>
     </a-drawer>
     <a-drawer v-model:open="openTasks" title="任务中心" width="420">
@@ -93,6 +95,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   ClockCircleOutlined,
+  BookOutlined,
   DashboardOutlined,
   DatabaseOutlined,
   DeploymentUnitOutlined,

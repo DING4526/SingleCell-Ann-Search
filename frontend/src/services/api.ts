@@ -1,4 +1,4 @@
-import type { AnnAlgorithm, AuditEvent, Dataset, DatasetAccess, DatasetPermission, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
+import type { AiConversation, AiModelConfig, AiProviderCatalogItem, AiProviderConfig, AiRun, AiSettings, AiUsage, AnnAlgorithm, AuditEvent, Dataset, DatasetAccess, DatasetPermission, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, KnowledgeDocument, KnowledgeHit, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchHistoryItem, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
 
 type ApiResponse<T> = T & { ok: boolean; message?: string };
 type ApiRequestInit = RequestInit & { timeoutMs?: number };
@@ -42,6 +42,15 @@ function toForm(data: Record<string, string | number | boolean | undefined | nul
     if (value !== undefined && value !== null) form.set(key, String(value));
   });
   return form;
+}
+
+function jsonRequest<T>(url: string, method: string, data: Record<string, unknown> = {}, timeoutMs?: number) {
+  return request<T>(url, {
+    method,
+    body: JSON.stringify(data),
+    headers: { "Content-Type": "application/json" },
+    timeoutMs,
+  });
 }
 
 function toSearchPlotForm(params: { dataset_id: number; query_cell_index: number; result_cell_indices: number[]; max_background_points?: number }) {
@@ -141,7 +150,7 @@ export const api = {
   },
   createUser: (params: { username: string; password: string; role: string }) =>
     request<ApiResponse<{ user: ManagedUser }>>("/api/access/users", { method: "POST", body: toForm(params) }),
-  updateUser: (id: number, params: { role?: string; is_enabled?: boolean }) =>
+  updateUser: (id: number, params: { role?: string; is_enabled?: boolean; ai_enabled?: boolean; ai_daily_limit_override?: number | "" }) =>
     request<ApiResponse<{ user: ManagedUser }>>(`/api/access/users/${id}`, { method: "PATCH", body: toForm(params) }),
   resetUserPassword: (id: number, newPassword: string) =>
     request<ApiResponse<Record<string, never>>>(`/api/access/users/${id}/reset-password`, { method: "POST", body: toForm({ new_password: newPassword }) }),
@@ -199,6 +208,22 @@ export const api = {
     request<ApiResponse<{ task_id: number }>>("/api/search/task", { method: "POST", body: toForm(params), timeoutMs: 15000 }),
   searchPlotTask: (params: { dataset_id: number; query_cell_index: number; result_cell_indices: number[]; max_background_points?: number }) =>
     request<ApiResponse<{ task_id: number }>>("/api/search/plot/task", { method: "POST", body: toSearchPlotForm(params), timeoutMs: 15000 }),
+  searchHistory: (filters: { mode?: string; source?: string; status?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => { if (value !== undefined) params.set(key, String(value)); });
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<ApiResponse<{ history: SearchHistoryItem[] }>>(`/api/search/history${suffix}`);
+  },
+  searchHistoryDetail: (id: number) =>
+    request<ApiResponse<{ history: SearchHistoryItem }>>(`/api/search/history/${id}`),
+  hideSearchHistory: (id: number) =>
+    request<ApiResponse<Record<string, never>>>(`/api/search/history/${id}`, { method: "DELETE" }),
+  clearSearchHistory: (filters: { mode?: string; source?: string } = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => { if (value && value !== "all") params.set(key, value); });
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<ApiResponse<{ hidden_count: number }>>(`/api/search/history${suffix}`, { method: "DELETE" });
+  },
   multiSearch: (params: FormData) =>
     request<ApiResponse<MultiSearchPayload>>(
       "/api/search/multi",
@@ -232,4 +257,55 @@ export const api = {
   indexEvaluation: (id: number) => request<ApiResponse<{ evaluation: IndexEvaluation }>>(`/api/index-evaluations/${id}`),
   evaluate: (params: { dataset_id: number; index_id: number; sample_size: number; eval_top_k: number }) =>
     request<ApiResponse<{ metrics: EvalMetrics; bar_plot: PlotlyPayload }>>("/api/evaluate", { method: "POST", body: toForm(params) }),
+
+  aiCatalog: () => request<ApiResponse<{ providers: AiProviderCatalogItem[] }>>("/api/ai/catalog"),
+  aiModels: () => request<ApiResponse<{ models: AiModelConfig[]; disabled: boolean }>>("/api/ai/models"),
+  aiConversations: () => request<ApiResponse<{ conversations: AiConversation[] }>>("/api/ai/conversations"),
+  createAiConversation: (title = "新建 AI 分析") =>
+    jsonRequest<ApiResponse<{ conversation: AiConversation }>>("/api/ai/conversations", "POST", { title }),
+  aiConversation: (id: number) => request<ApiResponse<{ conversation: AiConversation }>>(`/api/ai/conversations/${id}`),
+  deleteAiConversation: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/ai/conversations/${id}`, { method: "DELETE" }),
+  sendAiMessage: (conversationId: number, content: string, modelConfigId: number, knowledgeScopes: string[] = ["platform", "dataset", "personal"]) =>
+    jsonRequest<ApiResponse<{ run: AiRun }>>(`/api/ai/conversations/${conversationId}/messages`, "POST", { content, model_config_id: modelConfigId, knowledge_scopes: knowledgeScopes }, 15000),
+  aiRun: (id: number) => request<ApiResponse<{ run: AiRun }>>(`/api/ai/runs/${id}`, { timeoutMs: 10000 }),
+  updateAiRunPlan: (id: number, plan: Record<string, unknown>) =>
+    jsonRequest<ApiResponse<{ run: AiRun; valid: boolean }>>(`/api/ai/runs/${id}/plan`, "PUT", plan),
+  approveAiRun: (id: number) => jsonRequest<ApiResponse<{ run: AiRun }>>(`/api/ai/runs/${id}/approve`, "POST"),
+  rejectAiRun: (id: number) => jsonRequest<ApiResponse<{ run: AiRun }>>(`/api/ai/runs/${id}/reject`, "POST"),
+  cancelAiRun: (id: number) => jsonRequest<ApiResponse<{ run: AiRun }>>(`/api/ai/runs/${id}/cancel`, "POST"),
+  aiCapabilities: () => request<ApiResponse<{ tools: Array<Record<string, unknown>> }>>("/api/ai/capabilities"),
+  knowledgeDocuments: (scope?: string, datasetId?: number) => {
+    const params = new URLSearchParams();
+    if (scope) params.set("scope", scope);
+    if (datasetId) params.set("dataset_id", String(datasetId));
+    return request<ApiResponse<{ documents: KnowledgeDocument[] }>>(`/api/ai/knowledge/documents${params.toString() ? `?${params}` : ""}`);
+  },
+  uploadKnowledgeDocument: (params: { file: File; scope: string; title?: string; description?: string; dataset_id?: number }) => {
+    const form = new FormData();
+    form.set("file", params.file);
+    form.set("scope", params.scope);
+    if (params.title) form.set("title", params.title);
+    if (params.description) form.set("description", params.description);
+    if (params.dataset_id) form.set("dataset_id", String(params.dataset_id));
+    return request<ApiResponse<{ document: KnowledgeDocument }>>("/api/ai/knowledge/documents", { method: "POST", body: form, timeoutMs: 30000 });
+  },
+  updateKnowledgeDocument: (id: number, params: Record<string, unknown>) => jsonRequest<ApiResponse<{ document: KnowledgeDocument }>>(`/api/ai/knowledge/documents/${id}`, "PATCH", params),
+  deleteKnowledgeDocument: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/ai/knowledge/documents/${id}`, { method: "DELETE" }),
+  reindexKnowledgeDocument: (id: number) => jsonRequest<ApiResponse<{ document: KnowledgeDocument }>>(`/api/ai/knowledge/documents/${id}/reindex`, "POST"),
+  previewKnowledgeSearch: (q: string, scopes: string[]) => request<ApiResponse<{ hits: KnowledgeHit[] }>>(`/api/ai/knowledge/search/preview?q=${encodeURIComponent(q)}&scopes=${encodeURIComponent(scopes.join(","))}`),
+  syncBuiltinKnowledge: () => jsonRequest<ApiResponse<{ documents: KnowledgeDocument[] }>>("/api/ai/knowledge/builtin/sync", "POST"),
+
+  aiAdminSettings: () => request<ApiResponse<{ settings: AiSettings; credential_store: { ready: boolean; message: string }; catalog: AiProviderCatalogItem[] }>>("/api/ai/admin/settings"),
+  updateAiAdminSettings: (params: Partial<AiSettings>) =>
+    jsonRequest<ApiResponse<{ settings: AiSettings; credential_store: { ready: boolean; message: string }; catalog: AiProviderCatalogItem[] }>>("/api/ai/admin/settings", "PATCH", params as Record<string, unknown>),
+  aiAdminProviders: () => request<ApiResponse<{ providers: AiProviderConfig[] }>>("/api/ai/admin/providers"),
+  createAiProvider: (params: Record<string, unknown>) => jsonRequest<ApiResponse<{ provider: AiProviderConfig }>>("/api/ai/admin/providers", "POST", params),
+  updateAiProvider: (id: number, params: Record<string, unknown>) => jsonRequest<ApiResponse<{ provider: AiProviderConfig }>>(`/api/ai/admin/providers/${id}`, "PATCH", params),
+  deleteAiProvider: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/ai/admin/providers/${id}`, { method: "DELETE" }),
+  aiAdminModels: () => request<ApiResponse<{ models: AiModelConfig[] }>>("/api/ai/admin/models"),
+  createAiModel: (params: Record<string, unknown>) => jsonRequest<ApiResponse<{ model: AiModelConfig }>>("/api/ai/admin/models", "POST", params),
+  updateAiModel: (id: number, params: Record<string, unknown>) => jsonRequest<ApiResponse<{ model: AiModelConfig }>>(`/api/ai/admin/models/${id}`, "PATCH", params),
+  deleteAiModel: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/ai/admin/models/${id}`, { method: "DELETE" }),
+  testAiModel: (id: number) => jsonRequest<ApiResponse<{ model: AiModelConfig; latency_ms: number }>>(`/api/ai/admin/models/${id}/test`, "POST", {}, 190000),
+  aiAdminUsage: () => request<ApiResponse<{ usage: AiUsage }>>("/api/ai/admin/usage"),
 };

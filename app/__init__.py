@@ -10,7 +10,10 @@ def create_app(config_class=Config):
     app.config.from_object(config_class)
 
     # 确保数据目录存在
-    for d in [app.config["RAW_DIR"], app.config["CACHE_DIR"], app.config["INDEX_DIR"]]:
+    for d in [
+        app.config["RAW_DIR"], app.config["CACHE_DIR"], app.config["INDEX_DIR"],
+        app.config["KNOWLEDGE_DIR"],
+    ]:
         os.makedirs(d, exist_ok=True)
 
     # 确保 SQLite 数据库目录存在
@@ -25,22 +28,34 @@ def create_app(config_class=Config):
         if request.path.startswith("/api/"):
             return jsonify(ok=False, message="请先登录。"), 401
         from flask import redirect, url_for
-        return redirect(url_for("main.index"))
+        return redirect(url_for("auth.login", next=request.path))
 
     with app.app_context():
         from app.services.schema_service import ensure_sqlite_schema
         ensure_sqlite_schema()
+        # Built-in knowledge is small and indexed locally. It is safe to seed
+        # synchronously when upgrading an existing installation; fresh test
+        # databases created after the app factory can seed explicitly.
+        from sqlalchemy import inspect
+        if inspect(db.engine).has_table("knowledge_documents"):
+            from app.ai.knowledge import ensure_builtin_knowledge
+            ensure_builtin_knowledge()
+        if inspect(db.engine).has_table("ai_stream_events"):
+            from app.ai.streaming import cleanup_stream_events
+            cleanup_stream_events(app.config.get("AI_STREAM_EVENT_RETENTION_HOURS", 24))
 
     from app.routes.main import main_bp
     from app.routes.auth import auth_bp
     from app.routes.datasets import datasets_bp
     from app.routes.search import search_bp
     from app.routes.api import api_bp
+    from app.routes.ai import ai_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(datasets_bp)
     app.register_blueprint(search_bp)
     app.register_blueprint(api_bp)
+    app.register_blueprint(ai_bp)
 
     return app

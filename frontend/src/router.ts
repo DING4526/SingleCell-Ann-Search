@@ -13,6 +13,7 @@ const routes = [
   { path: "/evaluation", redirect: "/index-lab" },
   { path: "/access", name: "access", component: () => import("@/views/AccessView.vue") },
   { path: "/ai-analysis", name: "ai-analysis", component: () => import("@/views/AiAnalysisView.vue") },
+  { path: "/ai-knowledge", name: "ai-knowledge", component: () => import("@/views/AiKnowledgeView.vue") },
   { path: "/:pathMatch(.*)*", redirect: "/overview" },
 ];
 

@@ -1,14 +1,17 @@
 <template>
   <PageHeader title="检索实验室" description="执行单数据集、fan-out 跨数据集或 Harmony 联合索引检索。">
     <template #actions>
-      <a-segmented
-        v-model:value="mode"
-        :options="[
-          { label: '单数据集', value: 'single' },
-          { label: 'Fan-out', value: 'multi' },
-          { label: '联合索引', value: 'joint' },
-        ]"
-      />
+      <a-space wrap>
+        <a-button @click="openHistoryDrawer">检索历史</a-button>
+        <a-segmented
+          v-model:value="mode"
+          :options="[
+            { label: '单数据集', value: 'single' },
+            { label: 'Fan-out', value: 'multi' },
+            { label: '联合索引', value: 'joint' },
+          ]"
+        />
+      </a-space>
     </template>
   </PageHeader>
 
@@ -126,6 +129,43 @@
     </div>
   </div>
 
+  <a-drawer v-model:open="historyOpen" title="检索历史" width="620">
+    <a-space wrap style="margin-bottom:14px">
+      <a-select v-model:value="historyFilters.mode" style="width:130px" :options="historyModeOptions" @change="loadHistory" />
+      <a-select v-model:value="historyFilters.source" style="width:130px" :options="historySourceOptions" @change="loadHistory" />
+      <a-select v-model:value="historyFilters.status" style="width:130px" :options="historyStatusOptions" @change="loadHistory" />
+      <a-button @click="loadHistory">刷新</a-button>
+      <a-popconfirm title="从列表移除当前筛选下的全部已完成历史？" @confirm="clearHistory">
+        <a-button danger ghost>清空筛选结果</a-button>
+      </a-popconfirm>
+    </a-space>
+    <a-list :data-source="historyItems" :loading="historyLoading" item-layout="vertical">
+      <template #renderItem="{ item }">
+        <a-list-item>
+          <div class="history-record">
+            <div class="history-title">
+              <strong>{{ item.dataset_name || '联合/未知数据集' }} · 细胞 #{{ item.query_cell_index ?? '-' }}</strong>
+              <a-space wrap>
+                <a-tag>{{ historyModeLabel(item.mode) }}</a-tag>
+                <a-tag :color="item.source === 'ai' ? 'purple' : 'blue'">{{ item.source === 'ai' ? 'AI' : '人工' }}</a-tag>
+                <a-tag :color="item.status === 'success' ? 'green' : item.status === 'error' ? 'red' : 'blue'">{{ item.status }}</a-tag>
+              </a-space>
+            </div>
+            <div class="history-meta">Top-K {{ item.top_k ?? '-' }} · 返回 {{ item.result_count }} · {{ item.query_time_ms ?? '-' }} ms · {{ formatDate(item.updated_at) }}</div>
+            <a-alert v-if="item.legacy" type="warning" show-icon message="旧记录缺少完整索引参数；可查看结果，重新运行前需选择有效索引。" />
+            <a-space wrap style="margin-top:10px">
+              <a-button type="primary" size="small" :disabled="item.status !== 'success'" @click="selectHistory(item.id)">载入结果</a-button>
+              <a-button v-if="item.conversation_id" size="small" @click="openAiConversation(item.conversation_id)">查看 AI 会话</a-button>
+              <a-popconfirm title="从历史列表移除此记录？" @confirm="hideHistory(item.id)">
+                <a-button danger size="small" ghost>移除</a-button>
+              </a-popconfirm>
+            </a-space>
+          </div>
+        </a-list-item>
+      </template>
+    </a-list>
+  </a-drawer>
+
   <a-drawer v-model:open="detailOpen" title="细胞详情" width="420">
     <a-descriptions v-if="selectedResult" :column="1" bordered size="small">
       <a-descriptions-item label="数据集">{{ selectedResult.dataset_name || selectedDataset?.name || "-" }}</a-descriptions-item>
@@ -143,17 +183,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { message } from "ant-design-vue";
 import PageHeader from "@/components/PageHeader.vue";
 import PlotlyPanel from "@/components/PlotlyPanel.vue";
 import { api } from "@/services/api";
 import { useDatasetStore } from "@/stores/datasets";
 import { useQueryStore } from "@/stores/query";
-import type { JointIndex, SearchResult, TaskRecord } from "@/types";
+import { formatDate } from "@/utils/format";
+import type { JointIndex, JointSearchPayload, MultiSearchPayload, SearchHistoryItem, SearchResult, SingleSearchPayload, TaskRecord } from "@/types";
 
 const route = useRoute();
+const router = useRouter();
 const store = useDatasetStore();
 const queryStore = useQueryStore();
 const mode = ref<"single" | "multi" | "joint">("single");
@@ -171,6 +213,21 @@ const currentTask = ref<TaskRecord | null>(null);
 const detailOpen = ref(false);
 const selectedResult = ref<SearchResult | null>(null);
 const cellDetailError = ref("");
+const historyOpen = ref(false);
+const historyLoading = ref(false);
+const historyItems = ref<SearchHistoryItem[]>([]);
+const historyFilters = reactive({ mode: "all", source: "all", status: "all" });
+const historyReady = ref(false);
+const historyModeOptions = [
+  { value: "all", label: "全部模式" }, { value: "single", label: "单数据集" },
+  { value: "multi", label: "Fan-out" }, { value: "joint", label: "联合索引" },
+];
+const historySourceOptions = [
+  { value: "all", label: "全部来源" }, { value: "query_lab", label: "人工检索" }, { value: "ai", label: "AI 检索" },
+];
+const historyStatusOptions = [
+  { value: "all", label: "全部状态" }, { value: "success", label: "成功" }, { value: "error", label: "失败" },
+];
 
 const datasetOptions = computed(() => store.indexedDatasets.map((dataset) => ({ value: dataset.id, label: `${dataset.name}（${dataset.n_cells || "?"} 个细胞）` })));
 const selectedDataset = computed(() => store.datasets.find((dataset) => dataset.id === datasetId.value));
@@ -295,14 +352,132 @@ async function openCellDetail(record: SearchResult) {
   }
 }
 
+function historyModeLabel(value: string) {
+  return ({ single: "单数据集", multi: "Fan-out", joint: "联合索引" } as Record<string, string>)[value] || value;
+}
+
+async function loadHistory() {
+  historyLoading.value = true;
+  try {
+    historyItems.value = (await api.searchHistory({ ...historyFilters, limit: 50 })).history;
+  } catch (error) {
+    message.error((error as Error).message);
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+async function openHistoryDrawer() {
+  historyOpen.value = true;
+  await loadHistory();
+}
+
+async function hideHistory(id: number) {
+  await api.hideSearchHistory(id);
+  message.success("已从检索历史移除");
+  await loadHistory();
+}
+
+async function clearHistory() {
+  const data = await api.clearSearchHistory({ mode: historyFilters.mode, source: historyFilters.source });
+  message.success(`已移除 ${data.hidden_count} 条历史`);
+  await loadHistory();
+}
+
+function selectHistory(id: number) {
+  historyOpen.value = false;
+  if (Number(route.query.history_id) === id) void loadHistoryResult(id);
+  else router.push({ path: "/query-lab", query: { history_id: id } });
+}
+
+function openAiConversation(conversationId: number) {
+  router.push({ path: "/ai-analysis", query: { conversation_id: conversationId } });
+}
+
+async function loadHistoryResult(id: number) {
+  try {
+    const item = (await api.searchHistoryDetail(id)).history;
+    if (!item.result) throw new Error("该历史记录没有可载入的结果。");
+    queryError.value = "";
+    currentTask.value = null;
+    mode.value = item.mode;
+    const request = item.request as Record<string, unknown>;
+    queryStore.resetSearchState();
+    const runId = queryStore.searchRunId;
+
+    if (item.mode === "single") {
+      datasetId.value = Number(request.dataset_id || item.dataset_id) || undefined;
+      queryCellIndex.value = Number(request.query_cell_index ?? item.query_cell_index ?? 0);
+      topK.value = Number(request.top_k ?? item.top_k ?? 10);
+      await onDatasetChange();
+      indexId.value = Number(request.index_id) || indexOptions.value[0]?.value;
+      cellType.value = typeof request.filter_cell_type === "string" ? request.filter_cell_type : undefined;
+      queryStore.applySingleSearchPayload(item.result as SingleSearchPayload);
+      if (!queryStore.scatter && queryStore.results.length && datasetId.value) {
+        void queryStore.runSearchPlot({
+          dataset_id: datasetId.value,
+          query_cell_index: queryCellIndex.value,
+          result_cell_indices: queryStore.results.map((row) => row.cell_index),
+        }, runId);
+      }
+    } else if (item.mode === "multi") {
+      datasetId.value = Number(request.dataset_id || item.dataset_id) || undefined;
+      queryCellIndex.value = Number(request.query_cell_index ?? item.query_cell_index ?? 0);
+      topK.value = Number(request.top_k ?? item.top_k ?? 20);
+      await onDatasetChange();
+      indexId.value = Number(request.index_id) || indexOptions.value[0]?.value;
+      targetDatasetIds.value = Array.isArray(request.target_dataset_ids)
+        ? request.target_dataset_ids.map(Number) : [];
+      queryStore.applyMultiSearchPayload(item.result as MultiSearchPayload);
+    } else {
+      jointIndexId.value = Number(request.joint_index_id) || undefined;
+      queryCellIndex.value = Number(request.query_cell_index ?? item.query_cell_index ?? 0);
+      topK.value = Number(request.top_k ?? item.top_k ?? 20);
+      datasetId.value = Number(request.query_dataset_id || item.dataset_id) || undefined;
+      queryStore.applyJointSearchPayload(item.result as JointSearchPayload);
+      const labels = queryStore.jointResults.map((row) => row.global_label).filter((value): value is number => typeof value === "number");
+      if (queryStore.jointMeta && labels.length) {
+        void queryStore.runJointSearchPlot({
+          joint_index_id: queryStore.jointMeta.joint_index_id,
+          query_global_label: queryStore.jointMeta.query_global_label,
+          result_global_labels: labels,
+        }, runId);
+      }
+    }
+    if (item.legacy) message.warning("已载入旧结果；重新运行前请确认索引参数。");
+    else message.success("历史结果已载入，ANN 未重复执行。");
+  } catch (error) {
+    queryError.value = (error as Error).message;
+    message.error(queryError.value);
+  }
+}
+
 onMounted(async () => {
   await store.loadAll();
   await loadJointIndexes();
   datasetId.value = Number(route.query.dataset) || store.indexedDatasets[0]?.id;
   queryCellIndex.value = Number(route.query.cell_index) || 0;
+  topK.value = Number(route.query.top_k) || 10;
   await onDatasetChange();
   indexId.value = Number(route.query.index_id) || indexOptions.value[0]?.value;
+  if (typeof route.query.filter_cell_type === "string" && route.query.filter_cell_type) {
+    cellType.value = route.query.filter_cell_type;
+  }
   jointIndexId.value = jointIndexOptions.value[0]?.value;
-  if (jointIndexId.value) onJointIndexChange();
+  historyReady.value = true;
+  const historyId = Number(route.query.history_id);
+  if (historyId) await loadHistoryResult(historyId);
+});
+
+watch(() => route.query.history_id, (value) => {
+  const id = Number(value);
+  if (historyReady.value && id) void loadHistoryResult(id);
 });
 </script>
+
+<style scoped>
+.history-record { width: 100%; }
+.history-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.history-meta { margin-bottom: 9px; color: #64748b; font-size: 13px; }
+@media (max-width: 640px) { .history-title { flex-direction: column; } }
+</style>

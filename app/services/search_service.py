@@ -1,4 +1,6 @@
 """Search orchestration helpers shared by API routes and background tasks."""
+from statistics import median
+
 from app.extensions import db
 from app.models import Cell
 from app.services.ann_service import search_by_cell_index
@@ -16,6 +18,7 @@ def build_search_interpretation(dataset_id: int, query_cell_index: int, results:
         interpretation["distance_range"] = {
             "min": min(distances),
             "max": max(distances),
+            "median": median(distances),
         }
 
     diseases = [row.get("disease") or "N/A" for row in results]
@@ -33,6 +36,13 @@ def build_search_interpretation(dataset_id: int, query_cell_index: int, results:
         age_dist[age_group] = age_dist.get(age_group, 0) + 1
     interpretation["age_group_distribution"] = age_dist
 
+    type_dist = {}
+    for row in results:
+        cell_type = row.get("cell_type") or "N/A"
+        type_dist[cell_type] = type_dist.get(cell_type, 0) + 1
+    interpretation["cell_type_distribution"] = type_dist
+    interpretation["result_count"] = len(results)
+
     query_cell = Cell.query.filter_by(
         dataset_id=dataset_id,
         cell_index=query_cell_index,
@@ -40,6 +50,9 @@ def build_search_interpretation(dataset_id: int, query_cell_index: int, results:
     if query_cell and query_cell.cell_type:
         same_count = sum(1 for row in results if row.get("cell_type") == query_cell.cell_type)
         interpretation["same_type_ratio"] = f"{same_count}/{len(results)} 结果与查询细胞同类型"
+        interpretation["same_type_count"] = same_count
+        interpretation["same_type_fraction"] = same_count / len(results)
+        interpretation["query_cell_type"] = query_cell.cell_type
 
     return interpretation
 

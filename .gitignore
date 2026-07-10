@@ -39,3 +39,6 @@ Thumbs.db
 # Others
 codegen.py
 _codegen/
+.pytest_cache/
+logs/
+reports/ai-eval/raw/

@@ -77,12 +77,31 @@
               <span class="switch-label">{{ record.is_enabled ? "启用" : "停用" }}</span>
             </template>
             <template v-else-if="column.key === 'owned'">{{ record.owned_dataset_count || 0 }}</template>
+            <template v-else-if="column.key === 'ai'">
+              <a-switch :checked="record.ai_enabled" @change="changeUserAiEnabled(record, $event)" />
+              <span class="switch-label">{{ record.ai_enabled ? "可用" : "停用" }}</span>
+            </template>
+            <template v-else-if="column.key === 'aiLimit'">
+              <a-input-number
+                :value="record.ai_daily_limit_override"
+                :min="0"
+                :max="100000"
+                size="small"
+                placeholder="继承全局"
+                style="width: 110px"
+                @change="changeUserAiLimit(record, $event)"
+              />
+            </template>
             <template v-else-if="column.key === 'created'">{{ formatDate(record.created_at) }}</template>
             <template v-else-if="column.key === 'actions'">
               <a-button size="small" @click="openReset(record)">重置密码</a-button>
             </template>
           </template>
         </a-table>
+      </a-tab-pane>
+
+      <a-tab-pane v-if="auth.isAdmin" key="ai-models" tab="AI 模型">
+        <AiAdminSettings />
       </a-tab-pane>
 
       <a-tab-pane key="audit" tab="审计日志">
@@ -142,6 +161,7 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { message, Modal } from "ant-design-vue";
 import PageHeader from "@/components/PageHeader.vue";
+import AiAdminSettings from "@/components/ai/AiAdminSettings.vue";
 import { api } from "@/services/api";
 import { useAuthStore } from "@/stores/auth";
 import { formatDate } from "@/utils/format";
@@ -184,6 +204,8 @@ const userColumns = [
   { title: "角色", key: "role", width: 130 },
   { title: "状态", key: "enabled", width: 150 },
   { title: "拥有数据集", key: "owned", width: 120 },
+  { title: "AI 权限", key: "ai", width: 130 },
+  { title: "AI 每日限额", key: "aiLimit", width: 140 },
   { title: "创建时间", key: "created", width: 190 },
   { title: "操作", key: "actions", width: 120 },
 ];
@@ -192,7 +214,8 @@ const auditEventOptions = [
   "dataset.uploaded", "dataset.visibility_changed", "dataset.permission_added",
   "dataset.permission_updated", "dataset.permission_removed", "dataset.owner_transferred",
   "dataset.deleted", "dataset.process_submitted", "index.build_submitted",
-  "index_experiment.created", "index_experiment.finalized", "joint_index.build_submitted",
+    "index_experiment.created", "index_experiment.finalized", "joint_index.build_submitted",
+    "ai.provider_created", "ai.provider_key_rotated", "ai.model_tested", "ai.run_created", "ai.run_completed", "ai.run_failed",
 ];
 
 const filteredDatasets = computed(() => datasets.value.filter((dataset) => {
@@ -220,6 +243,10 @@ function eventLabel(event: string) {
     "index.build_submitted": "提交索引构建", "index.evaluation_submitted": "提交索引评估", "index.evaluated": "完成同步评估",
     "index_experiment.created": "创建索引实验", "index_experiment.finalized": "完成索引选优", "index_experiment.discarded": "放弃索引实验",
     "index_experiment.cleanup_retried": "重试实验清理", "joint_index.build_submitted": "提交联合索引构建",
+    "ai.provider_created": "创建 AI 供应商", "ai.provider_updated": "更新 AI 供应商", "ai.provider_key_rotated": "替换 AI 密钥",
+    "ai.provider_deleted": "删除 AI 供应商", "ai.model_created": "创建 AI 模型", "ai.model_updated": "更新 AI 模型",
+    "ai.model_tested": "测试 AI 模型", "ai.run_created": "创建 AI 分析", "ai.run_approved": "确认 AI 检索",
+    "ai.run_rejected": "拒绝 AI 检索", "ai.run_completed": "完成 AI 分析", "ai.run_failed": "AI 分析失败",
   };
   return labels[event] || event;
 }
@@ -263,7 +290,7 @@ async function createUser() {
   } catch (error) { message.error((error as Error).message); }
   finally { modalLoading.value = false; }
 }
-function updateUser(record: ManagedUser, patch: { role?: string; is_enabled?: boolean }) {
+function updateUser(record: ManagedUser, patch: { role?: string; is_enabled?: boolean; ai_enabled?: boolean; ai_daily_limit_override?: number | "" }) {
   const action = async () => {
     try {
       const updated = (await api.updateUser(record.id, patch)).user;
@@ -279,6 +306,10 @@ function updateUser(record: ManagedUser, patch: { role?: string; is_enabled?: bo
 }
 function changeUserRole(record: ManagedUser, value: unknown) { updateUser(record, { role: String(value) }); }
 function changeUserEnabled(record: ManagedUser, value: unknown) { updateUser(record, { is_enabled: Boolean(value) }); }
+function changeUserAiEnabled(record: ManagedUser, value: unknown) { updateUser(record, { ai_enabled: Boolean(value) }); }
+function changeUserAiLimit(record: ManagedUser, value: unknown) {
+  updateUser(record, { ai_daily_limit_override: value === null || value === undefined ? "" : Number(value) });
+}
 function openReset(record: ManagedUser) {
   resetTarget.value = record;
   resetPasswordValue.value = "";
