@@ -337,6 +337,7 @@ def search_joint_index(
     query_dataset_id: int,
     query_cell_index: int,
     top_k: int = 20,
+    user_id: int | None = None,
 ) -> dict:
     joint_index = db.session.get(JointIndex, joint_index_id)
     if not joint_index:
@@ -397,6 +398,7 @@ def search_joint_index(
 
     log = JointQueryLog(
         joint_index_id=joint_index.id,
+        user_id=user_id,
         query_dataset_id=query_dataset_id,
         query_cell_index=query_cell_index,
         top_k=top_k,

@@ -1,38 +1,309 @@
 <template>
-  <PageHeader title="权限管理" description="查看当前可访问数据资源。完整用户、共享和权限策略管理将在后续模块接入。" />
+  <PageHeader title="权限管理" description="查看自己的访问范围；管理员可维护账号，数据集所有者可在详情页配置共享成员。" />
 
-  <div class="surface">
-    <div class="toolbar">
-      <span class="toolbar-title">当前访问范围</span>
-      <a-tag>{{ roleText(auth.user?.role) }}</a-tag>
-    </div>
-    <a-table :data-source="store.datasets" :columns="columns" row-key="id" size="middle" :loading="store.loading">
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'name'"><a @click="$router.push(`/datasets/${record.id}`)">{{ record.name }}</a></template>
-        <template v-if="column.key === 'visibility'"><a-tag>{{ record.owner_name || "旧数据" }} / {{ visibilityText(record.visibility) }}</a-tag></template>
-        <template v-if="column.key === 'manage'"><a-tag :color="record.can_manage ? 'green' : 'default'">{{ record.can_manage ? "可管理" : "仅查看" }}</a-tag></template>
-        <template v-if="column.key === 'status'"><StatusTag :status="record.status" /></template>
-      </template>
-    </a-table>
+  <div class="surface access-workbench">
+    <a-tabs v-model:active-key="activeTab">
+      <a-tab-pane key="datasets" tab="我的权限">
+        <div class="tab-toolbar">
+          <a-space wrap>
+            <a-input-search v-model:value="datasetKeyword" allow-clear placeholder="搜索数据集" style="width: 240px" />
+            <a-select v-model:value="roleFilter" style="width: 150px">
+              <a-select-option value="">全部权限</a-select-option>
+              <a-select-option value="owner">Owner</a-select-option>
+              <a-select-option value="editor">Editor</a-select-option>
+              <a-select-option value="viewer">Viewer</a-select-option>
+              <a-select-option value="admin">Admin</a-select-option>
+            </a-select>
+          </a-space>
+          <a-button :loading="datasetsLoading" @click="loadDatasets">刷新</a-button>
+        </div>
+
+        <a-table :data-source="filteredDatasets" :columns="datasetColumns" row-key="id" :loading="datasetsLoading" :pagination="{ pageSize: 12 }">
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'name'">
+              <a @click="$router.push(`/datasets/${record.id}`)">{{ record.name }}</a>
+              <div class="muted compact-note">{{ record.description || "暂无描述" }}</div>
+            </template>
+            <template v-else-if="column.key === 'owner'">{{ record.owner_name || "待管理员认领" }}</template>
+            <template v-else-if="column.key === 'visibility'">
+              <a-tag :color="record.visibility === 'shared' ? 'blue' : 'default'">{{ record.visibility === "shared" ? "全员只读" : "私有" }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'role'">
+              <a-tag :color="roleColor(record.effective_role)">{{ roleLabel(record.effective_role) }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'source'">{{ sourceLabel(record.permission_source) }}</template>
+            <template v-else-if="column.key === 'actions'">
+              <a-space>
+                <a-button size="small" @click="$router.push(`/datasets/${record.id}`)">打开</a-button>
+                <a-button v-if="record.can_manage" size="small" type="link" @click="$router.push(`/datasets/${record.id}?access=1`)">共享设置</a-button>
+              </a-space>
+            </template>
+          </template>
+        </a-table>
+      </a-tab-pane>
+
+      <a-tab-pane v-if="auth.isAdmin" key="users" tab="用户管理">
+        <div class="tab-toolbar">
+          <a-space wrap>
+            <a-input-search v-model:value="userKeyword" allow-clear placeholder="搜索用户名" style="width: 220px" @search="loadUsers" />
+            <a-select v-model:value="userRoleFilter" style="width: 130px" @change="loadUsers">
+              <a-select-option value="">全部角色</a-select-option>
+              <a-select-option value="admin">Admin</a-select-option>
+              <a-select-option value="user">User</a-select-option>
+            </a-select>
+            <a-select v-model:value="userStatusFilter" style="width: 130px" @change="loadUsers">
+              <a-select-option value="">全部状态</a-select-option>
+              <a-select-option value="enabled">已启用</a-select-option>
+              <a-select-option value="disabled">已停用</a-select-option>
+            </a-select>
+          </a-space>
+          <a-button type="primary" @click="createOpen = true">创建用户</a-button>
+        </div>
+
+        <a-table :data-source="users" :columns="userColumns" row-key="id" :loading="usersLoading" :pagination="{ pageSize: 12 }">
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'username'">
+              <span>{{ record.username }}</span>
+              <a-tag v-if="record.id === auth.user?.id" color="blue" style="margin-left: 8px">当前账号</a-tag>
+            </template>
+            <template v-else-if="column.key === 'role'">
+              <a-select :value="record.role" size="small" style="width: 105px" @change="changeUserRole(record, $event)">
+                <a-select-option value="user">User</a-select-option>
+                <a-select-option value="admin">Admin</a-select-option>
+              </a-select>
+            </template>
+            <template v-else-if="column.key === 'enabled'">
+              <a-switch :checked="record.is_enabled" :disabled="record.id === auth.user?.id" @change="changeUserEnabled(record, $event)" />
+              <span class="switch-label">{{ record.is_enabled ? "启用" : "停用" }}</span>
+            </template>
+            <template v-else-if="column.key === 'owned'">{{ record.owned_dataset_count || 0 }}</template>
+            <template v-else-if="column.key === 'created'">{{ formatDate(record.created_at) }}</template>
+            <template v-else-if="column.key === 'actions'">
+              <a-button size="small" @click="openReset(record)">重置密码</a-button>
+            </template>
+          </template>
+        </a-table>
+      </a-tab-pane>
+
+      <a-tab-pane key="audit" tab="审计日志">
+        <div class="tab-toolbar">
+          <a-space wrap>
+            <a-select v-model:value="auditDatasetId" allow-clear placeholder="全部可管理数据集" style="width: 220px" @change="loadAudit">
+              <a-select-option v-for="dataset in manageableDatasets" :key="dataset.id" :value="dataset.id">{{ dataset.name }}</a-select-option>
+            </a-select>
+            <a-select v-model:value="auditEvent" allow-clear placeholder="全部事件" style="width: 210px" @change="loadAudit">
+              <a-select-option v-for="item in auditEventOptions" :key="item" :value="item">{{ eventLabel(item) }}</a-select-option>
+            </a-select>
+            <a-select v-model:value="auditActorId" allow-clear show-search option-filter-prop="label" placeholder="全部操作者" style="width: 170px" @change="loadAudit">
+              <a-select-option v-for="user in users" :key="user.id" :value="user.id" :label="user.username">{{ user.username }}</a-select-option>
+            </a-select>
+            <a-range-picker v-model:value="auditDateRange" @change="loadAudit" />
+          </a-space>
+          <a-button :loading="auditLoading" @click="loadAudit">刷新</a-button>
+        </div>
+
+        <a-empty v-if="!auditLoading && !auditEvents.length" description="暂无可查看的审计记录" />
+        <a-timeline v-else class="audit-timeline">
+          <a-timeline-item v-for="item in auditEvents" :key="item.id">
+            <div class="audit-head">
+              <strong>{{ eventLabel(item.event) }}</strong>
+              <span class="muted">{{ formatDate(item.created_at) }}</span>
+            </div>
+            <div class="audit-meta">
+              操作者：{{ item.actor_name || "未知/匿名" }}
+              <span v-if="item.target_user_name"> · 目标用户：{{ item.target_user_name }}</span>
+              <span v-if="item.dataset_id"> · 数据集 #{{ item.dataset_id }}</span>
+              <span v-if="auth.isAdmin && item.ip_address"> · IP {{ item.ip_address }}</span>
+            </div>
+            <code v-if="Object.keys(item.details || {}).length" class="audit-details">{{ JSON.stringify(item.details) }}</code>
+          </a-timeline-item>
+        </a-timeline>
+      </a-tab-pane>
+    </a-tabs>
   </div>
+
+  <a-modal v-model:open="createOpen" title="创建用户" ok-text="创建" :confirm-loading="modalLoading" @ok="createUser">
+    <a-form layout="vertical">
+      <a-form-item label="用户名"><a-input v-model:value="createForm.username" autocomplete="off" /></a-form-item>
+      <a-form-item label="初始密码"><a-input-password v-model:value="createForm.password" autocomplete="new-password" /></a-form-item>
+      <a-form-item label="系统角色">
+        <a-select v-model:value="createForm.role"><a-select-option value="user">User</a-select-option><a-select-option value="admin">Admin</a-select-option></a-select>
+      </a-form-item>
+    </a-form>
+  </a-modal>
+
+  <a-modal v-model:open="resetOpen" :title="`重置 ${resetTarget?.username || ''} 的密码`" ok-text="确认重置" :confirm-loading="modalLoading" @ok="resetPassword">
+    <a-alert type="warning" show-icon message="重置后旧密码立即失效，不会向任何页面返回密码明文。" style="margin-bottom: 16px" />
+    <a-input-password v-model:value="resetPasswordValue" placeholder="输入新密码（至少 4 位）" autocomplete="new-password" />
+  </a-modal>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { message, Modal } from "ant-design-vue";
 import PageHeader from "@/components/PageHeader.vue";
-import StatusTag from "@/components/StatusTag.vue";
+import { api } from "@/services/api";
 import { useAuthStore } from "@/stores/auth";
-import { useDatasetStore } from "@/stores/datasets";
-import { roleText, visibilityText } from "@/utils/format";
+import { formatDate } from "@/utils/format";
+import type { AuditEvent, Dataset, EffectiveRole, ManagedUser, PermissionSource } from "@/types";
 
 const auth = useAuthStore();
-const store = useDatasetStore();
-const columns = [
+const activeTab = ref("datasets");
+const datasets = ref<Dataset[]>([]);
+const users = ref<ManagedUser[]>([]);
+const auditEvents = ref<AuditEvent[]>([]);
+const datasetsLoading = ref(false);
+const usersLoading = ref(false);
+const auditLoading = ref(false);
+const modalLoading = ref(false);
+const datasetKeyword = ref("");
+const roleFilter = ref("");
+const userKeyword = ref("");
+const userRoleFilter = ref("");
+const userStatusFilter = ref("");
+const auditDatasetId = ref<number | undefined>();
+const auditEvent = ref<string | undefined>();
+const auditActorId = ref<number | undefined>();
+const auditDateRange = ref<Array<{ format: (pattern: string) => string }> | null>(null);
+const createOpen = ref(false);
+const resetOpen = ref(false);
+const resetTarget = ref<ManagedUser | null>(null);
+const resetPasswordValue = ref("");
+const createForm = reactive({ username: "", password: "", role: "user" });
+
+const datasetColumns = [
   { title: "数据集", key: "name" },
-  { title: "访问范围", key: "visibility" },
-  { title: "权限", key: "manage", width: 140 },
-  { title: "状态", key: "status", width: 140 },
+  { title: "所有者", key: "owner", width: 150 },
+  { title: "可见性", key: "visibility", width: 130 },
+  { title: "有效权限", key: "role", width: 130 },
+  { title: "权限来源", key: "source", width: 140 },
+  { title: "操作", key: "actions", width: 180 },
+];
+const userColumns = [
+  { title: "用户名", key: "username" },
+  { title: "角色", key: "role", width: 130 },
+  { title: "状态", key: "enabled", width: 150 },
+  { title: "拥有数据集", key: "owned", width: 120 },
+  { title: "创建时间", key: "created", width: 190 },
+  { title: "操作", key: "actions", width: 120 },
+];
+const auditEventOptions = [
+  "auth.login_failed", "user.created", "user.updated", "user.password_reset",
+  "dataset.uploaded", "dataset.visibility_changed", "dataset.permission_added",
+  "dataset.permission_updated", "dataset.permission_removed", "dataset.owner_transferred",
+  "dataset.deleted", "dataset.process_submitted", "index.build_submitted",
+  "index_experiment.created", "index_experiment.finalized", "joint_index.build_submitted",
 ];
 
-onMounted(store.loadAll);
+const filteredDatasets = computed(() => datasets.value.filter((dataset) => {
+  const matchesKeyword = !datasetKeyword.value || `${dataset.name} ${dataset.description || ""}`.toLowerCase().includes(datasetKeyword.value.toLowerCase());
+  return matchesKeyword && (!roleFilter.value || dataset.effective_role === roleFilter.value);
+}));
+const manageableDatasets = computed(() => datasets.value.filter((dataset) => dataset.can_manage));
+
+function roleLabel(role: EffectiveRole | null) {
+  return ({ admin: "Admin", owner: "Owner", editor: "Editor", viewer: "Viewer" } as Record<string, string>)[role || ""] || "无权限";
+}
+function roleColor(role: EffectiveRole | null) {
+  return ({ admin: "red", owner: "purple", editor: "green", viewer: "blue" } as Record<string, string>)[role || ""] || "default";
+}
+function sourceLabel(source: PermissionSource | null) {
+  return ({ admin: "管理员覆盖", owner: "数据所有者", explicit: "成员授权", shared: "全员共享" } as Record<string, string>)[source || ""] || "-";
+}
+function eventLabel(event: string) {
+  const labels: Record<string, string> = {
+    "auth.login_failed": "登录失败", "auth.login_blocked": "停用账号登录被拦截", "auth.register": "用户注册",
+    "auth.password_changed": "修改个人密码", "user.created": "管理员创建用户", "user.updated": "用户状态变更",
+    "user.password_reset": "管理员重置密码", "dataset.uploaded": "上传数据集", "dataset.visibility_changed": "修改可见性",
+    "dataset.permission_added": "新增成员权限", "dataset.permission_updated": "调整成员权限", "dataset.permission_removed": "移除成员权限",
+    "dataset.owner_transferred": "转移所有权", "dataset.deleted": "删除数据集", "dataset.process_submitted": "提交数据处理",
+    "index.build_submitted": "提交索引构建", "index.evaluation_submitted": "提交索引评估", "index.evaluated": "完成同步评估",
+    "index_experiment.created": "创建索引实验", "index_experiment.finalized": "完成索引选优", "index_experiment.discarded": "放弃索引实验",
+    "index_experiment.cleanup_retried": "重试实验清理", "joint_index.build_submitted": "提交联合索引构建",
+  };
+  return labels[event] || event;
+}
+
+async function loadDatasets() {
+  datasetsLoading.value = true;
+  try { datasets.value = (await api.accessDatasets()).datasets; }
+  catch (error) { message.error((error as Error).message); }
+  finally { datasetsLoading.value = false; }
+}
+async function loadUsers() {
+  if (!auth.isAdmin && !manageableDatasets.value.length) return;
+  usersLoading.value = true;
+  try { users.value = (await api.accessUsers(userKeyword.value, auth.isAdmin ? userRoleFilter.value : "", auth.isAdmin ? userStatusFilter.value : "")).users; }
+  catch (error) { message.error((error as Error).message); }
+  finally { usersLoading.value = false; }
+}
+async function loadAudit() {
+  auditLoading.value = true;
+  try {
+    auditEvents.value = (await api.auditEvents({
+      datasetId: auditDatasetId.value,
+      actorId: auditActorId.value,
+      event: auditEvent.value,
+      from: auditDateRange.value?.[0]?.format("YYYY-MM-DD"),
+      to: auditDateRange.value?.[1]?.format("YYYY-MM-DD"),
+    })).events;
+  }
+  catch (error) { message.error((error as Error).message); }
+  finally { auditLoading.value = false; }
+}
+async function createUser() {
+  if (!createForm.username || createForm.password.length < 4) return message.warning("请输入用户名和至少 4 位密码");
+  modalLoading.value = true;
+  try {
+    await api.createUser(createForm);
+    message.success("用户已创建");
+    createOpen.value = false;
+    Object.assign(createForm, { username: "", password: "", role: "user" });
+    await loadUsers();
+  } catch (error) { message.error((error as Error).message); }
+  finally { modalLoading.value = false; }
+}
+function updateUser(record: ManagedUser, patch: { role?: string; is_enabled?: boolean }) {
+  const action = async () => {
+    try {
+      const updated = (await api.updateUser(record.id, patch)).user;
+      Object.assign(record, updated);
+      if (record.id === auth.user?.id) Object.assign(auth.user, updated);
+      message.success("用户状态已更新");
+      await loadAudit();
+    } catch (error) { message.error((error as Error).message); await loadUsers(); }
+  };
+  if (patch.is_enabled === false || (record.role === "admin" && patch.role === "user")) {
+    Modal.confirm({ title: "确认调整高权限账号？", content: "停用或降级后，该用户将无法继续使用管理员能力。", okText: "确认", cancelText: "取消", onOk: action, onCancel: loadUsers });
+  } else action();
+}
+function changeUserRole(record: ManagedUser, value: unknown) { updateUser(record, { role: String(value) }); }
+function changeUserEnabled(record: ManagedUser, value: unknown) { updateUser(record, { is_enabled: Boolean(value) }); }
+function openReset(record: ManagedUser) {
+  resetTarget.value = record;
+  resetPasswordValue.value = "";
+  resetOpen.value = true;
+}
+async function resetPassword() {
+  if (!resetTarget.value || resetPasswordValue.value.length < 4) return message.warning("密码至少 4 位");
+  modalLoading.value = true;
+  try { await api.resetUserPassword(resetTarget.value.id, resetPasswordValue.value); message.success("密码已重置"); resetOpen.value = false; }
+  catch (error) { message.error((error as Error).message); }
+  finally { modalLoading.value = false; }
+}
+
+watch(activeTab, (tab) => { if (tab === "users") loadUsers(); if (tab === "audit") loadAudit(); });
+onMounted(async () => { await loadDatasets(); if (auth.isAdmin || manageableDatasets.value.length) await loadUsers(); await loadAudit(); });
 </script>
+
+<style scoped>
+.access-workbench { padding: 0 20px 20px; }
+.tab-toolbar { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.compact-note { margin-top: 3px; max-width: 420px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.switch-label { margin-left: 8px; color: #64748b; }
+.audit-timeline { margin-top: 20px; padding: 4px 10px; }
+.audit-head { display: flex; justify-content: space-between; gap: 16px; }
+.audit-meta { color: #64748b; font-size: 13px; margin-top: 4px; }
+.audit-details { display: block; width: fit-content; max-width: 100%; margin-top: 7px; padding: 5px 8px; color: #475569; background: #f8fafc; border-radius: 6px; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .tab-toolbar { align-items: flex-start; flex-direction: column; padding: 10px 0; } }
+</style>

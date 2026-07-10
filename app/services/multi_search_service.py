@@ -12,6 +12,7 @@ def search_across_datasets(
     query_cell_index: int,
     top_k: int = 20,
     target_dataset_ids: list[int] = None,
+    user_id: int | None = None,
 ) -> dict:
     """使用多个 ready 索引执行 fan-out 检索并合并排序。"""
     source_dataset = db.session.get(Dataset, source_dataset_id)

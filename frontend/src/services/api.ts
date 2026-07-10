@@ -1,4 +1,4 @@
-import type { AnnAlgorithm, Dataset, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, MultiSearchPayload, PlotlyPayload, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
+import type { AnnAlgorithm, AuditEvent, Dataset, DatasetAccess, DatasetPermission, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
 
 type ApiResponse<T> = T & { ok: boolean; message?: string };
 type ApiRequestInit = RequestInit & { timeoutMs?: number };
@@ -126,7 +126,45 @@ export const api = {
     request<ApiResponse<{ user: User }>>("/api/auth/login", { method: "POST", body: toForm({ username, password }) }),
   register: (username: string, password: string, confirm: string) =>
     request<ApiResponse<{ user: User }>>("/api/auth/register", { method: "POST", body: toForm({ username, password, confirm }) }),
+  changePassword: (oldPassword: string, newPassword: string, confirm: string) =>
+    request<ApiResponse<Record<string, never>>>("/api/auth/change-password", { method: "POST", body: toForm({ old_password: oldPassword, new_password: newPassword, confirm }) }),
   logout: () => request<ApiResponse<Record<string, never>>>("/api/auth/logout", { method: "POST", body: toForm({}) }),
+
+  accessDatasets: () => request<ApiResponse<{ datasets: Dataset[] }>>("/api/access/datasets"),
+  accessUsers: (query = "", role = "", status = "") => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    if (role) params.set("role", role);
+    if (status) params.set("status", status);
+    const suffix = params.toString() ? `?${params}` : "";
+    return request<ApiResponse<{ users: ManagedUser[] }>>(`/api/access/users${suffix}`);
+  },
+  createUser: (params: { username: string; password: string; role: string }) =>
+    request<ApiResponse<{ user: ManagedUser }>>("/api/access/users", { method: "POST", body: toForm(params) }),
+  updateUser: (id: number, params: { role?: string; is_enabled?: boolean }) =>
+    request<ApiResponse<{ user: ManagedUser }>>(`/api/access/users/${id}`, { method: "PATCH", body: toForm(params) }),
+  resetUserPassword: (id: number, newPassword: string) =>
+    request<ApiResponse<Record<string, never>>>(`/api/access/users/${id}/reset-password`, { method: "POST", body: toForm({ new_password: newPassword }) }),
+  datasetAccess: (id: number) => request<ApiResponse<{ access: DatasetAccess }>>(`/api/datasets/${id}/access`),
+  updateDatasetVisibility: (id: number, visibility: "private" | "shared") =>
+    request<ApiResponse<{ access: DatasetAccess }>>(`/api/datasets/${id}/access`, { method: "PATCH", body: toForm({ visibility }) }),
+  saveDatasetPermission: (datasetId: number, userId: number, level: "viewer" | "editor") =>
+    request<ApiResponse<{ permission: DatasetPermission }>>(`/api/datasets/${datasetId}/access/users/${userId}`, { method: "PUT", body: toForm({ level }) }),
+  removeDatasetPermission: (datasetId: number, userId: number) =>
+    request<ApiResponse<Record<string, never>>>(`/api/datasets/${datasetId}/access/users/${userId}`, { method: "DELETE" }),
+  transferDatasetOwnership: (datasetId: number, newOwnerId: number) =>
+    request<ApiResponse<{ dataset: Dataset }>>(`/api/datasets/${datasetId}/transfer-ownership`, { method: "POST", body: toForm({ new_owner_id: newOwnerId }) }),
+  auditEvents: (params: { datasetId?: number; actorId?: number; event?: string; from?: string; to?: string; page?: number; pageSize?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.datasetId) query.set("dataset_id", String(params.datasetId));
+    if (params.actorId) query.set("actor_id", String(params.actorId));
+    if (params.event) query.set("event", params.event);
+    if (params.from) query.set("from", params.from);
+    if (params.to) query.set("to", params.to);
+    query.set("page", String(params.page ?? 1));
+    query.set("page_size", String(params.pageSize ?? 30));
+    return request<ApiResponse<{ events: AuditEvent[]; total: number; page: number; page_size: number }>>(`/api/access/audit?${query}`);
+  },
 
   dashboardSummary: () => request<ApiResponse<Record<string, unknown>>>("/api/dashboard/summary"),
   datasets: () => request<ApiResponse<{ datasets: Dataset[] }>>("/api/datasets"),

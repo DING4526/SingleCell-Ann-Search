@@ -24,7 +24,7 @@
         </template>
         <template v-else-if="column.key === 'status'"><StatusTag :status="record.status" /></template>
         <template v-else-if="column.key === 'access'">
-          <a-tag>{{ record.owner_id ? record.visibility : "旧数据" }}</a-tag>
+          <a-tag :color="record.effective_role === 'owner' ? 'purple' : record.effective_role === 'editor' ? 'green' : record.effective_role === 'admin' ? 'red' : 'blue'">{{ record.effective_role || "-" }}</a-tag>
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space :size="6" wrap>

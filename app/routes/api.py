@@ -3,12 +3,25 @@ import json
 import os
 import uuid
 import pathlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify, current_app
 from flask_login import login_required, current_user, login_user, logout_user
 from werkzeug.utils import secure_filename
 from app.extensions import db
-from app.models import Dataset, AnnIndex, Cell, Task, QueryLog, User, JointIndex, IndexExperiment, IndexExperimentRun, IndexEvaluation
+from app.models import (
+    AuditLog,
+    Dataset,
+    DatasetPermission,
+    AnnIndex,
+    Cell,
+    Task,
+    QueryLog,
+    User,
+    JointIndex,
+    IndexExperiment,
+    IndexExperimentRun,
+    IndexEvaluation,
+)
 from app.tasks import (
     executor,
     plot_executor,
@@ -26,10 +39,15 @@ from app.tasks import (
 from app.services.access_service import (
     accessible_datasets_query,
     accessible_tasks_query,
+    can_edit_dataset,
     can_manage_dataset,
     can_view_dataset,
+    can_view_task,
+    dataset_permission_source,
+    effective_dataset_role,
     is_admin,
 )
+from app.services.audit_service import audit_to_dict, record_audit
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -48,22 +66,57 @@ def _task_to_dict(task: Task, include_result: bool = False) -> dict:
         except Exception:
             result = task.result_json
     dataset_name = None
+    dataset = None
     if task.dataset_id:
-        ds = db.session.get(Dataset, task.dataset_id)
-        if ds:
-            dataset_name = ds.name
+        dataset = db.session.get(Dataset, task.dataset_id)
+        if dataset:
+            dataset_name = dataset.name
+    error_message = task.error_message
+    if error_message and not is_admin() and (not dataset or not can_edit_dataset(dataset)):
+        error_message = error_message.splitlines()[0]
     return {
         "id": task.id,
         "type": task.type,
         "status": task.status,
         "progress": task.progress,
         "message": task.message,
-        "error": task.error_message,
+        "error": error_message,
         "result": result,
         "has_result": bool(task.result_json),
         "dataset_id": task.dataset_id,
         "dataset_name": dataset_name,
+        "created_by_id": task.created_by_id,
+        "created_by_name": task.created_by.username if task.created_by else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+    }
+
+
+def _user_to_dict(user: User, *, managed: bool = False) -> dict:
+    data = {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "is_admin": user.role == "admin",
+        "is_enabled": bool(user.is_enabled),
+    }
+    if managed:
+        data["created_at"] = user.created_at.isoformat() if user.created_at else None
+        data["owned_dataset_count"] = Dataset.query.filter_by(owner_id=user.id).count()
+    return data
+
+
+def _permission_to_dict(permission: DatasetPermission) -> dict:
+    return {
+        "id": permission.id,
+        "dataset_id": permission.dataset_id,
+        "user_id": permission.user_id,
+        "username": permission.user.username if permission.user else None,
+        "user_enabled": bool(permission.user and permission.user.is_enabled),
+        "level": permission.level,
+        "granted_by_id": permission.granted_by_id,
+        "granted_by_name": permission.granted_by.username if permission.granted_by else None,
+        "created_at": permission.created_at.isoformat() if permission.created_at else None,
+        "updated_at": permission.updated_at.isoformat() if permission.updated_at else None,
     }
 
 
@@ -140,6 +193,7 @@ def _index_to_dict(idx: AnnIndex) -> dict:
 
 
 def _dataset_to_dict(dataset: Dataset, include_indexes: bool = True) -> dict:
+    effective_role = effective_dataset_role(dataset)
     data = {
         "id": dataset.id,
         "name": dataset.name,
@@ -153,6 +207,9 @@ def _dataset_to_dict(dataset: Dataset, include_indexes: bool = True) -> dict:
         "owner_name": dataset.owner.username if dataset.owner else None,
         "visibility": dataset.visibility or "private",
         "created_at": dataset.created_at.isoformat() if dataset.created_at else None,
+        "effective_role": effective_role,
+        "permission_source": dataset_permission_source(dataset),
+        "can_edit": can_edit_dataset(dataset),
         "can_manage": can_manage_dataset(dataset),
     }
     if include_indexes:
@@ -227,12 +284,7 @@ def api_auth_me():
     return jsonify(
         ok=True,
         authenticated=True,
-        user={
-            "id": current_user.id,
-            "username": current_user.username,
-            "role": current_user.role,
-            "is_admin": is_admin(),
-        },
+        user=_user_to_dict(current_user),
     )
 
 
@@ -242,14 +294,15 @@ def api_auth_login():
     password = request.form.get("password", "")
     user = User.query.filter_by(username=username).first()
     if user is None or not user.check_password(password):
+        record_audit("auth.login_failed", details={"username": username})
+        db.session.commit()
         return jsonify(ok=False, message="用户名或密码错误。"), 401
+    if not user.is_enabled:
+        record_audit("auth.login_blocked", actor=user, target_user_id=user.id)
+        db.session.commit()
+        return jsonify(ok=False, message="账号已停用，请联系管理员。"), 403
     login_user(user, remember=True)
-    return jsonify(ok=True, message="登录成功。", user={
-        "id": user.id,
-        "username": user.username,
-        "role": user.role,
-        "is_admin": user.role == "admin",
-    })
+    return jsonify(ok=True, message="登录成功。", user=_user_to_dict(user))
 
 
 @api_bp.route("/auth/register", methods=["POST"])
@@ -267,24 +320,342 @@ def api_auth_register():
     if User.query.filter_by(username=username).first():
         return jsonify(ok=False, message="用户名已存在。"), 400
 
-    user = User(username=username)
+    user = User(username=username, role="user", is_enabled=True)
     user.set_password(password)
     db.session.add(user)
+    db.session.flush()
+    record_audit("auth.register", actor=user, resource_type="user", resource_id=user.id, target_user_id=user.id)
     db.session.commit()
     login_user(user, remember=True)
-    return jsonify(ok=True, message="注册成功。", user={
-        "id": user.id,
-        "username": user.username,
-        "role": user.role,
-        "is_admin": False,
-    })
+    return jsonify(ok=True, message="注册成功。", user=_user_to_dict(user))
+
+
+@api_bp.route("/auth/change-password", methods=["POST"])
+@login_required
+def api_auth_change_password():
+    old_password = request.form.get("old_password", "")
+    new_password = request.form.get("new_password", "")
+    confirm = request.form.get("confirm", "")
+    if not current_user.check_password(old_password):
+        return jsonify(ok=False, message="当前密码不正确。"), 400
+    if len(new_password) < 4:
+        return jsonify(ok=False, message="新密码长度至少为 4 位。"), 400
+    if new_password != confirm:
+        return jsonify(ok=False, message="两次输入的新密码不一致。"), 400
+    current_user.set_password(new_password)
+    record_audit("auth.password_changed", resource_type="user", resource_id=current_user.id, target_user_id=current_user.id)
+    db.session.commit()
+    return jsonify(ok=True, message="密码已更新。")
 
 
 @api_bp.route("/auth/logout", methods=["POST"])
 @login_required
 def api_auth_logout():
+    record_audit("auth.logout", resource_type="user", resource_id=current_user.id)
+    db.session.commit()
     logout_user()
     return jsonify(ok=True, message="已退出登录。")
+
+
+# ---------------------------------------------------------------------------
+# 权限中心：数据集授权、用户管理与审计
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/access/datasets", methods=["GET"])
+@login_required
+def api_access_datasets():
+    rows = accessible_datasets_query().order_by(Dataset.created_at.desc()).all()
+    return jsonify(ok=True, datasets=[_dataset_to_dict(row, include_indexes=False) for row in rows])
+
+
+@api_bp.route("/access/users", methods=["GET", "POST"])
+@login_required
+def api_access_users():
+    if request.method == "POST":
+        if not is_admin():
+            return jsonify(ok=False, message="只有管理员可以创建用户。"), 403
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        role = request.form.get("role", "user").strip()
+        if not username or len(password) < 4:
+            return jsonify(ok=False, message="用户名不能为空，密码至少 4 位。"), 400
+        if role not in ("user", "admin"):
+            return jsonify(ok=False, message="角色仅支持 user 或 admin。"), 400
+        if User.query.filter_by(username=username).first():
+            return jsonify(ok=False, message="用户名已存在。"), 409
+        user = User(username=username, role=role, is_enabled=True)
+        user.set_password(password)
+        db.session.add(user)
+        db.session.flush()
+        record_audit(
+            "user.created",
+            resource_type="user",
+            resource_id=user.id,
+            target_user_id=user.id,
+            details={"role": role},
+        )
+        db.session.commit()
+        return jsonify(ok=True, user=_user_to_dict(user, managed=True), message="用户已创建。"), 201
+
+    owner_can_search = Dataset.query.filter_by(owner_id=current_user.id).first() is not None
+    if not is_admin() and not owner_can_search:
+        return jsonify(ok=False, message="只有数据集所有者或管理员可以搜索用户。"), 403
+    query = User.query
+    keyword = request.args.get("q", "").strip()
+    if keyword:
+        query = query.filter(User.username.ilike(f"%{keyword}%"))
+    if is_admin():
+        role = request.args.get("role", "").strip()
+        status = request.args.get("status", "").strip()
+        if role in ("user", "admin"):
+            query = query.filter(User.role == role)
+        if status == "enabled":
+            query = query.filter(User.is_enabled.is_(True))
+        elif status == "disabled":
+            query = query.filter(User.is_enabled.is_(False))
+    else:
+        query = query.filter(User.is_enabled.is_(True))
+    users = query.order_by(User.username.asc()).limit(100).all()
+    return jsonify(ok=True, users=[_user_to_dict(user, managed=is_admin()) for user in users])
+
+
+@api_bp.route("/access/users/<int:user_id>", methods=["PATCH"])
+@login_required
+def api_access_user_update(user_id):
+    if not is_admin():
+        return jsonify(ok=False, message="只有管理员可以修改用户。"), 403
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify(ok=False, message="用户不存在。"), 404
+
+    old = {"role": user.role, "is_enabled": bool(user.is_enabled)}
+    new_role = request.form.get("role", user.role).strip()
+    enabled_raw = request.form.get("is_enabled")
+    if enabled_raw is not None and enabled_raw.lower() not in ("0", "1", "false", "true", "no", "yes", "off", "on"):
+        return jsonify(ok=False, message="is_enabled 必须是布尔值。"), 400
+    new_enabled = user.is_enabled if enabled_raw is None else enabled_raw.lower() in ("1", "true", "yes", "on")
+    if new_role not in ("user", "admin"):
+        return jsonify(ok=False, message="角色仅支持 user 或 admin。"), 400
+    if user.id == current_user.id and not new_enabled:
+        return jsonify(ok=False, message="不能停用当前登录的管理员。"), 409
+    removing_active_admin = user.role == "admin" and user.is_enabled and (new_role != "admin" or not new_enabled)
+    if removing_active_admin and User.query.filter_by(role="admin", is_enabled=True).count() <= 1:
+        return jsonify(ok=False, message="必须至少保留一个启用的管理员。"), 409
+
+    user.role = new_role
+    user.is_enabled = new_enabled
+    record_audit(
+        "user.updated",
+        resource_type="user",
+        resource_id=user.id,
+        target_user_id=user.id,
+        details={"before": old, "after": {"role": new_role, "is_enabled": new_enabled}},
+    )
+    db.session.commit()
+    return jsonify(ok=True, user=_user_to_dict(user, managed=True), message="用户状态已更新。")
+
+
+@api_bp.route("/access/users/<int:user_id>/reset-password", methods=["POST"])
+@login_required
+def api_access_user_reset_password(user_id):
+    if not is_admin():
+        return jsonify(ok=False, message="只有管理员可以重置密码。"), 403
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify(ok=False, message="用户不存在。"), 404
+    new_password = request.form.get("new_password", "")
+    if len(new_password) < 4:
+        return jsonify(ok=False, message="新密码长度至少为 4 位。"), 400
+    user.set_password(new_password)
+    record_audit("user.password_reset", resource_type="user", resource_id=user.id, target_user_id=user.id)
+    db.session.commit()
+    return jsonify(ok=True, message="密码已重置。")
+
+
+@api_bp.route("/datasets/<int:dataset_id>/access", methods=["GET", "PATCH"])
+@login_required
+def api_dataset_access(dataset_id):
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_manage_dataset(dataset):
+        return jsonify(ok=False, message="只有所有者或管理员可以管理共享设置。"), 403
+
+    if request.method == "PATCH":
+        visibility = request.form.get("visibility", "").strip()
+        if visibility not in ("private", "shared"):
+            return jsonify(ok=False, message="可见性仅支持 private 或 shared。"), 400
+        old_visibility = dataset.visibility or "private"
+        dataset.visibility = visibility
+        record_audit(
+            "dataset.visibility_changed",
+            resource_type="dataset",
+            resource_id=dataset.id,
+            dataset_id=dataset.id,
+            details={"before": old_visibility, "after": visibility},
+        )
+        db.session.commit()
+
+    permissions = DatasetPermission.query.filter_by(dataset_id=dataset.id).order_by(DatasetPermission.created_at.asc()).all()
+    return jsonify(
+        ok=True,
+        access={
+            "dataset_id": dataset.id,
+            "visibility": dataset.visibility or "private",
+            "owner": _user_to_dict(dataset.owner) if dataset.owner else None,
+            "permissions": [_permission_to_dict(row) for row in permissions],
+        },
+        message="共享设置已更新。" if request.method == "PATCH" else None,
+    )
+
+
+@api_bp.route("/datasets/<int:dataset_id>/access/users/<int:user_id>", methods=["PUT", "DELETE"])
+@login_required
+def api_dataset_access_user(dataset_id, user_id):
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_manage_dataset(dataset):
+        return jsonify(ok=False, message="只有所有者或管理员可以管理成员。"), 403
+    if dataset.owner_id == user_id:
+        return jsonify(ok=False, message="所有者不能重复加入成员列表。"), 409
+
+    permission = DatasetPermission.query.filter_by(dataset_id=dataset.id, user_id=user_id).first()
+    if request.method == "DELETE":
+        if not permission:
+            return jsonify(ok=True, message="成员权限已不存在。")
+        old_level = permission.level
+        db.session.delete(permission)
+        record_audit(
+            "dataset.permission_removed",
+            resource_type="dataset",
+            resource_id=dataset.id,
+            dataset_id=dataset.id,
+            target_user_id=user_id,
+            details={"level": old_level},
+        )
+        db.session.commit()
+        return jsonify(ok=True, message="成员权限已移除。")
+
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify(ok=False, message="用户不存在。"), 404
+    if not user.is_enabled:
+        return jsonify(ok=False, message="不能授权给已停用用户。"), 409
+    level = request.form.get("level", "").strip()
+    if level not in ("viewer", "editor"):
+        return jsonify(ok=False, message="成员权限仅支持 viewer 或 editor。"), 400
+    old_level = permission.level if permission else None
+    if permission:
+        permission.level = level
+        permission.granted_by_id = current_user.id
+        event = "dataset.permission_updated"
+    else:
+        permission = DatasetPermission(
+            dataset_id=dataset.id,
+            user_id=user.id,
+            level=level,
+            granted_by_id=current_user.id,
+        )
+        db.session.add(permission)
+        event = "dataset.permission_added"
+    record_audit(
+        event,
+        resource_type="dataset",
+        resource_id=dataset.id,
+        dataset_id=dataset.id,
+        target_user_id=user.id,
+        details={"before": old_level, "after": level},
+    )
+    db.session.commit()
+    return jsonify(ok=True, permission=_permission_to_dict(permission), message="成员权限已保存。")
+
+
+@api_bp.route("/datasets/<int:dataset_id>/transfer-ownership", methods=["POST"])
+@login_required
+def api_dataset_transfer_ownership(dataset_id):
+    dataset = db.session.get(Dataset, dataset_id)
+    if not dataset:
+        return jsonify(ok=False, message="数据集不存在。"), 404
+    if not can_manage_dataset(dataset):
+        return jsonify(ok=False, message="只有所有者或管理员可以转移所有权。"), 403
+    try:
+        new_owner_id = _int_form("new_owner_id", 0, min_value=1)
+    except ValueError as exc:
+        return jsonify(ok=False, message=str(exc)), 400
+    if dataset.owner_id == new_owner_id:
+        return jsonify(ok=False, message="目标用户已经是所有者。"), 409
+    new_owner = db.session.get(User, new_owner_id)
+    if not new_owner:
+        return jsonify(ok=False, message="目标用户不存在。"), 404
+    if not new_owner.is_enabled:
+        return jsonify(ok=False, message="不能转移给已停用用户。"), 409
+
+    old_owner_id = dataset.owner_id
+    target_grant = DatasetPermission.query.filter_by(dataset_id=dataset.id, user_id=new_owner_id).first()
+    if target_grant:
+        db.session.delete(target_grant)
+    if old_owner_id and old_owner_id != new_owner_id:
+        old_grant = DatasetPermission.query.filter_by(dataset_id=dataset.id, user_id=old_owner_id).first()
+        if old_grant:
+            old_grant.level = "editor"
+            old_grant.granted_by_id = current_user.id
+        else:
+            db.session.add(DatasetPermission(
+                dataset_id=dataset.id,
+                user_id=old_owner_id,
+                level="editor",
+                granted_by_id=current_user.id,
+            ))
+    dataset.owner_id = new_owner_id
+    record_audit(
+        "dataset.owner_transferred",
+        resource_type="dataset",
+        resource_id=dataset.id,
+        dataset_id=dataset.id,
+        target_user_id=new_owner_id,
+        details={"before": old_owner_id, "after": new_owner_id},
+    )
+    db.session.commit()
+    return jsonify(ok=True, dataset=_dataset_to_dict(dataset, include_indexes=False), message="所有权已转移，原所有者保留 Editor 权限。")
+
+
+@api_bp.route("/access/audit", methods=["GET"])
+@login_required
+def api_access_audit():
+    query = AuditLog.query
+    if not is_admin():
+        owned_ids = [row.id for row in Dataset.query.with_entities(Dataset.id).filter(Dataset.owner_id == current_user.id).all()]
+        if not owned_ids:
+            return jsonify(ok=True, events=[], total=0)
+        query = query.filter(AuditLog.dataset_id.in_(owned_ids))
+
+    dataset_id = request.args.get("dataset_id", "").strip()
+    actor_id = request.args.get("actor_id", "").strip()
+    event = request.args.get("event", "").strip()
+    from_date = request.args.get("from", "").strip()
+    to_date = request.args.get("to", "").strip()
+    try:
+        if dataset_id:
+            dataset_id_int = int(dataset_id)
+            if not is_admin() and Dataset.query.filter_by(id=dataset_id_int, owner_id=current_user.id).first() is None:
+                return jsonify(ok=False, message="没有权限查看该数据集的审计日志。"), 403
+            query = query.filter(AuditLog.dataset_id == dataset_id_int)
+        if actor_id:
+            query = query.filter(AuditLog.actor_id == int(actor_id))
+        page = max(1, int(request.args.get("page", 1)))
+        page_size = max(1, min(100, int(request.args.get("page_size", 30))))
+        if from_date:
+            query = query.filter(AuditLog.created_at >= datetime.fromisoformat(from_date))
+        if to_date:
+            query = query.filter(AuditLog.created_at < datetime.fromisoformat(to_date) + timedelta(days=1))
+    except ValueError:
+        return jsonify(ok=False, message="审计筛选参数格式不正确。"), 400
+    if event:
+        query = query.filter(AuditLog.event == event)
+    total = query.count()
+    rows = query.order_by(AuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return jsonify(ok=True, events=[audit_to_dict(row, include_ip=is_admin()) for row in rows], total=total, page=page, page_size=page_size)
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +679,7 @@ def api_dataset_detail(dataset_id):
         return jsonify(ok=False, message="没有权限查看该数据集。"), 403
 
     tasks = (
-        Task.query.filter_by(dataset_id=dataset_id)
+        accessible_tasks_query(Task.query.filter_by(dataset_id=dataset_id))
         .order_by(Task.updated_at.desc())
         .limit(8)
         .all()
@@ -330,6 +701,13 @@ def api_dataset_delete(dataset_id):
     if not can_manage_dataset(dataset):
         return jsonify(ok=False, message="没有权限删除该数据集。"), 403
 
+    record_audit(
+        "dataset.deleted",
+        resource_type="dataset",
+        resource_id=dataset.id,
+        dataset_id=dataset.id,
+        details={"name": dataset.name},
+    )
     _delete_dataset_files(dataset)
     db.session.delete(dataset)
     db.session.commit()
@@ -369,6 +747,14 @@ def api_upload():
         visibility="private",
     )
     db.session.add(dataset)
+    db.session.flush()
+    record_audit(
+        "dataset.uploaded",
+        resource_type="dataset",
+        resource_id=dataset.id,
+        dataset_id=dataset.id,
+        details={"name": dataset.name},
+    )
     db.session.commit()
 
     return jsonify(
@@ -390,7 +776,7 @@ def api_process(dataset_id):
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         return jsonify(ok=False, message="数据集不存在。"), 404
-    if not can_manage_dataset(dataset):
+    if not can_edit_dataset(dataset):
         return jsonify(ok=False, message="没有权限处理该数据集。"), 403
 
     task = Task(
@@ -399,9 +785,11 @@ def api_process(dataset_id):
         progress=0,
         message="任务已提交，等待执行...",
         dataset_id=dataset_id,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
+    record_audit("dataset.process_submitted", resource_type="dataset", resource_id=dataset.id, dataset_id=dataset.id)
     db.session.commit()
 
     executor.submit(run_process_task, task.id, dataset_id, current_app._get_current_object())
@@ -439,7 +827,7 @@ def api_build_index(dataset_id):
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         return jsonify(ok=False, message="数据集不存在。"), 404
-    if not can_manage_dataset(dataset):
+    if not can_edit_dataset(dataset):
         return jsonify(ok=False, message="没有权限为该数据集构建索引。"), 403
 
     if dataset.status not in ("processed", "indexed"):
@@ -525,9 +913,17 @@ def api_build_index(dataset_id):
         progress=0,
         message="任务已提交，等待执行...",
         dataset_id=dataset_id,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
+    record_audit(
+        "index.build_submitted",
+        resource_type="dataset",
+        resource_id=dataset.id,
+        dataset_id=dataset.id,
+        details={"algorithm": params["algorithm"], "metric": params["metric"]},
+    )
     db.session.commit()
 
     executor.submit(run_build_index_task, task.id, dataset_id, params, current_app._get_current_object())
@@ -586,7 +982,7 @@ def api_build_joint_index_task():
             raise ValueError("部分数据集不存在")
         for dataset_id in set(dataset_ids):
             dataset = dataset_by_id[dataset_id]
-            if not can_view_dataset(dataset):
+            if not can_edit_dataset(dataset):
                 return jsonify(ok=False, message="没有权限使用部分数据集构建联合索引。"), 403
             if dataset.status not in ("processed", "indexed"):
                 raise ValueError(f"数据集 {dataset.name} 尚未完成处理")
@@ -617,9 +1013,15 @@ def api_build_joint_index_task():
         progress=0,
         message="联合索引构建任务已提交，等待执行...",
         dataset_id=None,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
+    record_audit(
+        "joint_index.build_submitted",
+        resource_type="joint_index",
+        details={"dataset_ids": sorted(set(dataset_ids)), "name": params["name"]},
+    )
     db.session.commit()
 
     executor.submit(run_build_joint_index_task, task.id, params, current_app._get_current_object())
@@ -637,10 +1039,8 @@ def api_task_status(task_id):
     task = db.session.get(Task, task_id)
     if not task:
         return jsonify(ok=False, message="任务不存在。"), 404
-    if task.dataset_id:
-        dataset = db.session.get(Dataset, task.dataset_id)
-        if dataset and not can_view_dataset(dataset):
-            return jsonify(ok=False, message="没有权限查看该任务。"), 403
+    if not can_view_task(task):
+        return jsonify(ok=False, message="没有权限查看该任务。"), 403
     return jsonify(ok=True, **_task_to_dict(task, include_result=True))
 
 
@@ -676,6 +1076,7 @@ def api_search():
             top_k=top_k,
             filter_cell_type=filter_cell_type,
             max_background_points=8_000,
+            user_id=current_user.id,
         )
         return jsonify(ok=True, **payload)
     except ValueError as e:
@@ -709,6 +1110,7 @@ def api_search_task():
             "top_k": _int_form("top_k", 10, min_value=1, max_value=100),
             "filter_cell_type": request.form.get("filter_cell_type", "").strip() or None,
             "max_background_points": _int_form("max_background_points", 8_000, min_value=1_000, max_value=50_000),
+            "user_id": current_user.id,
         }
     except ValueError as e:
         return jsonify(ok=False, message=str(e)), 400
@@ -719,6 +1121,7 @@ def api_search_task():
         progress=0,
         message="检索任务已提交，等待执行...",
         dataset_id=dataset_id,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
@@ -767,6 +1170,7 @@ def api_search_plot_task():
         progress=0,
         message="检索高亮图任务已提交，等待执行...",
         dataset_id=dataset_id,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
@@ -837,6 +1241,7 @@ def api_multi_search():
             query_cell_index=query_cell_index,
             top_k=top_k,
             target_dataset_ids=target_dataset_ids,
+            user_id=current_user.id,
         )
         return jsonify(ok=True, result_data=result_data)
     except ValueError as e:
@@ -899,6 +1304,7 @@ def api_multi_search_task():
             "query_cell_index": _int_form("query_cell_index", 0, min_value=0),
             "top_k": _int_form("top_k", 20, min_value=1, max_value=100),
             "target_dataset_ids": target_dataset_ids,
+            "user_id": current_user.id,
         }
     except ValueError as e:
         return jsonify(ok=False, message=str(e)), 400
@@ -909,6 +1315,7 @@ def api_multi_search_task():
         progress=0,
         message="跨数据集检索任务已提交，等待执行...",
         dataset_id=source_dataset_id,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
@@ -952,6 +1359,7 @@ def api_joint_search_task():
             "query_dataset_id": query_dataset_id,
             "query_cell_index": _int_form("query_cell_index", 0, min_value=0),
             "top_k": _int_form("top_k", 20, min_value=1, max_value=100),
+            "user_id": current_user.id,
         }
     except ValueError as e:
         return jsonify(ok=False, message=str(e)), 400
@@ -962,6 +1370,7 @@ def api_joint_search_task():
         progress=0,
         message="联合检索任务已提交，等待执行...",
         dataset_id=query_dataset_id,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
@@ -1012,6 +1421,7 @@ def api_joint_search_plot_task():
         progress=0,
         message="联合高亮图任务已提交，等待执行...",
         dataset_id=None,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
@@ -1071,7 +1481,7 @@ def api_index_experiment_task():
         dataset = db.session.get(Dataset, dataset_id)
         if not dataset:
             return jsonify(ok=False, message="Dataset does not exist."), 404
-        if not can_manage_dataset(dataset):
+        if not can_edit_dataset(dataset):
             return jsonify(ok=False, message="没有权限为该数据集构建候选索引。"), 403
         if dataset.status not in ("processed", "indexed"):
             return jsonify(ok=False, message="Dataset must be processed first."), 400
@@ -1098,6 +1508,7 @@ def api_index_experiment_task():
             candidate_configs=candidate_configs,
             candidate_keys=candidate_keys or None,
         )
+        experiment.created_by_id = current_user.id
         params = {"dataset_id": dataset_id, "experiment_id": experiment.id}
     except ExperimentConflict as e:
         return jsonify(ok=False, message=str(e)), 409
@@ -1112,9 +1523,17 @@ def api_index_experiment_task():
         progress=0,
         message="候选索引实验已提交，等待执行...",
         dataset_id=dataset_id,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
+    record_audit(
+        "index_experiment.created",
+        resource_type="index_experiment",
+        resource_id=experiment.id,
+        dataset_id=dataset_id,
+        details={"candidate_count": experiment.candidate_count, "metric": experiment.metric},
+    )
     db.session.commit()
 
     executor.submit(run_index_experiment_task, task.id, params, current_app._get_current_object())
@@ -1129,13 +1548,21 @@ def api_finalize_index_experiment(experiment_id):
     experiment = db.session.get(IndexExperiment, experiment_id)
     if not experiment:
         return jsonify(ok=False, message="实验不存在。"), 404
-    if not experiment.dataset or not can_manage_dataset(experiment.dataset):
+    if not experiment.dataset or not can_edit_dataset(experiment.dataset):
         return jsonify(ok=False, message="没有权限完成该实验的选优。"), 403
     try:
         raw_ids = request.form.getlist("selected_run_ids")
         if len(raw_ids) == 1 and "," in raw_ids[0]:
             raw_ids = [item for item in raw_ids[0].split(",") if item.strip()]
         result = finalize_experiment(experiment_id, [int(value) for value in raw_ids])
+        record_audit(
+            "index_experiment.finalized",
+            resource_type="index_experiment",
+            resource_id=experiment.id,
+            dataset_id=experiment.dataset_id,
+            details={"selected_run_ids": result.get("selected_run_ids", [])},
+        )
+        db.session.commit()
         return jsonify(ok=True, finalization=result, message="索引保留集合已更新。")
     except ExperimentConflict as exc:
         return jsonify(ok=False, message=str(exc)), 409
@@ -1151,10 +1578,13 @@ def api_discard_index_experiment(experiment_id):
     experiment = db.session.get(IndexExperiment, experiment_id)
     if not experiment:
         return jsonify(ok=False, message="实验不存在。"), 404
-    if not experiment.dataset or not can_manage_dataset(experiment.dataset):
+    if not experiment.dataset or not can_edit_dataset(experiment.dataset):
         return jsonify(ok=False, message="没有权限放弃该实验。"), 403
     try:
-        return jsonify(ok=True, cleanup=discard_experiment(experiment_id), message="实验已放弃，候选文件已清理。")
+        cleanup = discard_experiment(experiment_id)
+        record_audit("index_experiment.discarded", resource_type="index_experiment", resource_id=experiment.id, dataset_id=experiment.dataset_id)
+        db.session.commit()
+        return jsonify(ok=True, cleanup=cleanup, message="实验已放弃，候选文件已清理。")
     except ExperimentConflict as exc:
         return jsonify(ok=False, message=str(exc)), 409
 
@@ -1167,9 +1597,12 @@ def api_cleanup_index_experiment(experiment_id):
     experiment = db.session.get(IndexExperiment, experiment_id)
     if not experiment:
         return jsonify(ok=False, message="实验不存在。"), 404
-    if not experiment.dataset or not can_manage_dataset(experiment.dataset):
+    if not experiment.dataset or not can_edit_dataset(experiment.dataset):
         return jsonify(ok=False, message="没有权限清理该实验。"), 403
-    return jsonify(ok=True, cleanup=retry_experiment_cleanup(experiment_id), message="清理重试完成。")
+    cleanup = retry_experiment_cleanup(experiment_id)
+    record_audit("index_experiment.cleanup_retried", resource_type="index_experiment", resource_id=experiment.id, dataset_id=experiment.dataset_id)
+    db.session.commit()
+    return jsonify(ok=True, cleanup=cleanup, message="清理重试完成。")
 
 
 @api_bp.route("/index-evaluations", methods=["GET"])
@@ -1236,7 +1669,7 @@ def api_index_evaluation_task():
         dataset = db.session.get(Dataset, dataset_id)
         if not dataset:
             return jsonify(ok=False, message="Dataset does not exist."), 404
-        if not can_view_dataset(dataset):
+        if not can_edit_dataset(dataset):
             return jsonify(ok=False, message="No permission to evaluate this dataset."), 403
         ann_index = db.session.get(AnnIndex, index_id)
         if not ann_index or ann_index.dataset_id != dataset_id:
@@ -1259,9 +1692,11 @@ def api_index_evaluation_task():
         progress=0,
         message="Index evaluation task submitted.",
         dataset_id=dataset_id,
+        created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
     )
     db.session.add(task)
+    record_audit("index.evaluation_submitted", resource_type="ann_index", resource_id=index_id, dataset_id=dataset_id)
     db.session.commit()
 
     executor.submit(run_index_evaluation_task, task.id, params, current_app._get_current_object())
@@ -1280,7 +1715,7 @@ def api_evaluate():
         dataset = db.session.get(Dataset, dataset_id)
         if not dataset:
             return jsonify(ok=False, message="数据集不存在。"), 404
-        if not can_view_dataset(dataset):
+        if not can_edit_dataset(dataset):
             return jsonify(ok=False, message="没有权限评估该数据集。"), 403
         raw_index_id = request.form.get("index_id", "").strip()
         if not raw_index_id:
@@ -1291,6 +1726,8 @@ def api_evaluate():
 
         metrics = evaluate_index(dataset_id, index_id, sample_size=sample_size, top_k=top_k)
         bar_plot = eval_bar_json(metrics)
+        record_audit("index.evaluated", resource_type="ann_index", resource_id=index_id, dataset_id=dataset_id)
+        db.session.commit()
         return jsonify(ok=True, metrics=metrics, bar_plot=bar_plot)
     except ValueError as e:
         return jsonify(ok=False, message=str(e)), 400

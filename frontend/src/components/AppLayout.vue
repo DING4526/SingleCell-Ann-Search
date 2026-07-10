@@ -43,6 +43,7 @@
             <template #overlay>
               <a-menu>
                 <a-menu-item key="role">角色：{{ roleText(auth.user?.role) }}</a-menu-item>
+                <a-menu-item key="change-password" @click="passwordOpen = true">修改密码</a-menu-item>
                 <a-menu-divider />
                 <a-menu-item key="logout" @click="logout">退出登录</a-menu-item>
               </a-menu>
@@ -77,11 +78,18 @@
         </template>
       </a-list>
     </a-drawer>
+    <a-modal v-model:open="passwordOpen" title="修改密码" ok-text="确认修改" :confirm-loading="passwordLoading" @ok="changePassword">
+      <a-form layout="vertical">
+        <a-form-item label="当前密码"><a-input-password v-model:value="passwordForm.oldPassword" autocomplete="current-password" /></a-form-item>
+        <a-form-item label="新密码"><a-input-password v-model:value="passwordForm.newPassword" autocomplete="new-password" /></a-form-item>
+        <a-form-item label="确认新密码"><a-input-password v-model:value="passwordForm.confirm" autocomplete="new-password" /></a-form-item>
+      </a-form>
+    </a-modal>
   </a-layout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   ClockCircleOutlined,
@@ -109,6 +117,9 @@ const taskStore = useTaskStore();
 const openNav = ref(false);
 const openTasks = ref(false);
 const taskLoading = ref(false);
+const passwordOpen = ref(false);
+const passwordLoading = ref(false);
+const passwordForm = reactive({ oldPassword: "", newPassword: "", confirm: "" });
 
 const activeKey = computed(() => {
   if (route.path.startsWith("/datasets")) return "/datasets";
@@ -132,6 +143,22 @@ async function logout() {
   await auth.logout();
   message.success("已退出登录");
   router.push("/login");
+}
+
+async function changePassword() {
+  if (passwordForm.newPassword.length < 4) return message.warning("新密码至少 4 位");
+  if (passwordForm.newPassword !== passwordForm.confirm) return message.warning("两次输入的新密码不一致");
+  passwordLoading.value = true;
+  try {
+    await auth.changePassword(passwordForm.oldPassword, passwordForm.newPassword, passwordForm.confirm);
+    message.success("密码已更新");
+    passwordOpen.value = false;
+    Object.assign(passwordForm, { oldPassword: "", newPassword: "", confirm: "" });
+  } catch (error) {
+    message.error((error as Error).message);
+  } finally {
+    passwordLoading.value = false;
+  }
 }
 
 watch(openTasks, async (value) => {

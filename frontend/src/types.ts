@@ -3,6 +3,50 @@ export type User = {
   username: string;
   role: "user" | "admin" | string;
   is_admin: boolean;
+  is_enabled: boolean;
+};
+
+export type EffectiveRole = "admin" | "owner" | "editor" | "viewer";
+export type PermissionSource = "admin" | "owner" | "explicit" | "shared";
+
+export type ManagedUser = User & {
+  created_at?: string | null;
+  owned_dataset_count?: number;
+};
+
+export type DatasetPermission = {
+  id: number;
+  dataset_id: number;
+  user_id: number;
+  username: string | null;
+  user_enabled: boolean;
+  level: "viewer" | "editor";
+  granted_by_id: number | null;
+  granted_by_name: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type DatasetAccess = {
+  dataset_id: number;
+  visibility: "private" | "shared";
+  owner: User | null;
+  permissions: DatasetPermission[];
+};
+
+export type AuditEvent = {
+  id: number;
+  event: string;
+  actor_id: number | null;
+  actor_name: string | null;
+  resource_type: string | null;
+  resource_id: number | null;
+  dataset_id: number | null;
+  target_user_id: number | null;
+  target_user_name: string | null;
+  details: Record<string, unknown>;
+  ip_address: string | null;
+  created_at: string | null;
 };
 
 export type AnnIndex = {
@@ -102,6 +146,8 @@ export type IndexExperiment = {
   id: number;
   dataset_id: number;
   dataset_name: string | null;
+  created_by_id?: number | null;
+  created_by_name?: string | null;
   metric: "l2" | "cosine" | string;
   sample_size: number;
   top_k: number;
@@ -203,6 +249,9 @@ export type Dataset = {
   owner_name: string | null;
   visibility: "private" | "shared" | string;
   created_at: string | null;
+  effective_role: EffectiveRole | null;
+  permission_source: PermissionSource | null;
+  can_edit: boolean;
   can_manage: boolean;
   indexes: AnnIndex[];
   ready_index_count: number;
@@ -219,6 +268,8 @@ export type TaskRecord = {
   has_result?: boolean;
   dataset_id: number | null;
   dataset_name: string | null;
+  created_by_id: number | null;
+  created_by_name: string | null;
   updated_at: string | null;
 };
 

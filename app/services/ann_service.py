@@ -186,6 +186,7 @@ def search_by_cell_index(
     top_k: int = 10,
     filter_cell_type: str = None,
     exclude_self: bool = True,
+    user_id: int | None = None,
 ) -> dict:
     """Search similar cells through the selected persistent ANN index."""
     dataset = db.session.get(Dataset, dataset_id)
@@ -269,6 +270,7 @@ def search_by_cell_index(
         QueryLog(
             dataset_id=dataset_id,
             index_id=index_id,
+            user_id=user_id,
             query_cell_index=query_cell_index,
             top_k=top_k,
             query_time_ms=query_time_ms,

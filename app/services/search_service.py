@@ -53,6 +53,7 @@ def execute_single_search(
     max_background_points: int = 8_000,
     include_plot: bool = True,
     progress_cb=None,
+    user_id: int | None = None,
 ) -> dict:
     """Run ANN search and build the response payload expected by the SPA."""
     if progress_cb:
@@ -64,6 +65,7 @@ def execute_single_search(
         query_cell_index=query_cell_index,
         top_k=top_k,
         filter_cell_type=filter_cell_type,
+        user_id=user_id,
     )
     results = result_data.get("results", [])
 
