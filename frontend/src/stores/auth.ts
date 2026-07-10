@@ -34,6 +34,9 @@ export const useAuthStore = defineStore("auth", {
       this.user = data.user;
       this.initialized = true;
     },
+    async changePassword(oldPassword: string, newPassword: string, confirm: string) {
+      await api.changePassword(oldPassword, newPassword, confirm);
+    },
     async logout() {
       await api.logout();
       this.user = null;

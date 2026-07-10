@@ -183,6 +183,8 @@ def experiment_to_dict(experiment: IndexExperiment, include_runs: bool = True) -
         "id": experiment.id,
         "dataset_id": experiment.dataset_id,
         "dataset_name": experiment.dataset.name if experiment.dataset else None,
+        "created_by_id": experiment.created_by_id,
+        "created_by_name": experiment.created_by.username if experiment.created_by else None,
         "metric": experiment.metric,
         "sample_size": experiment.sample_size,
         "top_k": experiment.top_k,

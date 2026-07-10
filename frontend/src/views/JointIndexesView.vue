@@ -3,7 +3,7 @@
     <template #actions>
       <a-space wrap>
         <a-button @click="load">刷新</a-button>
-        <a-button type="primary" @click="drawerOpen = true">构建联合索引</a-button>
+        <a-button v-if="datasetOptions.length >= 2" type="primary" @click="drawerOpen = true">构建联合索引</a-button>
       </a-space>
     </template>
   </PageHeader>
@@ -76,7 +76,7 @@ const form = reactive({
   min_common_genes: 500,
 });
 const metricOptions = [{ label: "L2", value: "l2" }, { label: "Cosine", value: "cosine" }];
-const datasetOptions = computed(() => store.datasets.filter((item) => ["processed", "indexed"].includes(item.status)));
+const datasetOptions = computed(() => store.datasets.filter((item) => item.can_edit && ["processed", "indexed"].includes(item.status)));
 const columns = [
   { title: "ID", dataIndex: "id", width: 64 },
   { title: "名称", dataIndex: "name" },

@@ -196,6 +196,7 @@ def run_search_task(task_id: int, params: dict, app=None):
                 filter_cell_type=params.get("filter_cell_type"),
                 include_plot=False,
                 progress_cb=progress_cb,
+                user_id=params.get("user_id"),
             )
             result_count = len(payload["result_data"].get("results", []))
             query_time_ms = payload["result_data"].get("query_time_ms")
@@ -284,6 +285,7 @@ def run_multi_search_task(task_id: int, params: dict, app=None):
                 query_cell_index=params["query_cell_index"],
                 top_k=params.get("top_k", 20),
                 target_dataset_ids=params.get("target_dataset_ids"),
+                user_id=params.get("user_id"),
             )
             task.status = "success"
             task.progress = 100
@@ -481,6 +483,7 @@ def run_joint_search_task(task_id: int, params: dict, app=None):
                 query_dataset_id=params["query_dataset_id"],
                 query_cell_index=params["query_cell_index"],
                 top_k=params.get("top_k", 20),
+                user_id=params.get("user_id"),
             )
             task.status = "success"
             task.progress = 100

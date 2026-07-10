@@ -30,4 +30,9 @@ def render_spa():
 
 def serve_spa_asset(filename: str):
     dist_dir = frontend_dist_dir()
-    return send_from_directory(os.path.join(dist_dir, "assets"), filename)
+    mimetype = None
+    if filename.endswith(".js"):
+        mimetype = "application/javascript"
+    elif filename.endswith(".css"):
+        mimetype = "text/css"
+    return send_from_directory(os.path.join(dist_dir, "assets"), filename, mimetype=mimetype)

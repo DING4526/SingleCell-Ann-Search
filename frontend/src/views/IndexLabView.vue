@@ -150,7 +150,7 @@
       </a-table>
     </div>
 
-    <div v-if="experimentResult.status === 'ready_for_selection'" class="surface finalize-bar">
+    <div v-if="experimentResult.status === 'ready_for_selection' && dataset?.can_edit" class="surface finalize-bar">
       <div>
         <span class="step-label">03</span>
         <div><strong>完成选优</strong><small>保留 {{ selectedRunIds.length }} 个 · 预计释放 {{ formatBytes(estimatedReclaimBytes) }}</small></div>
@@ -161,7 +161,7 @@
     <div v-if="experimentResult.status === 'finalized'" class="surface completed-panel">
       <div><span class="step-label done">✓</span><div><strong>选优已完成</strong><small>已保留 {{ experimentResult.selected_run_ids.length }} 个索引，释放 {{ formatBytes(experimentResult.reclaimed_bytes) }}</small></div></div>
       <a-space>
-        <a-button v-if="cleanupErrors.length" danger @click="retryCleanup">重试失败清理</a-button>
+        <a-button v-if="cleanupErrors.length && dataset?.can_edit" danger @click="retryCleanup">重试失败清理</a-button>
         <a-button type="primary" @click="goToQuery">进入检索实验室</a-button>
       </a-space>
     </div>
@@ -267,13 +267,13 @@ const datasetOptions = computed(() => store.datasets.map((item) => ({ value: ite
 const activeIndexes = computed(() => (dataset.value?.indexes || []).filter((index) => index.status === "ready" && index.lifecycle === "active"));
 const candidateAlgorithmOptions = computed(() => algorithms.value.filter((item) => item.available && item.key !== "faiss_flat").map((item) => ({ value: item.key, label: item.label })));
 const blockingExperiment = computed(() => experiments.value.find((item) => ["pending", "running", "ready_for_selection"].includes(item.status)) || null);
-const canStartExperiment = computed(() => Boolean(dataset.value?.can_manage && ["processed", "indexed"].includes(dataset.value.status) && !blockingExperiment.value));
+const canStartExperiment = computed(() => Boolean(dataset.value?.can_edit && ["processed", "indexed"].includes(dataset.value.status) && !blockingExperiment.value));
 const successfulRuns = computed(() => (experimentResult.value?.runs || []).filter((run) => run.status === "success"));
 const selectedRuns = computed(() => selectedRunIds.value.map((id) => successfulRuns.value.find((run) => run.id === id)).filter((run): run is IndexExperimentRun => Boolean(run)));
 const candidatesToClean = computed(() => successfulRuns.value.filter((run) => !selectedRunIds.value.includes(run.id)));
 const hasLowRecallSelection = computed(() => selectedRuns.value.some((run) => (run.recall_at_k || 0) < 0.90));
 const cleanupErrors = computed(() => experimentResult.value?.finalization?.cleanup_errors || []);
-const canDiscard = computed(() => Boolean(experimentResult.value && experimentResult.value.workflow_version >= 2 && !["running", "finalized", "discarded"].includes(experimentResult.value.status)));
+const canDiscard = computed(() => Boolean(dataset.value?.can_edit && experimentResult.value && experimentResult.value.workflow_version >= 2 && !["running", "finalized", "discarded"].includes(experimentResult.value.status)));
 const progressFromRuns = computed(() => {
   const runs = experimentResult.value?.runs || [];
   if (!runs.length) return 5;

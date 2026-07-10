@@ -22,7 +22,7 @@ single-cell-ann-search/
 │   ├── __init__.py          # Flask 应用工厂
 │   ├── config.py            # 配置
 │   ├── extensions.py        # db, login_manager
-│   ├── models.py            # User, Dataset, Cell, AnnIndex, QueryLog, Task
+│   ├── models.py            # 用户、数据集权限、索引、任务、查询与审计模型
 │   ├── routes/              # 页面路由与 API 路由
 │   ├── services/            # 数据处理、索引、评估、绘图服务
 │   ├── spa.py               # Flask 托管 Vite SPA
@@ -225,7 +225,16 @@ Vite: 5173
 9. 设置 Top-K，例如 `10`
 10. 运行检索并查看结果表格、耗时和散点图联动
 11. 可选：使用跨数据集检索
-12. 进入 Evaluation，对比 ANN 与精确检索的 Recall@K、耗时和加速比
+12. 进入 Access 查看有效权限；Owner 可在数据集详情中配置 Viewer/Editor
+
+## 权限模型
+
+- 系统角色为 `admin / user`；数据集有效角色为 `admin / owner / editor / viewer`。
+- `private` 数据集仅 Owner、Admin 和显式成员可见；`shared` 向所有登录用户开放 Viewer。
+- Editor 可处理数据、构建和评估索引、完成索引实验以及使用数据构建联合索引。
+- 只有 Owner/Admin 可以修改共享范围、管理成员、转移所有权或删除数据集。
+- 联合索引构建要求对所有源数据集至少拥有 Editor；查看和查询要求全部源数据集可见。
+- Access 页面提供权限总览、管理员用户管理和审计日志；账号停用不会删除资源或历史记录。
 
 ## 验证命令
 
@@ -260,7 +269,6 @@ npm audit --omit=dev
 
 - 多 ANN 算法选择：FAISS IVF/PQ/HNSW 参数实验
 - 索引合并：Harmony 对齐后的多数据集物理联合索引、全局 cell id 与联合高亮图
-- 权限管理：用户、共享、数据集可见性和操作权限
 - 大模型集成：自然语言查询、RAG 分析和检索结果解释
 - 批量查询与结果导出
 - Plotly 按需加载，降低首屏构建包体积

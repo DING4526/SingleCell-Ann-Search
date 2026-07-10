@@ -265,6 +265,7 @@ def test_spa_processing_index_search_and_scatter_baseline():
             assert all(not os.path.exists(os.path.join(app.config["INDEX_DIR"], row.index_path)) for row in retired)
             assert all(db.session.get(AnnIndex, value).lifecycle == "active" for value in selected_candidate_index_ids)
             assert QueryLog.query.filter_by(index_id=rp_index_id).count() == 1
+            assert QueryLog.query.filter_by(index_id=rp_index_id).first().user_id == user.id
 
             source_run = experiment_result["runs"][0]
             source_index_id = source_run["index"]["id"]
@@ -375,7 +376,7 @@ def test_spa_processing_index_search_and_scatter_baseline():
 def test_joint_index_build_search_plot_and_access_control():
     import anndata as ad
     from app.extensions import db
-    from app.models import Dataset, User
+    from app.models import Dataset, JointQueryLog, User
     from scripts.create_demo_h5ad import create_demo_h5ad
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
@@ -468,6 +469,7 @@ def test_joint_index_build_search_plot_and_access_control():
             assert result_data["query_global_label"] == 0
             assert len(result_data["results"]) == 5
             assert all(row["global_label"] != result_data["query_global_label"] for row in result_data["results"])
+            assert JointQueryLog.query.filter_by(joint_index_id=joint_index_id).first().user_id == admin.id
 
             plot_joint = client.post(
                 "/api/search/joint/plot/task",

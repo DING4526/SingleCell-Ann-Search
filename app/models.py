@@ -12,7 +12,13 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     role = db.Column(db.String(20), default="user")       # 角色：user / admin
+    is_enabled = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    @property
+    def is_active(self):
+        """Flask-Login uses this flag to reject disabled accounts."""
+        return bool(self.is_enabled)
 
     def set_password(self, password):
         """设置密码（哈希存储）"""
@@ -25,7 +31,8 @@ class User(UserMixin, db.Model):
 
 @login_manager.user_loader
 def load_user(user_id):
-    return db.session.get(User, int(user_id))
+    user = db.session.get(User, int(user_id))
+    return user if user and user.is_enabled else None
 
 
 class Dataset(db.Model):
@@ -51,6 +58,28 @@ class Dataset(db.Model):
     cells = db.relationship("Cell", backref="dataset", cascade="all, delete-orphan")
     indexes = db.relationship("AnnIndex", backref="dataset", cascade="all, delete-orphan")
     query_logs = db.relationship("QueryLog", backref="dataset", cascade="all, delete-orphan")
+    permissions = db.relationship("DatasetPermission", backref="dataset", cascade="all, delete-orphan")
+
+
+class DatasetPermission(db.Model):
+    """Explicit per-user Viewer/Editor grant for a dataset."""
+    __tablename__ = "dataset_permissions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    level = db.Column(db.String(20), nullable=False)  # viewer / editor
+    granted_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    user = db.relationship("User", foreign_keys=[user_id], backref="dataset_permissions")
+    granted_by = db.relationship("User", foreign_keys=[granted_by_id])
+
+    __table_args__ = (
+        db.UniqueConstraint("dataset_id", "user_id", name="uq_dataset_permissions_dataset_user"),
+        db.Index("ix_dataset_permissions_user", "user_id"),
+    )
 
 
 class Cell(db.Model):
@@ -109,6 +138,7 @@ class IndexExperiment(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
     metric = db.Column(db.String(20), default="l2")
     sample_size = db.Column(db.Integer, default=100)
     top_k = db.Column(db.Integer, default=10)
@@ -131,6 +161,7 @@ class IndexExperiment(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     dataset = db.relationship("Dataset", backref="index_experiments")
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
     runs = db.relationship("IndexExperimentRun", backref="experiment", cascade="all, delete-orphan")
 
 
@@ -243,6 +274,7 @@ class JointQueryLog(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     joint_index_id = db.Column(db.Integer, db.ForeignKey("joint_indexes.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
     query_dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id"), nullable=False)
     query_cell_index = db.Column(db.Integer, nullable=False)
     top_k = db.Column(db.Integer, nullable=False)
@@ -260,6 +292,7 @@ class QueryLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id"), nullable=False)
     index_id = db.Column(db.Integer, db.ForeignKey("ann_indexes.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
     query_cell_index = db.Column(db.Integer, nullable=False) # 查询细胞索引
     top_k = db.Column(db.Integer, nullable=False)            # 返回结果数
     query_time_ms = db.Column(db.Float)                      # 查询耗时（毫秒）
@@ -279,5 +312,32 @@ class Task(db.Model):
     result_json = db.Column(db.Text)                          # JSON 格式的任务结果
     error_message = db.Column(db.Text)                        # 错误信息
     dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+
+
+class AuditLog(db.Model):
+    """Security and write-operation audit event."""
+    __tablename__ = "audit_logs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
+    event = db.Column(db.String(80), nullable=False)
+    resource_type = db.Column(db.String(40))
+    resource_id = db.Column(db.Integer)
+    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="SET NULL"))
+    target_user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
+    details_json = db.Column(db.Text)
+    ip_address = db.Column(db.String(64))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    actor = db.relationship("User", foreign_keys=[actor_id])
+    target_user = db.relationship("User", foreign_keys=[target_user_id])
+
+    __table_args__ = (
+        db.Index("ix_audit_logs_dataset_created", "dataset_id", "created_at"),
+        db.Index("ix_audit_logs_actor_created", "actor_id", "created_at"),
+    )
