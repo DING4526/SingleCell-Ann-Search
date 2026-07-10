@@ -42,10 +42,16 @@ export const useTaskStore = defineStore("tasks", {
       const intervalMs = options.intervalMs ?? 1000;
       for (;;) {
         const task = await api.task(taskId);
-        await Promise.allSettled([this.refreshActive(), this.refreshRecent()]);
+        await this.refreshActive().catch(() => undefined);
         onTick?.(task);
-        if (task.status === "success") return task;
-        if (task.status === "error") throw new Error(task.error || task.message || "任务失败");
+        if (task.status === "success") {
+          await this.refreshRecent().catch(() => undefined);
+          return task;
+        }
+        if (task.status === "error") {
+          await this.refreshRecent().catch(() => undefined);
+          throw new Error(task.error || task.message || "任务失败");
+        }
         if (timeoutMs > 0 && Date.now() - startedAt > timeoutMs) {
           throw new Error(task.message ? `任务等待超时：${task.message}` : "任务等待超时");
         }

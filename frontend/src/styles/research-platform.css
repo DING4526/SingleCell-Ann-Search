@@ -168,6 +168,23 @@ body {
   margin-bottom: 18px;
 }
 
+.page-copy {
+  min-width: 0;
+}
+
+.page-actions-slot {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+.page-actions,
+.page-actions-slot .ant-space {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .page-title {
   margin: 0;
   font-size: 24px;
@@ -185,6 +202,7 @@ body {
   background: #ffffff;
   border: 1px solid #e5eaf2;
   border-radius: 8px;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -199,6 +217,10 @@ body {
   gap: 12px;
   padding: 14px 16px;
   border-bottom: 1px solid #eef2f7;
+}
+
+.toolbar > div {
+  min-width: 0;
 }
 
 .toolbar-title {
@@ -309,10 +331,38 @@ body {
   color: #172033;
 }
 
-.ant-table-wrapper,
+.ant-table-wrapper {
+  max-width: 100%;
+}
+
 .ant-table-content {
   max-width: 100%;
-  overflow-x: auto;
+}
+
+.compact-table .ant-table {
+  font-size: 13px;
+}
+
+.compact-table .ant-table-thead > tr > th {
+  color: #334155;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.compact-table .ant-table-cell {
+  vertical-align: middle;
+}
+
+.table-shell {
+  min-width: 0;
+}
+
+.table-shell .ant-table-empty .ant-table-content {
+  overflow: hidden !important;
+}
+
+.table-shell .ant-table-placeholder {
+  border-bottom: 0;
 }
 
 .ant-btn {
@@ -385,5 +435,10 @@ body {
 
   .page-head {
     flex-direction: column;
+  }
+
+  .page-actions-slot {
+    justify-content: flex-start;
+    width: 100%;
   }
 }

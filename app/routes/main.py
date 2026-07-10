@@ -25,6 +25,7 @@ def spa_assets(filename):
 
 @main_bp.route("/overview")
 @main_bp.route("/index-lab")
+@main_bp.route("/joint-indexes")
 @main_bp.route("/query-lab")
 @main_bp.route("/evaluation")
 @main_bp.route("/access")

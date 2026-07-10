@@ -12,7 +12,7 @@ export const useDatasetStore = defineStore("datasets", {
   }),
   getters: {
     indexedDatasets: (state) => state.datasets.filter((dataset) => ["processed", "indexed"].includes(dataset.status)),
-    readyIndexes: (state) => state.datasets.flatMap((dataset) => dataset.indexes.filter((idx) => idx.status === "ready")),
+    readyIndexes: (state) => state.datasets.flatMap((dataset) => dataset.indexes.filter((idx) => idx.status === "ready" && idx.lifecycle === "active")),
   },
   actions: {
     async loadAll() {

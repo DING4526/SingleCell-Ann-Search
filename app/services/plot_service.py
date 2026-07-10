@@ -1,9 +1,7 @@
 import json
 import pathlib
 import numpy as np
-import pandas as pd
 import scanpy as sc
-import plotly.express as px
 import plotly.graph_objects as go
 from flask import current_app
 from app.models import Dataset, Cell
@@ -28,12 +26,18 @@ FONT_COLOR = "#e3f0ff"
 
 def _get_coords(dataset: Dataset):
     """获取 2D 坐标（优先 UMAP，否则 PCA 前两维）。"""
-    adata = sc.read_h5ad(dataset.file_path)
-    if "X_umap" in adata.obsm:
-        return np.array(adata.obsm["X_umap"]), "UMAP", adata
-    elif "X_pca" in adata.obsm:
-        return np.array(adata.obsm["X_pca"])[:, :2], "PCA", adata
-    return None, None, None
+    adata = None
+    try:
+        # The plots only need obsm coordinates; backed mode avoids loading X/raw.
+        adata = sc.read_h5ad(dataset.file_path, backed="r")
+        if "X_umap" in adata.obsm:
+            return np.asarray(adata.obsm["X_umap"]).copy(), "UMAP", None
+        if "X_pca" in adata.obsm:
+            return np.asarray(adata.obsm["X_pca"])[:, :2].copy(), "PCA", None
+        return None, None, None
+    finally:
+        if adata is not None and getattr(adata, "isbacked", False):
+            adata.file.close()
 
 
 def _build_color_map(labels: list[str], use_dark_cycle: bool = True) -> dict[str, str]:
@@ -206,7 +210,7 @@ def generate_scatter_cache(dataset_id: int) -> str:
 
 
 # ------------------ 检索结果散点图 ------------------
-def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indices: list, max_background_points: int = 15_000) -> dict:
+def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indices: list, max_background_points: int = 8_000) -> dict:
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
         raise ValueError("数据集不存在")
@@ -239,27 +243,58 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
         rng = np.random.default_rng(seed=dataset_id)
         background_positions = sorted(rng.choice(background_positions, size=max_background_points, replace=False).tolist())
 
-    bg_df = pd.DataFrame({
-        "x": coords[background_positions, 0],
-        "y": coords[background_positions, 1],
-        "cell_type": [cell_types[i] for i in background_positions],
-        "cell_index": [cell_indices[i] for i in background_positions],
-    })
-
-    # 背景低亮 PX
+    # Muted background points stay in one WebGL trace for fast rendering.
     muted_color_map = {ct: _muted_color(color) for ct, color in color_map.items()}
-    fig = px.scatter(
-        bg_df,
-        x="x", y="y",
-        color="cell_type",
-        color_discrete_map=muted_color_map,
-        custom_data=["cell_index", "cell_type"],
-        render_mode="webgl",
-    )
-    fig.update_traces(marker=dict(size=3, opacity=0.92), hovertemplate="cell_type: %{customdata[1]}<br>cell_index: %{customdata[0]}<extra></extra>")
+    color_labels = list(color_map.keys())
+    color_code_by_type = {label: i for i, label in enumerate(color_labels)}
+    if not color_labels:
+        background_colorscale = [[0, "#95b1b0"], [1, "#95b1b0"]]
+    elif len(color_labels) == 1:
+        only_color = muted_color_map[color_labels[0]]
+        background_colorscale = [[0, only_color], [1, only_color]]
+    else:
+        background_colorscale = [
+            [i / (len(color_labels) - 1), muted_color_map[label]]
+            for i, label in enumerate(color_labels)
+        ]
+    fig = go.Figure()
+    fig.add_trace(go.Scattergl(
+        x=coords[background_positions, 0].astype(float).tolist(),
+        y=coords[background_positions, 1].astype(float).tolist(),
+        mode="markers",
+        marker=dict(
+            size=3,
+            opacity=0.92,
+            color=[color_code_by_type[cell_types[i]] for i in background_positions],
+            colorscale=background_colorscale,
+            cmin=0,
+            cmax=max(len(color_labels) - 1, 1),
+            showscale=False,
+        ),
+        customdata=[[cell_indices[i], cell_types[i]] for i in background_positions],
+        hovertemplate="cell_type: %{customdata[1]}<br>cell_index: %{customdata[0]}<extra></extra>",
+        name="Background cells",
+        showlegend=False,
+    ))
+
+    # Legend-only entries keep cell-type colors without splitting the background.
+    for label, color in color_map.items():
+        fig.add_trace(go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            marker=dict(size=7, color=muted_color_map.get(label, _muted_color(color))),
+            name=label,
+            showlegend=True,
+            hoverinfo="skip",
+        ))
 
     # 结果点高亮
-    result_positions = [pos_by_cell_index[ci] for ci in result_set if ci != query_cell_index]
+    result_positions = [
+        pos_by_cell_index[ci]
+        for ci in result_cell_indices
+        if ci in result_set and ci != query_cell_index
+    ]
     if result_positions:
         result_info_rows = db.session.query(Cell.cell_index, Cell.cell_name, Cell.cell_type, Cell.disease, Cell.age_group)\
             .filter(Cell.dataset_id == dataset_id, Cell.cell_index.in_([cell_indices[i] for i in result_positions])).all()

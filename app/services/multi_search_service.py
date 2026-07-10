@@ -2,7 +2,7 @@
 import time
 from app.extensions import db
 from app.models import AnnIndex, Cell, Dataset
-from app.services.ann_service import load_hnsw_index
+from app.services.ann_service import query_ann_index
 from app.services.data_service import load_vectors
 
 
@@ -22,6 +22,8 @@ def search_across_datasets(
         raise ValueError("源索引不属于源数据集")
     if source_index.status != "ready":
         raise ValueError("源索引尚未就绪")
+    if source_index.lifecycle != "active":
+        raise ValueError("源索引不是当前保留索引")
 
     source_vectors = load_vectors(source_dataset)
     if query_cell_index < 0 or query_cell_index >= source_vectors.shape[0]:
@@ -36,6 +38,7 @@ def search_across_datasets(
         .join(Dataset, Dataset.id == AnnIndex.dataset_id)
         .filter(
             AnnIndex.status == "ready",
+            AnnIndex.lifecycle == "active",
             AnnIndex.metric == source_index.metric,
             Dataset.status.in_(["processed", "indexed"]),
         )
@@ -65,11 +68,10 @@ def search_across_datasets(
                     "reason": "向量维度不一致",
                 })
                 continue
-            hnsw_index = load_hnsw_index(idx, vectors.shape[1])
             fetch_k = min(candidate_k + (1 if dataset.id == source_dataset_id else 0), vectors.shape[0])
             if fetch_k <= 0:
                 continue
-            labels, distances = hnsw_index.knn_query(query_vector, k=fetch_k)
+            labels, distances = query_ann_index(idx, vectors, query_vector, fetch_k)
         except Exception as exc:
             skipped.append({
                 "dataset_id": dataset.id,

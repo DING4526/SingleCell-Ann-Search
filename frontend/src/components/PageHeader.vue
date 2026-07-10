@@ -1,10 +1,10 @@
 <template>
   <div class="page-head">
-    <div>
+    <div class="page-copy">
       <h1 class="page-title">{{ title }}</h1>
       <p v-if="description" class="page-description">{{ description }}</p>
     </div>
-    <div v-if="$slots.actions">
+    <div v-if="$slots.actions" class="page-actions-slot">
       <slot name="actions" />
     </div>
   </div>

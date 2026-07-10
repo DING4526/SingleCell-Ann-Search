@@ -1,8 +1,8 @@
 # 单细胞 ANN 检索系统
 
-基于 Flask + Vue 3 的单细胞近似最近邻检索平台，用于读取 `.h5ad` 数据集、提取 PCA 向量、构建 HNSW 索引，并支持 Top-K 相似细胞检索、跨数据集检索、可视化和评估。
+基于 Flask + Vue 3 的单细胞近似最近邻检索平台，用于读取 `.h5ad` 数据集、提取 PCA 向量、比较 HNSW/FAISS 索引，并支持 Top-K 相似细胞检索、跨数据集检索、可视化和评估。
 
-前端已重构为专业研究者平台式 SPA，核心页面包括 Overview、Datasets、Index Lab、Query Lab、Evaluation、Access、AI Analysis。
+前端已重构为专业研究者平台式 SPA，核心页面包括 Overview、Datasets、Index Lab、Joint Indexes、Query Lab、Access、AI Analysis。
 
 ## 技术栈
 
@@ -219,7 +219,7 @@ Vite: 5173
 3. 进入 Datasets，上传 `data/raw/demo_liver.h5ad`
 4. 在数据集详情页处理数据集，提取向量和细胞元信息
 5. 查看数据集统计信息和 UMAP/PCA 可视化
-6. 进入 Index Lab，选择数据集并构建 HNSW 索引
+6. 进入 Index Lab，一次构建并统一评估候选索引，选择最终保留的 2–3 个索引
 7. 进入 Query Lab，选择数据集和索引
 8. 输入查询细胞索引，例如 `0`
 9. 设置 Top-K，例如 `10`
@@ -259,7 +259,7 @@ npm audit --omit=dev
 ## 后续扩展方向
 
 - 多 ANN 算法选择：FAISS IVF/PQ/HNSW 参数实验
-- 索引合并：多数据集物理联合索引与全局 cell id
+- 索引合并：Harmony 对齐后的多数据集物理联合索引、全局 cell id 与联合高亮图
 - 权限管理：用户、共享、数据集可见性和操作权限
 - 大模型集成：自然语言查询、RAG 分析和检索结果解释
 - 批量查询与结果导出

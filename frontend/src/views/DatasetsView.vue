@@ -13,7 +13,8 @@
       <span class="toolbar-title">数据资源清单</span>
       <a-segmented v-model:value="statusFilter" :options="statusOptions" />
     </div>
-    <a-table :loading="store.loading" :data-source="filteredDatasets" :columns="columns" row-key="id" size="middle" :scroll="{ x: 980 }">
+    <div class="table-shell">
+      <a-table class="compact-table dataset-table" :loading="store.loading" :data-source="filteredDatasets" :columns="columns" row-key="id" size="middle">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
           <a-space direction="vertical" size="small">
@@ -26,7 +27,7 @@
           <a-tag>{{ record.owner_id ? record.visibility : "旧数据" }}</a-tag>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space>
+          <a-space :size="6" wrap>
             <a-button size="small" @click="$router.push(`/datasets/${record.id}`)">查看</a-button>
             <a-popconfirm title="删除该数据集及关联索引文件？" ok-text="删除" cancel-text="取消" @confirm="remove(record.id)">
               <a-button size="small" danger :disabled="!record.can_manage">删除</a-button>
@@ -34,7 +35,8 @@
           </a-space>
         </template>
       </template>
-    </a-table>
+      </a-table>
+    </div>
   </div>
 
   <a-drawer v-model:open="uploadOpen" title="上传 AnnData 数据集" width="520">
@@ -81,15 +83,15 @@ const statusOptions = [
 ];
 
 const columns = [
-  { title: "数据集", key: "name", width: 280 },
-  { title: "细胞数", dataIndex: "n_cells", customRender: ({ text }: { text: number | null }) => numberOrDash(text), width: 110 },
-  { title: "基因数", dataIndex: "n_genes", customRender: ({ text }: { text: number | null }) => numberOrDash(text), width: 110 },
-  { title: "PCA 维度", dataIndex: "vector_dim", customRender: ({ text }: { text: number | null }) => numberOrDash(text), width: 110 },
-  { title: "索引数", dataIndex: "ready_index_count", width: 100 },
-  { title: "访问范围", key: "access", width: 110 },
-  { title: "状态", key: "status", width: 120 },
-  { title: "创建时间", dataIndex: "created_at", customRender: ({ text }: { text: string | null }) => formatDate(text), width: 140 },
-  { title: "操作", key: "actions", fixed: "right", width: 150 },
+  { title: "数据集", key: "name", width: 220 },
+  { title: "细胞数", dataIndex: "n_cells", customRender: ({ text }: { text: number | null }) => numberOrDash(text), width: 88 },
+  { title: "基因数", dataIndex: "n_genes", customRender: ({ text }: { text: number | null }) => numberOrDash(text), width: 88 },
+  { title: "PCA", dataIndex: "vector_dim", customRender: ({ text }: { text: number | null }) => numberOrDash(text), width: 76 },
+  { title: "索引", dataIndex: "ready_index_count", width: 68 },
+  { title: "访问", key: "access", width: 84 },
+  { title: "状态", key: "status", width: 92 },
+  { title: "创建", dataIndex: "created_at", customRender: ({ text }: { text: string | null }) => formatDate(text), width: 104 },
+  { title: "操作", key: "actions", width: 118 },
 ];
 
 const filteredDatasets = computed(() => {

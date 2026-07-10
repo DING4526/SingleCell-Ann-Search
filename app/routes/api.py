@@ -1,4 +1,5 @@
 """API 蓝图：提供 JSON 格式的 AJAX 接口，用于非阻塞操作。"""
+import json
 import os
 import uuid
 import pathlib
@@ -7,7 +8,7 @@ from flask import Blueprint, request, jsonify, current_app
 from flask_login import login_required, current_user, login_user, logout_user
 from werkzeug.utils import secure_filename
 from app.extensions import db
-from app.models import Dataset, AnnIndex, Cell, Task, QueryLog, User
+from app.models import Dataset, AnnIndex, Cell, Task, QueryLog, User, JointIndex, IndexExperiment, IndexExperimentRun, IndexEvaluation
 from app.tasks import (
     executor,
     plot_executor,
@@ -16,6 +17,11 @@ from app.tasks import (
     run_search_task,
     run_search_plot_task,
     run_multi_search_task,
+    run_index_experiment_task,
+    run_index_evaluation_task,
+    run_build_joint_index_task,
+    run_joint_search_task,
+    run_joint_search_plot_task,
 )
 from app.services.access_service import (
     accessible_datasets_query,
@@ -32,11 +38,11 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 # 工具函数
 # ---------------------------------------------------------------------------
 
-def _task_to_dict(task: Task) -> dict:
+def _task_to_dict(task: Task, include_result: bool = False) -> dict:
     """将 Task 对象序列化为字典。"""
     import json
     result = None
-    if task.result_json:
+    if include_result and task.result_json:
         try:
             result = json.loads(task.result_json)
         except Exception:
@@ -54,6 +60,7 @@ def _task_to_dict(task: Task) -> dict:
         "message": task.message,
         "error": task.error_message,
         "result": result,
+        "has_result": bool(task.result_json),
         "dataset_id": task.dataset_id,
         "dataset_name": dataset_name,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
@@ -74,17 +81,60 @@ def _int_form(name: str, default: int, min_value: int = None, max_value: int = N
     return value
 
 
+def _optional_int_form(name: str, default=None, min_value: int = None, max_value: int = None):
+    if name not in request.form or request.form.get(name) in ("", None):
+        return default
+    return _int_form(name, default if default is not None else 0, min_value=min_value, max_value=max_value)
+
+
 def _index_to_dict(idx: AnnIndex) -> dict:
+    try:
+        params = json.loads(idx.params_json) if idx.params_json else {}
+    except Exception:
+        params = {}
+    source_run = None
+    if idx.source_run:
+        try:
+            source_params = json.loads(idx.source_run.params_json) if idx.source_run.params_json else {}
+        except Exception:
+            source_params = {}
+        source_run = {
+            "id": idx.source_run.id,
+            "experiment_id": idx.source_run.experiment_id,
+            "name": idx.source_run.name,
+            "algorithm": idx.source_run.algorithm,
+            "params": source_params,
+            "status": idx.source_run.status,
+            "recall_at_k": idx.source_run.recall_at_k,
+            "avg_query_time_ms": idx.source_run.avg_query_time_ms,
+            "p95_query_time_ms": idx.source_run.p95_query_time_ms,
+            "avg_exact_time_ms": idx.source_run.avg_exact_time_ms,
+            "speedup": idx.source_run.speedup,
+            "build_time_ms": idx.source_run.build_time_ms,
+            "index_size_bytes": idx.source_run.index_size_bytes,
+            "quality": idx.source_run.quality,
+            "recommendation": idx.source_run.recommendation,
+        }
     return {
         "id": idx.id,
         "dataset_id": idx.dataset_id,
-        "algorithm": "HNSW",
+        "algorithm": idx.algorithm or "hnswlib_hnsw",
+        "params": params,
+        "source_experiment_id": idx.source_experiment_id,
+        "source_run_id": idx.source_run_id,
+        "source_run": source_run,
         "metric": idx.metric,
         "M": idx.M,
         "ef_construction": idx.ef_construction,
         "ef_search": idx.ef_search,
         "build_time_ms": idx.build_time_ms,
+        "index_size_bytes": idx.index_size_bytes,
+        "backend_version": idx.backend_version,
+        "lifecycle": idx.lifecycle or "active",
+        "selection_labels": [item for item in (idx.selection_labels or "").split(",") if item],
+        "discarded_at": idx.discarded_at.isoformat() if idx.discarded_at else None,
         "status": idx.status,
+        "error_message": idx.error_message,
         "created_at": idx.created_at.isoformat() if idx.created_at else None,
     }
 
@@ -106,9 +156,19 @@ def _dataset_to_dict(dataset: Dataset, include_indexes: bool = True) -> dict:
         "can_manage": can_manage_dataset(dataset),
     }
     if include_indexes:
-        data["indexes"] = [_index_to_dict(idx) for idx in dataset.indexes]
-        data["ready_index_count"] = sum(1 for idx in dataset.indexes if idx.status == "ready")
+        active_indexes = [idx for idx in dataset.indexes if (idx.lifecycle or "active") == "active"]
+        data["indexes"] = [_index_to_dict(idx) for idx in active_indexes]
+        data["ready_index_count"] = sum(1 for idx in active_indexes if idx.status == "ready")
     return data
+
+
+def _can_view_joint_index(joint_index: JointIndex) -> bool:
+    if not joint_index:
+        return False
+    included_rows = [row for row in joint_index.datasets if row.status == "included"]
+    if not included_rows:
+        return is_admin() or joint_index.owner_id == current_user.id
+    return all(row.dataset and can_view_dataset(row.dataset) for row in included_rows)
 
 
 def _dataset_stats(dataset_id: int) -> dict:
@@ -146,9 +206,14 @@ def _delete_dataset_files(dataset: Dataset):
             os.remove(str(scatter_path))
 
     for idx in AnnIndex.query.filter_by(dataset_id=dataset_id).all():
-        idx_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.index_path
-        if idx_path.exists():
-            os.remove(str(idx_path))
+        if idx.index_path:
+            idx_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.index_path
+            if idx_path.exists():
+                os.remove(str(idx_path))
+        if idx.preprocess_path:
+            prep_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.preprocess_path
+            if prep_path.exists():
+                os.remove(str(prep_path))
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +412,26 @@ def api_process(dataset_id):
 # 构建 HNSW 索引（异步任务）
 # ---------------------------------------------------------------------------
 
+@api_bp.route("/ann/algorithms", methods=["GET"])
+@login_required
+def api_ann_algorithms():
+    """Return ANN algorithm backend availability and defaults."""
+    from app.services.ann_backend_service import algorithm_catalog
+
+    dataset_id = request.args.get("dataset_id", "").strip()
+    n_cells = None
+    dim = None
+    if dataset_id:
+        dataset = db.session.get(Dataset, int(dataset_id))
+        if not dataset:
+            return jsonify(ok=False, message="Dataset does not exist."), 404
+        if not can_view_dataset(dataset):
+            return jsonify(ok=False, message="No permission to view this dataset."), 403
+        n_cells = dataset.n_cells
+        dim = dataset.vector_dim
+    return jsonify(ok=True, algorithms=algorithm_catalog(n_cells=n_cells, dim=dim))
+
+
 @api_bp.route("/datasets/<int:dataset_id>/build-index", methods=["POST"])
 @login_required
 def api_build_index(dataset_id):
@@ -375,6 +460,65 @@ def api_build_index(dataset_id):
     except ValueError as e:
         return jsonify(ok=False, message=str(e)), 400
 
+    try:
+        algorithm = request.form.get("algorithm", "hnswlib_hnsw").strip() or "hnswlib_hnsw"
+        from app.services.ann_backend_service import algorithm_catalog
+        catalog = {item["key"]: item for item in algorithm_catalog(n_cells=dataset.n_cells, dim=dataset.vector_dim)}
+        if algorithm not in catalog:
+            raise ValueError(f"不支持的 ANN 算法：{algorithm}")
+        if not catalog[algorithm].get("available"):
+            raise ValueError(catalog[algorithm].get("disabled_reason") or f"算法 {algorithm} 当前不可用")
+
+        backend_params = {key: value for key, value in params.items() if key != "metric" and value is not None}
+        raw_params_json = request.form.get("params_json", "").strip()
+        if raw_params_json:
+            try:
+                parsed = json.loads(raw_params_json)
+                if isinstance(parsed, dict):
+                    backend_params.update(parsed)
+            except json.JSONDecodeError:
+                raise ValueError("params_json 必须是有效 JSON")
+        for key, min_value, max_value in [
+            ("projection_dim", 1, 10000),
+            ("random_state", None, None),
+            ("nlist", 1, 1000000),
+            ("nprobe", 1, 1000000),
+            ("pq_m", 1, 4096),
+            ("nbits", 2, 8),
+        ]:
+            value = _optional_int_form(key, None, min_value=min_value, max_value=max_value)
+            if value is not None:
+                backend_params[key] = value
+        source_experiment_id = _optional_int_form("source_experiment_id", None, min_value=1)
+        source_run_id = _optional_int_form("source_run_id", None, min_value=1)
+        if source_run_id:
+            source_run = db.session.get(IndexExperimentRun, source_run_id)
+            if not source_run or not source_run.experiment:
+                raise ValueError("来源基础评估候选不存在")
+            if source_run.status != "success":
+                raise ValueError("只能从成功的基础评估候选构建真实索引")
+            if source_run.experiment.dataset_id != dataset_id:
+                raise ValueError("来源基础评估候选不属于当前数据集")
+            if source_experiment_id and source_experiment_id != source_run.experiment_id:
+                raise ValueError("source_experiment_id 与 source_run_id 不匹配")
+            source_experiment_id = source_run.experiment_id
+        elif source_experiment_id:
+            source_experiment = db.session.get(IndexExperiment, source_experiment_id)
+            if not source_experiment or source_experiment.dataset_id != dataset_id:
+                raise ValueError("来源基础评估不属于当前数据集")
+        params = {
+            "algorithm": algorithm,
+            "metric": params["metric"],
+            "params": backend_params,
+            "M": backend_params.get("M"),
+            "ef_construction": backend_params.get("ef_construction"),
+            "ef_search": backend_params.get("ef_search"),
+            "source_experiment_id": source_experiment_id,
+            "source_run_id": source_run_id,
+        }
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
     task = Task(
         type="build_index",
         status="pending",
@@ -387,6 +531,98 @@ def api_build_index(dataset_id):
     db.session.commit()
 
     executor.submit(run_build_index_task, task.id, dataset_id, params, current_app._get_current_object())
+    return jsonify(ok=True, task_id=task.id)
+
+
+# ---------------------------------------------------------------------------
+# 联合索引（Harmony 对齐 + 物理 HNSW）
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/joint-indexes", methods=["GET"])
+@login_required
+def api_joint_indexes():
+    """返回当前用户可见的联合索引列表。"""
+    from app.services.joint_index_service import joint_index_to_dict
+
+    rows = JointIndex.query.order_by(JointIndex.created_at.desc()).all()
+    visible = [row for row in rows if _can_view_joint_index(row)]
+    return jsonify(ok=True, joint_indexes=[joint_index_to_dict(row) for row in visible])
+
+
+@api_bp.route("/joint-indexes/<int:joint_index_id>", methods=["GET"])
+@login_required
+def api_joint_index_detail(joint_index_id):
+    """返回单个联合索引详情。"""
+    from app.services.joint_index_service import joint_index_to_dict
+
+    joint_index = db.session.get(JointIndex, joint_index_id)
+    if not joint_index:
+        return jsonify(ok=False, message="联合索引不存在。"), 404
+    if not _can_view_joint_index(joint_index):
+        return jsonify(ok=False, message="没有权限查看该联合索引。"), 403
+    return jsonify(ok=True, joint_index=joint_index_to_dict(joint_index))
+
+
+@api_bp.route("/joint-indexes/build/task", methods=["POST"])
+@login_required
+def api_build_joint_index_task():
+    """提交联合索引构建后台任务。"""
+    try:
+        raw_ids = request.form.getlist("dataset_ids")
+        if len(raw_ids) == 1 and "," in raw_ids[0]:
+            raw_ids = [item for item in raw_ids[0].split(",") if item.strip()]
+        dataset_ids = []
+        for raw_id in raw_ids:
+            try:
+                dataset_ids.append(int(raw_id))
+            except ValueError:
+                raise ValueError("dataset_ids 包含非法数据集 ID")
+        if len(set(dataset_ids)) < 2:
+            raise ValueError("联合索引至少需要选择两个数据集")
+
+        datasets = Dataset.query.filter(Dataset.id.in_(dataset_ids)).all()
+        dataset_by_id = {dataset.id: dataset for dataset in datasets}
+        if len(dataset_by_id) != len(set(dataset_ids)):
+            raise ValueError("部分数据集不存在")
+        for dataset_id in set(dataset_ids):
+            dataset = dataset_by_id[dataset_id]
+            if not can_view_dataset(dataset):
+                return jsonify(ok=False, message="没有权限使用部分数据集构建联合索引。"), 403
+            if dataset.status not in ("processed", "indexed"):
+                raise ValueError(f"数据集 {dataset.name} 尚未完成处理")
+
+        metric = request.form.get("metric", "l2").strip()
+        if metric not in ("l2", "cosine"):
+            raise ValueError("metric 仅支持 l2 或 cosine")
+        params = {
+            "name": request.form.get("name", "").strip() or "联合索引",
+            "dataset_ids": dataset_ids,
+            "metric": metric,
+            "M": _int_form("M", 16, min_value=2, max_value=128),
+            "ef_construction": _int_form("ef_construction", 200, min_value=2, max_value=1000),
+            "ef_search": _int_form("ef_search", 100, min_value=1, max_value=1000),
+            "n_pcs": _int_form("n_pcs", 50, min_value=2, max_value=200),
+            "n_top_genes": _int_form("n_top_genes", 2000, min_value=50, max_value=10000),
+            "min_common_genes": _int_form("min_common_genes", 500, min_value=1, max_value=50000),
+            "owner_id": current_user.id,
+        }
+        if params["ef_construction"] < params["M"]:
+            raise ValueError("ef_construction 必须大于等于 M")
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
+    task = Task(
+        type="build_joint_index",
+        status="pending",
+        progress=0,
+        message="联合索引构建任务已提交，等待执行...",
+        dataset_id=None,
+        updated_at=datetime.utcnow(),
+    )
+    db.session.add(task)
+    db.session.commit()
+
+    executor.submit(run_build_joint_index_task, task.id, params, current_app._get_current_object())
     return jsonify(ok=True, task_id=task.id)
 
 
@@ -405,7 +641,7 @@ def api_task_status(task_id):
         dataset = db.session.get(Dataset, task.dataset_id)
         if dataset and not can_view_dataset(dataset):
             return jsonify(ok=False, message="没有权限查看该任务。"), 403
-    return jsonify(ok=True, **_task_to_dict(task))
+    return jsonify(ok=True, **_task_to_dict(task, include_result=True))
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +675,7 @@ def api_search():
             query_cell_index=query_cell_index,
             top_k=top_k,
             filter_cell_type=filter_cell_type,
-            max_background_points=15_000,
+            max_background_points=8_000,
         )
         return jsonify(ok=True, **payload)
     except ValueError as e:
@@ -464,7 +700,7 @@ def api_search_task():
             return jsonify(ok=False, message="请先选择可用索引。"), 400
         index_id = int(raw_index_id)
         index = db.session.get(AnnIndex, index_id)
-        if not index or index.dataset_id != dataset_id or index.status != "ready":
+        if not index or index.dataset_id != dataset_id or index.status != "ready" or index.lifecycle != "active":
             return jsonify(ok=False, message="请选择该数据集下可用的 ready 索引。"), 400
         params = {
             "dataset_id": dataset_id,
@@ -472,7 +708,7 @@ def api_search_task():
             "query_cell_index": _int_form("query_cell_index", 0, min_value=0),
             "top_k": _int_form("top_k", 10, min_value=1, max_value=100),
             "filter_cell_type": request.form.get("filter_cell_type", "").strip() or None,
-            "max_background_points": _int_form("max_background_points", 15_000, min_value=1_000, max_value=50_000),
+            "max_background_points": _int_form("max_background_points", 8_000, min_value=1_000, max_value=50_000),
         }
     except ValueError as e:
         return jsonify(ok=False, message=str(e)), 400
@@ -520,7 +756,7 @@ def api_search_plot_task():
             "dataset_id": dataset_id,
             "query_cell_index": _int_form("query_cell_index", 0, min_value=0),
             "result_cell_indices": result_cell_indices,
-            "max_background_points": _int_form("max_background_points", 15_000, min_value=1_000, max_value=50_000),
+            "max_background_points": _int_form("max_background_points", 8_000, min_value=1_000, max_value=50_000),
         }
     except ValueError as e:
         return jsonify(ok=False, message=str(e)), 400
@@ -626,7 +862,7 @@ def api_multi_search_task():
             return jsonify(ok=False, message="请先选择源索引。"), 400
         source_index_id = int(raw_index_id)
         source_index = db.session.get(AnnIndex, source_index_id)
-        if not source_index or source_index.dataset_id != source_dataset_id or source_index.status != "ready":
+        if not source_index or source_index.dataset_id != source_dataset_id or source_index.status != "ready" or source_index.lifecycle != "active":
             return jsonify(ok=False, message="请选择源数据集下可用的 ready 索引。"), 400
 
         target_dataset_ids = None
@@ -683,8 +919,354 @@ def api_multi_search_task():
 
 
 # ---------------------------------------------------------------------------
+# AJAX 联合索引检索
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/search/joint/task", methods=["POST"])
+@login_required
+def api_joint_search_task():
+    """提交物理联合索引检索后台任务。"""
+    try:
+        joint_index_id = _int_form("joint_index_id", 0, min_value=1)
+        joint_index = db.session.get(JointIndex, joint_index_id)
+        if not joint_index:
+            return jsonify(ok=False, message="联合索引不存在。"), 404
+        if not _can_view_joint_index(joint_index):
+            return jsonify(ok=False, message="没有权限检索该联合索引。"), 403
+        if joint_index.status != "ready":
+            return jsonify(ok=False, message="联合索引尚未就绪。"), 400
+
+        query_dataset_id = _int_form("query_dataset_id", 0, min_value=1)
+        query_dataset = db.session.get(Dataset, query_dataset_id)
+        if not query_dataset:
+            return jsonify(ok=False, message="查询数据集不存在。"), 404
+        if not can_view_dataset(query_dataset):
+            return jsonify(ok=False, message="没有权限检索该查询数据集。"), 403
+
+        included_ids = {row.dataset_id for row in joint_index.datasets if row.status == "included"}
+        if query_dataset_id not in included_ids:
+            raise ValueError("查询数据集未纳入该联合索引")
+
+        params = {
+            "joint_index_id": joint_index_id,
+            "query_dataset_id": query_dataset_id,
+            "query_cell_index": _int_form("query_cell_index", 0, min_value=0),
+            "top_k": _int_form("top_k", 20, min_value=1, max_value=100),
+        }
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
+    task = Task(
+        type="joint_search",
+        status="pending",
+        progress=0,
+        message="联合检索任务已提交，等待执行...",
+        dataset_id=query_dataset_id,
+        updated_at=datetime.utcnow(),
+    )
+    db.session.add(task)
+    db.session.commit()
+
+    executor.submit(run_joint_search_task, task.id, params, current_app._get_current_object())
+    return jsonify(ok=True, task_id=task.id)
+
+
+@api_bp.route("/search/joint/plot/task", methods=["POST"])
+@login_required
+def api_joint_search_plot_task():
+    """提交联合索引高亮图生成任务。"""
+    try:
+        joint_index_id = _int_form("joint_index_id", 0, min_value=1)
+        joint_index = db.session.get(JointIndex, joint_index_id)
+        if not joint_index:
+            return jsonify(ok=False, message="联合索引不存在。"), 404
+        if not _can_view_joint_index(joint_index):
+            return jsonify(ok=False, message="没有权限查看该联合索引图表。"), 403
+        if joint_index.status != "ready":
+            return jsonify(ok=False, message="联合索引尚未就绪。"), 400
+
+        raw_labels = request.form.getlist("result_global_labels")
+        if len(raw_labels) == 1 and "," in raw_labels[0]:
+            raw_labels = [item for item in raw_labels[0].split(",") if item.strip()]
+        result_global_labels = []
+        for raw_label in raw_labels:
+            try:
+                result_global_labels.append(int(raw_label))
+            except ValueError:
+                raise ValueError("result_global_labels 包含非法 global label")
+        if len(result_global_labels) > 200:
+            raise ValueError("result_global_labels 最多支持 200 个细胞")
+
+        params = {
+            "joint_index_id": joint_index_id,
+            "query_global_label": _int_form("query_global_label", 0, min_value=0),
+            "result_global_labels": result_global_labels,
+            "max_background_points": _int_form("max_background_points", 12_000, min_value=1_000, max_value=50_000),
+        }
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
+    task = Task(
+        type="joint_search_plot",
+        status="pending",
+        progress=0,
+        message="联合高亮图任务已提交，等待执行...",
+        dataset_id=None,
+        updated_at=datetime.utcnow(),
+    )
+    db.session.add(task)
+    db.session.commit()
+
+    plot_executor.submit(run_joint_search_plot_task, task.id, params, current_app._get_current_object())
+    return jsonify(ok=True, task_id=task.id)
+
+
+# ---------------------------------------------------------------------------
 # AJAX 评估（同步，直接返回结果）
 # ---------------------------------------------------------------------------
+
+@api_bp.route("/index-experiments", methods=["GET"])
+@login_required
+def api_index_experiments():
+    """List ANN algorithm experiments visible to the current user."""
+    from app.services.index_experiment_service import experiment_to_dict
+
+    dataset_id = request.args.get("dataset_id", "").strip()
+    query = IndexExperiment.query.join(Dataset, Dataset.id == IndexExperiment.dataset_id)
+    visible_dataset_ids = [
+        row.id
+        for row in accessible_datasets_query(Dataset.query.with_entities(Dataset.id)).all()
+    ]
+    if not visible_dataset_ids:
+        return jsonify(ok=True, experiments=[])
+    query = query.filter(IndexExperiment.dataset_id.in_(visible_dataset_ids))
+    if dataset_id:
+        query = query.filter(IndexExperiment.dataset_id == int(dataset_id))
+    rows = query.order_by(IndexExperiment.created_at.desc()).limit(50).all()
+    return jsonify(ok=True, experiments=[experiment_to_dict(row, include_runs=False) for row in rows])
+
+
+@api_bp.route("/index-experiments/<int:experiment_id>", methods=["GET"])
+@login_required
+def api_index_experiment_detail(experiment_id):
+    """Return one ANN algorithm experiment with run metrics."""
+    from app.services.index_experiment_service import experiment_to_dict
+
+    experiment = db.session.get(IndexExperiment, experiment_id)
+    if not experiment:
+        return jsonify(ok=False, message="Experiment does not exist."), 404
+    if not experiment.dataset or not can_view_dataset(experiment.dataset):
+        return jsonify(ok=False, message="No permission to view this experiment."), 403
+    return jsonify(ok=True, experiment=experiment_to_dict(experiment))
+
+
+@api_bp.route("/index-experiments/task", methods=["POST"])
+@login_required
+def api_index_experiment_task():
+    """Create a persistent candidate experiment and submit its build/evaluation task."""
+    from app.services.index_experiment_service import ExperimentConflict, create_index_experiment
+
+    try:
+        dataset_id = _int_form("dataset_id", 0, min_value=1)
+        dataset = db.session.get(Dataset, dataset_id)
+        if not dataset:
+            return jsonify(ok=False, message="Dataset does not exist."), 404
+        if not can_manage_dataset(dataset):
+            return jsonify(ok=False, message="没有权限为该数据集构建候选索引。"), 403
+        if dataset.status not in ("processed", "indexed"):
+            return jsonify(ok=False, message="Dataset must be processed first."), 400
+        metric = request.form.get("metric", "l2").strip()
+        if metric not in ("l2", "cosine"):
+            raise ValueError("metric must be l2 or cosine")
+        candidate_keys = request.form.getlist("candidate_keys")
+        if len(candidate_keys) == 1 and "," in candidate_keys[0]:
+            candidate_keys = [item for item in candidate_keys[0].split(",") if item.strip()]
+        candidate_configs = None
+        raw_candidate_configs = request.form.get("candidate_configs", "").strip()
+        if raw_candidate_configs:
+            candidate_configs = json.loads(raw_candidate_configs)
+            if not isinstance(candidate_configs, list):
+                raise ValueError("candidate_configs 必须是 JSON 数组")
+        experiment = create_index_experiment(
+            dataset_id=dataset_id,
+            metric=metric,
+            sample_size=_int_form("sample_size", 100, min_value=1, max_value=200),
+            top_k=_int_form("top_k", 10, min_value=1, max_value=100),
+            seed=_int_form("seed", 42, min_value=0, max_value=2_147_483_647),
+            repetitions=_int_form("repetitions", 3, min_value=1, max_value=10),
+            warmup_count=_int_form("warmup_count", 10, min_value=0, max_value=200),
+            candidate_configs=candidate_configs,
+            candidate_keys=candidate_keys or None,
+        )
+        params = {"dataset_id": dataset_id, "experiment_id": experiment.id}
+    except ExperimentConflict as e:
+        return jsonify(ok=False, message=str(e)), 409
+    except json.JSONDecodeError:
+        return jsonify(ok=False, message="candidate_configs 不是有效 JSON"), 400
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
+    task = Task(
+        type="index_experiment",
+        status="pending",
+        progress=0,
+        message="候选索引实验已提交，等待执行...",
+        dataset_id=dataset_id,
+        updated_at=datetime.utcnow(),
+    )
+    db.session.add(task)
+    db.session.commit()
+
+    executor.submit(run_index_experiment_task, task.id, params, current_app._get_current_object())
+    return jsonify(ok=True, task_id=task.id, experiment_id=experiment.id)
+
+
+@api_bp.route("/index-experiments/<int:experiment_id>/finalize", methods=["POST"])
+@login_required
+def api_finalize_index_experiment(experiment_id):
+    from app.services.index_experiment_service import ExperimentConflict, finalize_experiment
+
+    experiment = db.session.get(IndexExperiment, experiment_id)
+    if not experiment:
+        return jsonify(ok=False, message="实验不存在。"), 404
+    if not experiment.dataset or not can_manage_dataset(experiment.dataset):
+        return jsonify(ok=False, message="没有权限完成该实验的选优。"), 403
+    try:
+        raw_ids = request.form.getlist("selected_run_ids")
+        if len(raw_ids) == 1 and "," in raw_ids[0]:
+            raw_ids = [item for item in raw_ids[0].split(",") if item.strip()]
+        result = finalize_experiment(experiment_id, [int(value) for value in raw_ids])
+        return jsonify(ok=True, finalization=result, message="索引保留集合已更新。")
+    except ExperimentConflict as exc:
+        return jsonify(ok=False, message=str(exc)), 409
+    except (TypeError, ValueError) as exc:
+        return jsonify(ok=False, message=str(exc)), 400
+
+
+@api_bp.route("/index-experiments/<int:experiment_id>/discard", methods=["POST"])
+@login_required
+def api_discard_index_experiment(experiment_id):
+    from app.services.index_experiment_service import ExperimentConflict, discard_experiment
+
+    experiment = db.session.get(IndexExperiment, experiment_id)
+    if not experiment:
+        return jsonify(ok=False, message="实验不存在。"), 404
+    if not experiment.dataset or not can_manage_dataset(experiment.dataset):
+        return jsonify(ok=False, message="没有权限放弃该实验。"), 403
+    try:
+        return jsonify(ok=True, cleanup=discard_experiment(experiment_id), message="实验已放弃，候选文件已清理。")
+    except ExperimentConflict as exc:
+        return jsonify(ok=False, message=str(exc)), 409
+
+
+@api_bp.route("/index-experiments/<int:experiment_id>/cleanup", methods=["POST"])
+@login_required
+def api_cleanup_index_experiment(experiment_id):
+    from app.services.index_experiment_service import retry_experiment_cleanup
+
+    experiment = db.session.get(IndexExperiment, experiment_id)
+    if not experiment:
+        return jsonify(ok=False, message="实验不存在。"), 404
+    if not experiment.dataset or not can_manage_dataset(experiment.dataset):
+        return jsonify(ok=False, message="没有权限清理该实验。"), 403
+    return jsonify(ok=True, cleanup=retry_experiment_cleanup(experiment_id), message="清理重试完成。")
+
+
+@api_bp.route("/index-evaluations", methods=["GET"])
+@login_required
+def api_index_evaluations():
+    """List persisted index evaluations visible to the current user."""
+    from app.services.index_evaluation_service import index_evaluation_to_dict
+
+    visible_dataset_ids = [
+        row.id
+        for row in accessible_datasets_query(Dataset.query.with_entities(Dataset.id)).all()
+    ]
+    if not visible_dataset_ids:
+        return jsonify(ok=True, evaluations=[])
+
+    query = IndexEvaluation.query.filter(IndexEvaluation.dataset_id.in_(visible_dataset_ids))
+    dataset_id = request.args.get("dataset_id", "").strip()
+    index_id = request.args.get("index_id", "").strip()
+    try:
+        if dataset_id:
+            dataset_id_int = int(dataset_id)
+            dataset = db.session.get(Dataset, dataset_id_int)
+            if not dataset:
+                return jsonify(ok=False, message="Dataset does not exist."), 404
+            if not can_view_dataset(dataset):
+                return jsonify(ok=False, message="No permission to view this dataset."), 403
+            query = query.filter(IndexEvaluation.dataset_id == dataset_id_int)
+        if index_id:
+            index_id_int = int(index_id)
+            ann_index = db.session.get(AnnIndex, index_id_int)
+            if not ann_index:
+                return jsonify(ok=False, message="Index does not exist."), 404
+            if not ann_index.dataset or not can_view_dataset(ann_index.dataset):
+                return jsonify(ok=False, message="No permission to view this index."), 403
+            query = query.filter(IndexEvaluation.index_id == index_id_int)
+    except ValueError:
+        return jsonify(ok=False, message="dataset_id and index_id must be integers."), 400
+
+    rows = query.order_by(IndexEvaluation.created_at.desc()).limit(80).all()
+    return jsonify(ok=True, evaluations=[index_evaluation_to_dict(row) for row in rows])
+
+
+@api_bp.route("/index-evaluations/<int:evaluation_id>", methods=["GET"])
+@login_required
+def api_index_evaluation_detail(evaluation_id):
+    """Return one persisted index evaluation."""
+    from app.services.index_evaluation_service import index_evaluation_to_dict
+
+    evaluation = db.session.get(IndexEvaluation, evaluation_id)
+    if not evaluation:
+        return jsonify(ok=False, message="Evaluation does not exist."), 404
+    if not evaluation.dataset or not can_view_dataset(evaluation.dataset):
+        return jsonify(ok=False, message="No permission to view this evaluation."), 403
+    return jsonify(ok=True, evaluation=index_evaluation_to_dict(evaluation))
+
+
+@api_bp.route("/index-evaluations/task", methods=["POST"])
+@login_required
+def api_index_evaluation_task():
+    """Submit an async persisted index evaluation task."""
+    try:
+        dataset_id = _int_form("dataset_id", 0, min_value=1)
+        index_id = _int_form("index_id", 0, min_value=1)
+        dataset = db.session.get(Dataset, dataset_id)
+        if not dataset:
+            return jsonify(ok=False, message="Dataset does not exist."), 404
+        if not can_view_dataset(dataset):
+            return jsonify(ok=False, message="No permission to evaluate this dataset."), 403
+        ann_index = db.session.get(AnnIndex, index_id)
+        if not ann_index or ann_index.dataset_id != dataset_id:
+            return jsonify(ok=False, message="Please choose a ready index from this dataset."), 400
+        if ann_index.status != "ready":
+            return jsonify(ok=False, message="Index is not ready."), 400
+        params = {
+            "dataset_id": dataset_id,
+            "index_id": index_id,
+            "sample_size": _int_form("sample_size", 100, min_value=1, max_value=200),
+            "top_k": _int_form("top_k", 10, min_value=1, max_value=100),
+            "seed": _int_form("seed", 42, min_value=0, max_value=2_147_483_647),
+        }
+    except ValueError as e:
+        return jsonify(ok=False, message=str(e)), 400
+
+    task = Task(
+        type="index_evaluation",
+        status="pending",
+        progress=0,
+        message="Index evaluation task submitted.",
+        dataset_id=dataset_id,
+        updated_at=datetime.utcnow(),
+    )
+    db.session.add(task)
+    db.session.commit()
+
+    executor.submit(run_index_evaluation_task, task.id, params, current_app._get_current_object())
+    return jsonify(ok=True, task_id=task.id)
+
 
 @api_bp.route("/evaluate", methods=["POST"])
 @login_required
@@ -738,18 +1320,7 @@ def api_dataset_status(dataset_id):
         n_genes=dataset.n_genes,
         vector_dim=dataset.vector_dim,
         error_message=dataset.error_message,
-        indexes=[
-            {
-                "id": idx.id,
-                "metric": idx.metric,
-                "M": idx.M,
-                "ef_construction": idx.ef_construction,
-                "ef_search": idx.ef_search,
-                "build_time_ms": idx.build_time_ms,
-                "status": idx.status,
-            }
-            for idx in indexes
-        ],
+        indexes=[_index_to_dict(idx) for idx in indexes],
     )
 
 
@@ -905,6 +1476,7 @@ def api_dashboard_summary():
     datasets_indexed = sum(1 for d in datasets if d.status == "indexed")
     indexes_total = AnnIndex.query.filter(
         AnnIndex.status == "ready",
+        AnnIndex.lifecycle == "active",
         AnnIndex.dataset_id.in_(dataset_ids) if dataset_ids else False,
     ).count()
     recent_queries = QueryLog.query.count() if is_admin() else QueryLog.query.filter(QueryLog.dataset_id.in_(dataset_ids)).count()

@@ -75,7 +75,7 @@
             </div>
             <div class="surface-pad">
               <a-alert v-if="plotError" style="margin-bottom: 12px" type="error" show-icon :message="plotError" />
-              <PlotlyPanel v-if="scatter" :payload="scatter" />
+              <PlotlyPanel v-if="scatter" :payload="scatter" :interactive="true" :height="560" />
               <div v-else class="placeholder-panel">{{ canPlot ? "加载细胞分布图" : "处理数据集后可查看 UMAP/PCA 分布" }}</div>
             </div>
           </div>

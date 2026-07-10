@@ -50,7 +50,7 @@ def execute_single_search(
     query_cell_index: int,
     top_k: int = 10,
     filter_cell_type: str | None = None,
-    max_background_points: int = 15_000,
+    max_background_points: int = 8_000,
     include_plot: bool = True,
     progress_cb=None,
 ) -> dict:
@@ -90,7 +90,7 @@ def execute_search_plot(
     dataset_id: int,
     query_cell_index: int,
     result_cell_indices: list[int],
-    max_background_points: int = 15_000,
+    max_background_points: int = 8_000,
     progress_cb=None,
 ) -> dict:
     """Build the search highlight plot independently from the ANN search result."""

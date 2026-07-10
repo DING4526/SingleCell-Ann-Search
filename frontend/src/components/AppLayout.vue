@@ -12,8 +12,8 @@
         <a-menu-item key="/overview"><DashboardOutlined />概览</a-menu-item>
         <a-menu-item key="/datasets"><DatabaseOutlined />数据资源</a-menu-item>
         <a-menu-item key="/index-lab"><ExperimentOutlined />索引实验室</a-menu-item>
+        <a-menu-item key="/joint-indexes"><DeploymentUnitOutlined />联合索引</a-menu-item>
         <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
-        <a-menu-item key="/evaluation"><BarChartOutlined />评估分析</a-menu-item>
         <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
         <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
       </a-menu>
@@ -59,8 +59,8 @@
         <a-menu-item key="/overview"><DashboardOutlined />概览</a-menu-item>
         <a-menu-item key="/datasets"><DatabaseOutlined />数据资源</a-menu-item>
         <a-menu-item key="/index-lab"><ExperimentOutlined />索引实验室</a-menu-item>
+        <a-menu-item key="/joint-indexes"><DeploymentUnitOutlined />联合索引</a-menu-item>
         <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
-        <a-menu-item key="/evaluation"><BarChartOutlined />评估分析</a-menu-item>
         <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
         <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
       </a-menu>
@@ -84,10 +84,10 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
-  BarChartOutlined,
   ClockCircleOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  DeploymentUnitOutlined,
   DownOutlined,
   ExperimentOutlined,
   MenuOutlined,

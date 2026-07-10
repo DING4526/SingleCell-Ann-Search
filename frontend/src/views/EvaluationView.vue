@@ -34,7 +34,7 @@
       <div class="surface">
         <div class="toolbar"><span class="toolbar-title">性能图表</span></div>
         <div class="surface-pad">
-          <PlotlyPanel v-if="queryStore.evaluationPlot" :payload="queryStore.evaluationPlot" />
+          <PlotlyPanel v-if="queryStore.evaluationPlot" :payload="queryStore.evaluationPlot" :interactive="false" :mode-bar="false" :height="420" />
           <div v-else class="placeholder-panel">运行评估后展示性能图表。</div>
         </div>
       </div>
