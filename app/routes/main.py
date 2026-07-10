@@ -31,6 +31,7 @@ def spa_assets(filename):
 @main_bp.route("/access")
 @main_bp.route("/ai-analysis")
 @main_bp.route("/ai-knowledge")
+@main_bp.route("/ai-assistant")
 @login_required
 def spa_pages():
     """Top-level SPA routes."""

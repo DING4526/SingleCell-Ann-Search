@@ -83,6 +83,9 @@ def ensure_sqlite_schema():
         ("phase_json", "TEXT"),
         ("response_language", "VARCHAR(20) DEFAULT 'zh-CN' NOT NULL"),
         ("cancel_requested", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("surface", "VARCHAR(20) DEFAULT 'analysis' NOT NULL"),
+        ("page_context_json", "TEXT"),
+        ("prompt_revision", "VARCHAR(60)"),
     ]:
         if column_name not in ai_run_existing:
             statements.append(f"ALTER TABLE ai_runs ADD COLUMN {column_name} {definition}")
@@ -116,6 +119,22 @@ def ensure_sqlite_schema():
         statements.append("ALTER TABLE ai_tool_calls ADD COLUMN task_id INTEGER")
     if "order_index" not in ai_tool_existing:
         statements.append("ALTER TABLE ai_tool_calls ADD COLUMN order_index INTEGER DEFAULT 0 NOT NULL")
+    for column_name, definition in [
+        ("risk_level", "VARCHAR(20) DEFAULT 'read' NOT NULL"),
+        ("idempotency_key", "VARCHAR(64)"),
+        ("expires_at", "DATETIME"),
+        ("precondition_json", "TEXT"),
+        ("approved_at", "DATETIME"),
+    ]:
+        if column_name not in ai_tool_existing:
+            statements.append(f"ALTER TABLE ai_tool_calls ADD COLUMN {column_name} {definition}")
+
+    ai_conversation_existing = (
+        {col["name"] for col in inspector.get_columns("ai_conversations")}
+        if inspector.has_table("ai_conversations") else set()
+    )
+    if "kind" not in ai_conversation_existing:
+        statements.append("ALTER TABLE ai_conversations ADD COLUMN kind VARCHAR(20) DEFAULT 'analysis' NOT NULL")
 
     query_log_existing = (
         {col["name"] for col in inspector.get_columns("query_logs")}
@@ -202,6 +221,9 @@ def ensure_sqlite_schema():
                 "WHERE response_language IS NULL OR response_language = ''"
             ))
             conn.execute(text("UPDATE ai_runs SET cancel_requested = 0 WHERE cancel_requested IS NULL"))
+            conn.execute(text(
+                "UPDATE ai_runs SET surface = 'analysis' WHERE surface IS NULL OR surface = ''"
+            ))
         if inspect(engine).has_table("ai_model_configs"):
             conn.execute(text(
                 "UPDATE ai_model_configs SET capability = 'chat' "
@@ -209,6 +231,18 @@ def ensure_sqlite_schema():
             ))
         if inspect(engine).has_table("ai_tool_calls"):
             conn.execute(text("UPDATE ai_tool_calls SET order_index = 0 WHERE order_index IS NULL"))
+            conn.execute(text(
+                "UPDATE ai_tool_calls SET risk_level = 'read' "
+                "WHERE risk_level IS NULL OR risk_level = ''"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_ai_tool_calls_idempotency "
+                "ON ai_tool_calls (idempotency_key) WHERE idempotency_key IS NOT NULL"
+            ))
+        if inspect(engine).has_table("ai_conversations"):
+            conn.execute(text(
+                "UPDATE ai_conversations SET kind = 'analysis' WHERE kind IS NULL OR kind = ''"
+            ))
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_tasks_owner_history "
             "ON tasks (created_by_id, history_hidden, updated_at)"

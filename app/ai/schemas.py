@@ -6,6 +6,39 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+AssistantIntent = Literal[
+    "answer_only", "navigate", "analysis_handoff", "propose_action", "need_clarification"
+]
+
+AssistantRoute = Literal[
+    "overview", "datasets", "dataset_detail", "index_lab", "joint_indexes",
+    "query_lab", "access", "ai_analysis", "ai_knowledge", "ai_assistant",
+]
+
+AssistantAction = Literal[
+    "submit_dataset_processing", "submit_index_build", "submit_index_experiment",
+    "submit_index_evaluation", "submit_joint_index_build",
+    "reindex_knowledge_document", "create_personal_knowledge_note",
+]
+
+
+class AssistantTurnDecision(BaseModel):
+    """A single global-assistant decision; all resource references are revalidated."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    intent: AssistantIntent = "answer_only"
+    direct_answer: str = Field(default="", max_length=1800)
+    supporting_points: list[str] = Field(default_factory=list, max_length=6)
+    clarification_question: str | None = Field(default=None, max_length=500)
+    navigation_target: AssistantRoute | None = None
+    navigation_params: dict[str, str | int | bool | None] = Field(default_factory=dict)
+    handoff_prompt: str | None = Field(default=None, max_length=2000)
+    action: AssistantAction | None = None
+    action_args: dict[str, object] = Field(default_factory=dict)
+    knowledge_keys: list[str] = Field(default_factory=list, max_length=8)
+
+
 class SearchPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

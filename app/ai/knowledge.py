@@ -387,6 +387,37 @@ def create_uploaded_document(*, file_storage, scope: str, title: str, descriptio
     return document
 
 
+def create_personal_note(*, title: str, content: str, user: User) -> KnowledgeDocument:
+    """Create a private Markdown note from text explicitly approved by its owner."""
+    clean_title = (title or "个人知识笔记").strip()[:300]
+    clean_content = (content or "").strip()
+    if not clean_content:
+        raise ValueError("个人知识笔记内容不能为空。")
+    if len(clean_content) > 20_000:
+        raise ValueError("个人知识笔记不能超过 20,000 个字符。")
+    data = clean_content.encode("utf-8")
+    safe_name = secure_filename(clean_title) or "personal-note"
+    stored_name = f"{uuid.uuid4().hex}_{safe_name}.md"
+    path = pathlib.Path(current_app.config["KNOWLEDGE_DIR"]) / stored_name
+    path.write_bytes(data)
+    document = KnowledgeDocument(
+        scope="personal",
+        owner_id=user.id,
+        title=clean_title or "个人知识笔记",
+        description="由用户确认后通过全局 AI 助手创建。",
+        original_filename=f"{safe_name}.md",
+        stored_path=str(path),
+        mime_type="text/markdown",
+        size_bytes=len(data),
+        checksum=_sha256(data),
+        source_type="upload",
+        status="pending",
+    )
+    db.session.add(document)
+    db.session.flush()
+    return document
+
+
 def delete_document(document: KnowledgeDocument) -> None:
     path = pathlib.Path(document.stored_path) if document.stored_path else None
     db.session.delete(document)

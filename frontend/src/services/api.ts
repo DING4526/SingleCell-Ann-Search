@@ -1,4 +1,4 @@
-import type { AiConversation, AiModelConfig, AiProviderCatalogItem, AiProviderConfig, AiRun, AiSettings, AiUsage, AnnAlgorithm, AuditEvent, Dataset, DatasetAccess, DatasetPermission, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, KnowledgeDocument, KnowledgeHit, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchHistoryItem, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
+import type { AiAssistantBootstrap, AiConversation, AiModelConfig, AiProviderCatalogItem, AiProviderConfig, AiRun, AiSettings, AiToolCall, AiUsage, AnnAlgorithm, AuditEvent, Dataset, DatasetAccess, DatasetPermission, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, KnowledgeDocument, KnowledgeHit, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchHistoryItem, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
 
 type ApiResponse<T> = T & { ok: boolean; message?: string };
 type ApiRequestInit = RequestInit & { timeoutMs?: number };
@@ -260,13 +260,17 @@ export const api = {
 
   aiCatalog: () => request<ApiResponse<{ providers: AiProviderCatalogItem[] }>>("/api/ai/catalog"),
   aiModels: () => request<ApiResponse<{ models: AiModelConfig[]; disabled: boolean }>>("/api/ai/models"),
-  aiConversations: () => request<ApiResponse<{ conversations: AiConversation[] }>>("/api/ai/conversations"),
-  createAiConversation: (title = "新建 AI 分析") =>
-    jsonRequest<ApiResponse<{ conversation: AiConversation }>>("/api/ai/conversations", "POST", { title }),
+  aiConversations: (kind?: "analysis" | "assistant") => request<ApiResponse<{ conversations: AiConversation[] }>>(`/api/ai/conversations${kind ? `?kind=${kind}` : ""}`),
+  createAiConversation: (title = "新建 AI 分析", kind: "analysis" | "assistant" = "analysis") =>
+    jsonRequest<ApiResponse<{ conversation: AiConversation }>>("/api/ai/conversations", "POST", { title, kind }),
   aiConversation: (id: number) => request<ApiResponse<{ conversation: AiConversation }>>(`/api/ai/conversations/${id}`),
   deleteAiConversation: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/ai/conversations/${id}`, { method: "DELETE" }),
   sendAiMessage: (conversationId: number, content: string, modelConfigId: number, knowledgeScopes: string[] = ["platform", "dataset", "personal"]) =>
     jsonRequest<ApiResponse<{ run: AiRun }>>(`/api/ai/conversations/${conversationId}/messages`, "POST", { content, model_config_id: modelConfigId, knowledge_scopes: knowledgeScopes }, 15000),
+  sendAssistantMessage: (conversationId: number, content: string, modelConfigId: number, pageContext: Record<string, unknown>, contextEnabled = true) =>
+    jsonRequest<ApiResponse<{ run: AiRun }>>(`/api/ai/conversations/${conversationId}/messages`, "POST", {
+      content, model_config_id: modelConfigId, surface: "assistant", page_context: pageContext, context_enabled: contextEnabled,
+    }, 15000),
   aiRun: (id: number) => request<ApiResponse<{ run: AiRun }>>(`/api/ai/runs/${id}`, { timeoutMs: 10000 }),
   updateAiRunPlan: (id: number, plan: Record<string, unknown>) =>
     jsonRequest<ApiResponse<{ run: AiRun; valid: boolean }>>(`/api/ai/runs/${id}/plan`, "PUT", plan),
@@ -274,6 +278,10 @@ export const api = {
   rejectAiRun: (id: number) => jsonRequest<ApiResponse<{ run: AiRun }>>(`/api/ai/runs/${id}/reject`, "POST"),
   cancelAiRun: (id: number) => jsonRequest<ApiResponse<{ run: AiRun }>>(`/api/ai/runs/${id}/cancel`, "POST"),
   aiCapabilities: () => request<ApiResponse<{ tools: Array<Record<string, unknown>> }>>("/api/ai/capabilities"),
+  aiAssistantBootstrap: () => request<ApiResponse<AiAssistantBootstrap>>("/api/ai/assistant/bootstrap"),
+  aiToolCall: (id: number) => request<ApiResponse<{ tool_call: AiToolCall }>>(`/api/ai/tool-calls/${id}`),
+  approveAiToolCall: (id: number) => jsonRequest<ApiResponse<{ tool_call: AiToolCall; run: AiRun }>>(`/api/ai/tool-calls/${id}/approve`, "POST", {}, 30000),
+  rejectAiToolCall: (id: number) => jsonRequest<ApiResponse<{ tool_call: AiToolCall; run: AiRun }>>(`/api/ai/tool-calls/${id}/reject`, "POST"),
   knowledgeDocuments: (scope?: string, datasetId?: number) => {
     const params = new URLSearchParams();
     if (scope) params.set("scope", scope);

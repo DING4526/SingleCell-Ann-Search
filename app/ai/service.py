@@ -229,6 +229,9 @@ def run_to_dict(row: AiRun, *, include_result: bool = True) -> dict:
     return {
         "id": row.id,
         "conversation_id": row.conversation_id,
+        "surface": row.surface or "analysis",
+        "page_context": json_loads(row.page_context_json, {}) if row.page_context_json else {},
+        "prompt_revision": row.prompt_revision,
         "intent": row.intent or "single_cell_search",
         "context_run_id": row.context_run_id,
         "search_task_id": row.search_task_id,
@@ -260,6 +263,9 @@ def run_to_dict(row: AiRun, *, include_result: bool = True) -> dict:
             "name": tool_call.name,
             "status": tool_call.status,
             "args": json_loads(tool_call.args_json),
+            "risk_level": tool_call.risk_level or "read",
+            "expires_at": tool_call.expires_at.isoformat() if tool_call.expires_at else None,
+            "result": json_loads(tool_call.result_json, None) if tool_call.result_json else None,
         },
         "tool_calls": [{
             "id": item.id,
@@ -268,6 +274,10 @@ def run_to_dict(row: AiRun, *, include_result: bool = True) -> dict:
             "order_index": item.order_index,
             "task_id": item.task_id,
             "args": json_loads(item.args_json),
+            "risk_level": item.risk_level or "read",
+            "expires_at": item.expires_at.isoformat() if item.expires_at else None,
+            "approved_at": item.approved_at.isoformat() if item.approved_at else None,
+            "result": json_loads(item.result_json, None) if item.result_json else None,
         } for item in sorted(row.tool_calls, key=lambda value: (value.order_index or 0, value.id))],
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -279,6 +289,7 @@ def conversation_to_dict(row: AiConversation, *, detail: bool = False) -> dict:
     data = {
         "id": row.id,
         "title": row.title,
+        "kind": row.kind or "analysis",
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }

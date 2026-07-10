@@ -488,6 +488,9 @@ export type AiRunResult = {
 export type AiRun = {
   id: number;
   conversation_id: number;
+  surface: "analysis" | "assistant" | string;
+  page_context: Record<string, unknown>;
+  prompt_revision: string | null;
   intent: "single_cell_search" | "result_follow_up" | string;
   context_run_id: number | null;
   search_task_id: number | null;
@@ -508,8 +511,8 @@ export type AiRun = {
   error_message: string | null;
   can_manage: boolean;
   usage: { provider_requests: number; input_tokens: number; output_tokens: number; latency_ms: number };
-  tool_call: { id: number; name: string; status: string; args: Record<string, unknown> } | null;
-  tool_calls: Array<{ id: number; name: string; status: string; order_index: number; task_id: number | null; args: Record<string, unknown> }>;
+  tool_call: AiToolCall | null;
+  tool_calls: AiToolCall[];
   created_at: string | null;
   updated_at: string | null;
   completed_at: string | null;
@@ -549,10 +552,41 @@ export type AiMessage = {
 export type AiConversation = {
   id: number;
   title: string;
+  kind: "analysis" | "assistant" | string;
   created_at: string | null;
   updated_at: string | null;
   messages?: AiMessage[];
   runs?: AiRun[];
+};
+
+export type AiToolCall = {
+  id: number;
+  run_id?: number;
+  name: string;
+  status: string;
+  order_index?: number;
+  task_id: number | null;
+  args: Record<string, unknown>;
+  risk_level: "read" | "navigation" | "analysis" | "write" | string;
+  expires_at?: string | null;
+  approved_at?: string | null;
+  result?: Record<string, unknown> | null;
+};
+
+export type AiAssistantClientAction = {
+  target: string;
+  path: string;
+  params?: Record<string, string | number>;
+  auto?: boolean;
+  handoff_prompt?: string;
+};
+
+export type AiAssistantBootstrap = {
+  routes: Array<{ name: string; path: string; params: string[] }>;
+  page_context_policy: { max_chars: number; resource_keys: string[] };
+  conversation_kind: "assistant";
+  prompt_revision: string;
+  tools: Array<Record<string, unknown>>;
 };
 
 export type AiUsage = {

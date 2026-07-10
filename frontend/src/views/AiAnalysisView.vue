@@ -237,7 +237,7 @@ async function loadModels() {
   const saved = Number(localStorage.getItem("ai-model-config"));
   modelConfigId.value = models.value.find((item) => item.id === saved)?.id || models.value.find((item) => item.is_default)?.id || models.value[0]?.id;
 }
-async function loadConversations() { conversations.value = (await api.aiConversations()).conversations; }
+async function loadConversations() { conversations.value = (await api.aiConversations("analysis")).conversations; }
 async function refreshConversation() {
   if (!conversationId.value) return;
   const detail = (await api.aiConversation(conversationId.value)).conversation;
@@ -332,7 +332,7 @@ async function scrollToEnd() { await nextTick(); if (messageStream.value) messag
 
 watch(modelConfigId, (value) => { if (value) localStorage.setItem("ai-model-config", String(value)); });
 watch(() => messages.value.length, () => { void scrollToEnd(); });
-onMounted(async () => { try { const [, , , jointData, capabilityData] = await Promise.all([loadModels(), loadConversations(), datasetsStore.loadAll(), api.jointIndexes(), api.aiCapabilities()]); jointIndexes.value = jointData.joint_indexes; toolCatalog.value = capabilityData.tools; const requested = Number(route.query.conversation_id); const initial = conversations.value.find((item) => item.id === requested) || conversations.value[0]; if (initial) await openConversation(initial.id); } catch (error) { message.error((error as Error).message); } });
+onMounted(async () => { try { const [, , , jointData, capabilityData] = await Promise.all([loadModels(), loadConversations(), datasetsStore.loadAll(), api.jointIndexes(), api.aiCapabilities()]); jointIndexes.value = jointData.joint_indexes; toolCatalog.value = capabilityData.tools; const requested = Number(route.query.conversation_id); const initial = conversations.value.find((item) => item.id === requested) || conversations.value[0]; if (initial) await openConversation(initial.id); if (typeof route.query.prompt === "string" && route.query.prompt.trim()) prompt.value = route.query.prompt.slice(0, 4000); } catch (error) { message.error((error as Error).message); } });
 watch(() => route.query.conversation_id, (value) => { const id = Number(value); if (id && id !== conversationId.value) void openConversation(id); });
 onBeforeUnmount(stopRealtime);
 </script>

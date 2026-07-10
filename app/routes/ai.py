@@ -29,6 +29,7 @@ from app.ai.security import (
     validate_base_url,
 )
 from app.ai.tools import tool_catalog
+from app.ai.assistant import assistant_bootstrap, sanitize_page_context, submit_assistant
 from app.ai.service import (
     apply_plan,
     conversation_to_dict,
@@ -99,7 +100,13 @@ def catalog():
 @ai_bp.route("/capabilities", methods=["GET"])
 @login_required
 def capabilities():
-    return jsonify(ok=True, tools=tool_catalog())
+    return jsonify(ok=True, tools=tool_catalog(), **assistant_bootstrap(current_user))
+
+
+@ai_bp.route("/assistant/bootstrap", methods=["GET"])
+@login_required
+def assistant_bootstrap_api():
+    return jsonify(ok=True, **assistant_bootstrap(current_user), tools=tool_catalog())
 
 
 @ai_bp.route("/models", methods=["GET"])
@@ -242,16 +249,24 @@ def knowledge_builtin_sync():
 @ai_bp.route("/conversations", methods=["GET", "POST"])
 @login_required
 def conversations():
+    requested_kind = request.args.get("kind", "").strip()
+    if requested_kind and requested_kind not in {"analysis", "assistant"}:
+        return _error("会话类型无效。", 400, "AI_CONVERSATION_KIND_INVALID")
     if request.method == "POST":
-        title = str(_json().get("title") or "新建 AI 分析").strip()[:200] or "新建 AI 分析"
-        row = AiConversation(user_id=current_user.id, title=title)
+        payload = _json()
+        kind = str(payload.get("kind") or requested_kind or "analysis")
+        if kind not in {"analysis", "assistant"}:
+            return _error("会话类型无效。", 400, "AI_CONVERSATION_KIND_INVALID")
+        default_title = "新建全局助手会话" if kind == "assistant" else "新建 AI 分析"
+        title = str(payload.get("title") or default_title).strip()[:200] or default_title
+        row = AiConversation(user_id=current_user.id, title=title, kind=kind)
         db.session.add(row)
         db.session.commit()
         return jsonify(ok=True, conversation=conversation_to_dict(row)), 201
-    rows = (
-        AiConversation.query.filter_by(user_id=current_user.id)
-        .order_by(AiConversation.updated_at.desc()).all()
-    )
+    query = AiConversation.query.filter_by(user_id=current_user.id)
+    if requested_kind:
+        query = query.filter_by(kind=requested_kind)
+    rows = query.order_by(AiConversation.updated_at.desc()).all()
     return jsonify(ok=True, conversations=[conversation_to_dict(row) for row in rows])
 
 
@@ -314,6 +329,9 @@ def create_message(conversation_id: int):
         input_message_id=message.id,
         status="queued",
         progress=0,
+        surface="assistant" if conversation.kind == "assistant" else "analysis",
+        page_context_json=json_dumps(sanitize_page_context(payload.get("page_context"), current_user))
+        if payload.get("context_enabled", True) and conversation.kind == "assistant" else None,
         plan_json=json_dumps({
             "requested_knowledge_scopes": [
                 item for item in (payload.get("knowledge_scopes") or [])
@@ -322,7 +340,7 @@ def create_message(conversation_id: int):
         }) if payload.get("knowledge_scopes") is not None else None,
     )
     db.session.add(run)
-    if conversation.title == "新建 AI 分析":
+    if conversation.title in {"新建 AI 分析", "新建全局助手会话"}:
         conversation.title = content[:40] + ("…" if len(content) > 40 else "")
     conversation.updated_at = datetime.utcnow()
     db.session.flush()
@@ -331,7 +349,10 @@ def create_message(conversation_id: int):
         details={"model_config_id": model.id},
     )
     db.session.commit()
-    submit_planning(current_app._get_current_object(), run.id)
+    if conversation.kind == "assistant":
+        submit_assistant(current_app._get_current_object(), run.id)
+    else:
+        submit_planning(current_app._get_current_object(), run.id)
     return jsonify(ok=True, run=run_to_dict(run)), 202
 
 
@@ -467,6 +488,11 @@ def approve_run(run_id: int):
         return _error("AI Run 不存在。", 404, "AI_RUN_NOT_FOUND")
     if row.status != "awaiting_confirmation":
         return _error("当前 Run 尚未达到可确认状态。", 409, "AI_RUN_NOT_APPROVABLE")
+    if (row.surface or "analysis") == "assistant":
+        proposed = next((tool for tool in row.tool_calls if tool.status == "proposed"), None)
+        if not proposed:
+            return _error("待确认的安全操作不存在。", 409, "AI_TOOL_NOT_PROPOSED")
+        return _approve_assistant_tool(proposed)
     tools = [tool for tool in row.tool_calls if tool.status == "proposed"]
     if not tools:
         return _error("待执行工具调用不存在。", 409, "AI_TOOL_NOT_PROPOSED")
@@ -485,6 +511,146 @@ def approve_run(run_id: int):
     db.session.commit()
     submit_execution(current_app._get_current_object(), row.id)
     return jsonify(ok=True, run=run_to_dict(row)), 202
+
+
+def _owned_tool_call(tool_call_id: int):
+    return (
+        AiToolCall.query.join(AiRun, AiRun.id == AiToolCall.run_id)
+        .filter(AiToolCall.id == tool_call_id, AiRun.user_id == current_user.id)
+        .first()
+    )
+
+
+def _tool_payload(tool: AiToolCall) -> dict:
+    return {
+        "id": tool.id, "run_id": tool.run_id, "name": tool.name, "status": tool.status,
+        "risk_level": tool.risk_level or "read", "args": json_loads(tool.args_json),
+        "result": json_loads(tool.result_json, None) if tool.result_json else None,
+        "task_id": tool.task_id,
+        "expires_at": tool.expires_at.isoformat() if tool.expires_at else None,
+        "approved_at": tool.approved_at.isoformat() if tool.approved_at else None,
+    }
+
+
+def _approve_assistant_tool(tool: AiToolCall):
+    from app.ai.streaming import emit_stream_event
+    from app.services.platform_action_service import execute_action, normalize_action
+
+    run = tool.run
+    if tool.status != "proposed" or run.status != "awaiting_confirmation":
+        return _error("当前操作不处于可确认状态。", 409, "AI_TOOL_NOT_APPROVABLE")
+    if tool.expires_at and tool.expires_at <= datetime.utcnow():
+        tool.status = "expired"
+        run.status = "rejected"
+        run.completed_at = datetime.utcnow()
+        emit_stream_event(run.id, "action.status", {"tool_call_id": tool.id, "status": "expired"})
+        emit_stream_event(run.id, "run.completed", {"status": "rejected"})
+        db.session.commit()
+        return _error("操作草案已过期，请重新发起。", 409, "AI_TOOL_EXPIRED")
+    args = json_loads(tool.args_json)
+    try:
+        canonical, current_preconditions, _ = normalize_action(tool.name, args, current_user)
+        if current_preconditions != json_loads(tool.precondition_json, {}):
+            raise ValueError("目标资源状态已经变化，请重新生成操作草案。")
+        tool.status = "running"
+        tool.approved_by_id = current_user.id
+        tool.approved_at = datetime.utcnow()
+        run.status = "executing"
+        set_run_phase(run, "confirmation", "安全操作已确认。", state="done")
+        set_run_phase(run, "search", "正在提交平台任务。")
+        emit_stream_event(run.id, "action.status", {"tool_call_id": tool.id, "status": "running"})
+        db.session.commit()
+        result = execute_action(tool.name, canonical, current_user, current_app._get_current_object())
+        tool = db.session.get(AiToolCall, tool.id)
+        run = db.session.get(AiRun, run.id)
+        tool.status = "success"
+        tool.result_json = json_dumps(result)
+        tool.task_id = result.get("task_id")
+        run.status = "success"
+        run.progress = 100
+        run.completed_at = datetime.utcnow()
+        run.summary_status = run.summary_status if run.summary_status in {"model", "fallback"} else "model"
+        set_run_phase(run, "search", "平台任务已成功提交。", state="done")
+        set_run_phase(run, "answer", "操作结果已就绪。", state="done")
+        if run.output_message:
+            run.output_message.content += "\n\n操作已确认并成功提交。" + (
+                f"后台 Task #{result['task_id']} 可在任务中心查看。" if result.get("task_id") else ""
+            )
+            structured = json_loads(run.output_message.structured_json, {})
+            structured["action_result"] = result
+            run.output_message.structured_json = json_dumps(structured)
+        emit_stream_event(run.id, "action.status", {
+            "tool_call_id": tool.id, "status": "success", "result": result,
+        })
+        emit_stream_event(run.id, "answer.replace", {
+            "message_id": run.output_message_id,
+            "content": run.output_message.content if run.output_message else "操作已提交。",
+        })
+        emit_stream_event(run.id, "run.completed", {"status": "success"})
+        record_audit("ai.action_executed", resource_type="ai_tool_call", resource_id=tool.id,
+                     details={"tool": tool.name, "task_id": tool.task_id})
+        db.session.commit()
+        return jsonify(ok=True, tool_call=_tool_payload(tool), run=run_to_dict(run)), 202
+    except PermissionError as exc:
+        db.session.rollback()
+        return _error(str(exc), 403, "AI_ACTION_FORBIDDEN")
+    except Exception as exc:
+        db.session.rollback()
+        tool = db.session.get(AiToolCall, tool.id)
+        run = db.session.get(AiRun, run.id)
+        if tool:
+            tool.status = "error"
+            tool.result_json = json_dumps({"error": str(exc)[:300]})
+        if run:
+            run.status = "error"
+            run.error_code = "AI_ACTION_FAILED"
+            run.error_message = str(exc)[:500]
+            run.completed_at = datetime.utcnow()
+            emit_stream_event(run.id, "action.status", {"tool_call_id": tool.id, "status": "error"})
+            emit_stream_event(run.id, "error", {"error_code": run.error_code, "message": run.error_message})
+            emit_stream_event(run.id, "run.completed", {"status": "error"})
+        db.session.commit()
+        return _error(str(exc), 400, "AI_ACTION_FAILED")
+
+
+@ai_bp.route("/tool-calls/<int:tool_call_id>", methods=["GET"])
+@login_required
+def tool_call_detail(tool_call_id: int):
+    tool = _owned_tool_call(tool_call_id)
+    if not tool:
+        return _error("工具调用不存在。", 404, "AI_TOOL_NOT_FOUND")
+    return jsonify(ok=True, tool_call=_tool_payload(tool))
+
+
+@ai_bp.route("/tool-calls/<int:tool_call_id>/approve", methods=["POST"])
+@login_required
+def approve_tool_call(tool_call_id: int):
+    tool = _owned_tool_call(tool_call_id)
+    if not tool:
+        return _error("工具调用不存在。", 404, "AI_TOOL_NOT_FOUND")
+    return _approve_assistant_tool(tool)
+
+
+@ai_bp.route("/tool-calls/<int:tool_call_id>/reject", methods=["POST"])
+@login_required
+def reject_tool_call(tool_call_id: int):
+    from app.ai.streaming import emit_stream_event
+    tool = _owned_tool_call(tool_call_id)
+    if not tool:
+        return _error("工具调用不存在。", 404, "AI_TOOL_NOT_FOUND")
+    if tool.status != "proposed":
+        return _error("当前操作不能拒绝。", 409, "AI_TOOL_NOT_REJECTABLE")
+    tool.status = "rejected"
+    run = tool.run
+    run.status = "rejected"
+    run.progress = 100
+    run.completed_at = datetime.utcnow()
+    emit_stream_event(run.id, "action.status", {"tool_call_id": tool.id, "status": "rejected"})
+    emit_stream_event(run.id, "run.completed", {"status": "rejected"})
+    record_audit("ai.action_rejected", resource_type="ai_tool_call", resource_id=tool.id,
+                 details={"tool": tool.name})
+    db.session.commit()
+    return jsonify(ok=True, tool_call=_tool_payload(tool), run=run_to_dict(run))
 
 
 @ai_bp.route("/runs/<int:run_id>/reject", methods=["POST"])

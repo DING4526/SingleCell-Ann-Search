@@ -426,6 +426,7 @@ class AiConversation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     title = db.Column(db.String(200), default="新建 AI 分析", nullable=False)
+    kind = db.Column(db.String(20), default="analysis", nullable=False)  # analysis / assistant
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -470,6 +471,9 @@ class AiRun(db.Model):
     summary_status = db.Column(db.String(30), default="not_started", nullable=False)
     summary_message = db.Column(db.String(500))
     response_language = db.Column(db.String(20), default="zh-CN", nullable=False)
+    surface = db.Column(db.String(20), default="analysis", nullable=False)
+    page_context_json = db.Column(db.Text)
+    prompt_revision = db.Column(db.String(60))
     cancel_requested = db.Column(db.Boolean, default=False, nullable=False)
     phase_json = db.Column(db.Text)
     plan_json = db.Column(db.Text)
@@ -512,11 +516,20 @@ class AiToolCall(db.Model):
     task_id = db.Column(db.Integer, db.ForeignKey("tasks.id", ondelete="SET NULL"))
     order_index = db.Column(db.Integer, default=0, nullable=False)
     approved_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
+    risk_level = db.Column(db.String(20), default="read", nullable=False)
+    idempotency_key = db.Column(db.String(64))
+    expires_at = db.Column(db.DateTime)
+    precondition_json = db.Column(db.Text)
+    approved_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     approved_by = db.relationship("User", foreign_keys=[approved_by_id])
     task = db.relationship("Task", foreign_keys=[task_id])
+
+    __table_args__ = (
+        db.Index("ix_ai_tool_calls_idempotency", "idempotency_key", unique=True),
+    )
 
 
 class KnowledgeDocument(db.Model):

@@ -14,6 +14,7 @@ const routes = [
   { path: "/access", name: "access", component: () => import("@/views/AccessView.vue") },
   { path: "/ai-analysis", name: "ai-analysis", component: () => import("@/views/AiAnalysisView.vue") },
   { path: "/ai-knowledge", name: "ai-knowledge", component: () => import("@/views/AiKnowledgeView.vue") },
+  { path: "/ai-assistant", name: "ai-assistant", component: () => import("@/views/AiAssistantView.vue") },
   { path: "/:pathMatch(.*)*", redirect: "/overview" },
 ];
 
