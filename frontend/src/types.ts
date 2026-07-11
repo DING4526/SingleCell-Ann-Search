@@ -4,6 +4,8 @@ export type User = {
   role: "user" | "admin" | string;
   is_admin: boolean;
   is_enabled: boolean;
+  ai_enabled: boolean;
+  ai_daily_limit_override: number | null;
 };
 
 export type EffectiveRole = "admin" | "owner" | "editor" | "viewer";
@@ -346,4 +348,286 @@ export type JointSearchPayload = {
     searched_dataset_count: number;
     metric: string;
   };
+};
+
+export type AiProviderCatalogItem = {
+  key: string;
+  label: string;
+  default_base_url: string;
+  base_url_options: Array<{ label: string; value: string }>;
+  suggested_models: string[];
+  suggested_embedding_models: string[];
+};
+
+export type AiSettings = {
+  enabled: boolean;
+  daily_request_limit: number;
+  max_concurrent_runs: number;
+  max_prompt_chars: number;
+  rag_enabled: boolean;
+  default_knowledge_top_k: number;
+  max_knowledge_file_mb: number;
+  updated_at: string | null;
+};
+
+export type AiProviderConfig = {
+  id: number;
+  provider: string;
+  name: string;
+  base_url: string;
+  api_key_hint: string;
+  enabled: boolean;
+  timeout_seconds: number;
+  last_test_status: string;
+  last_test_message: string | null;
+  last_tested_at: string | null;
+  created_at: string | null;
+};
+
+export type AiModelConfig = {
+  id: number;
+  provider_config_id?: number;
+  provider: string;
+  provider_name: string;
+  model_id: string;
+  display_name: string;
+  capability: "chat" | "embedding" | string;
+  embedding_dimensions?: number | null;
+  enabled: boolean;
+  is_default: boolean;
+  last_test_status: string;
+  last_test_message?: string | null;
+  last_tested_at?: string | null;
+  created_at?: string | null;
+};
+
+export type AiSearchPlan = {
+  intent: "single_cell_search";
+  dataset_reference: string | number | null;
+  dataset_id?: number | null;
+  dataset_name?: string | null;
+  dataset_options?: Array<{ id: number; name: string; n_cells: number | null }>;
+  query_cell_index: number | null;
+  top_k: number;
+  filter_cell_type: string | null;
+  cell_type_options?: string[];
+  index_reference: string | number | null;
+  index_id?: number | null;
+  index_label?: string | null;
+  index_options?: Array<{ id: number; algorithm: string; metric: string; labels: string[] }>;
+  index_policy: "explicit" | "best_balanced" | "latest_ready";
+  analysis_dimensions: string[];
+  validation_errors?: string[];
+};
+
+export type AiAnalysisStep = {
+  tool: "get_dataset_profile" | "retrieve_knowledge" | "run_single_cell_search" | "run_fanout_search" | "run_joint_search" | "compare_result_sets" | "build_evidence_report" | string;
+  selection_mode?: "auto" | "explicit";
+  dataset_reference?: string | number | null;
+  dataset_id?: number | null;
+  dataset_name?: string | null;
+  dataset_options?: Array<{ id: number; name: string; n_cells: number | null }>;
+  index_reference?: string | number | null;
+  index_id?: number | null;
+  joint_index_reference?: string | number | null;
+  joint_index_id?: number | null;
+  joint_index_name?: string | null;
+  query_cell_index?: number | null;
+  top_k?: number;
+  filter_cell_type?: string | null;
+  target_dataset_ids?: number[];
+  target_dataset_references?: Array<string | number>;
+  validation_errors?: string[];
+};
+
+export type AiAnalysisPlan = {
+  intent: "analysis_request";
+  goal: string;
+  response_language: string;
+  knowledge_scopes: Array<"platform" | "dataset" | "personal">;
+  steps: AiAnalysisStep[];
+  expected_outputs: string[];
+  validation_errors?: string[];
+  dataset_id?: number | null;
+  dataset_reference?: string | number | null;
+  dataset_name?: string | null;
+  index_id?: number | null;
+  index_reference?: string | number | null;
+  joint_index_id?: number | null;
+  query_cell_index?: number | null;
+  top_k?: number;
+  filter_cell_type?: string | null;
+  cell_type_options?: string[];
+  target_dataset_ids?: number[];
+};
+
+export type AiAnalysisSummary = {
+  headline: string;
+  summary: string;
+  findings: Array<{ statement: string; evidence_keys: string[] }>;
+  caveats: string[];
+  next_actions: string[];
+  generated_by: "model" | "deterministic_fallback" | string;
+};
+
+export type AiRunResult = {
+  search: SingleSearchPayload | null;
+  evidence: Record<string, unknown>;
+  knowledge_hits?: KnowledgeHit[];
+  searches?: Array<Record<string, unknown>>;
+  summary: AiAnalysisSummary;
+  provenance: {
+    dataset_id: number;
+    index_id: number;
+    model_config_id: number;
+    model_id: string;
+    provider: string;
+  };
+};
+
+export type AiRun = {
+  id: number;
+  conversation_id: number;
+  surface: "analysis" | "assistant" | string;
+  page_context: Record<string, unknown>;
+  prompt_revision: string | null;
+  intent: "single_cell_search" | "result_follow_up" | string;
+  context_run_id: number | null;
+  search_task_id: number | null;
+  model: AiModelConfig | null;
+  status: string;
+  progress: number;
+  stage: { key: string; label: string; state: string; message: string | null; started_at: string | null; completed_at: string | null } | null;
+  timeline: Array<{ key: string; label: string; state: string; message: string | null; started_at: string | null; completed_at: string | null }>;
+  summary_status: "not_started" | "pending" | "running" | "model" | "fallback" | string;
+  summary_message: string | null;
+  response_language: string;
+  can_cancel: boolean;
+  stream_url: string;
+  poll_after_ms: number | null;
+  plan: AiSearchPlan | AiAnalysisPlan | null;
+  result: AiRunResult | null;
+  error_code: string | null;
+  error_message: string | null;
+  can_manage: boolean;
+  usage: { provider_requests: number; input_tokens: number; output_tokens: number; latency_ms: number };
+  tool_call: AiToolCall | null;
+  tool_calls: AiToolCall[];
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+};
+
+export type SearchHistoryItem = {
+  id: number;
+  mode: "single" | "multi" | "joint";
+  source: "query_lab" | "ai" | string;
+  status: string;
+  message: string | null;
+  legacy: boolean;
+  dataset_id: number | null;
+  dataset_name: string | null;
+  query_cell_index: number | null;
+  top_k: number | null;
+  result_count: number;
+  query_time_ms: number | null;
+  request: Record<string, unknown>;
+  result?: SingleSearchPayload | MultiSearchPayload | JointSearchPayload | null;
+  error?: string | null;
+  ai_run_id: number | null;
+  conversation_id: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type AiMessage = {
+  id: number;
+  role: "user" | "assistant" | string;
+  content: string;
+  structured: Record<string, unknown> | null;
+  citations?: Array<{ key: string; source_title: string; heading: string | null; page_number: number | null; excerpt: string }>;
+  created_at: string | null;
+};
+
+export type AiConversation = {
+  id: number;
+  title: string;
+  kind: "analysis" | "assistant" | string;
+  created_at: string | null;
+  updated_at: string | null;
+  messages?: AiMessage[];
+  runs?: AiRun[];
+};
+
+export type AiToolCall = {
+  id: number;
+  run_id?: number;
+  name: string;
+  status: string;
+  order_index?: number;
+  task_id: number | null;
+  args: Record<string, unknown>;
+  risk_level: "read" | "navigation" | "analysis" | "write" | string;
+  expires_at?: string | null;
+  approved_at?: string | null;
+  result?: Record<string, unknown> | null;
+};
+
+export type AiAssistantClientAction = {
+  target: string;
+  path: string;
+  params?: Record<string, string | number>;
+  auto?: boolean;
+  handoff_prompt?: string;
+};
+
+export type AiAssistantBootstrap = {
+  routes: Array<{ name: string; path: string; params: string[] }>;
+  page_context_policy: { max_chars: number; resource_keys: string[] };
+  conversation_kind: "assistant";
+  prompt_revision: string;
+  tools: Array<Record<string, unknown>>;
+};
+
+export type AiUsage = {
+  totals: { runs: number; provider_requests: number; input_tokens: number; output_tokens: number; failed_runs: number; embedding_requests: number; provider_call_records: number };
+  by_model: Array<Record<string, string | number | null>>;
+  by_user: Array<Record<string, string | number | null>>;
+  by_operation: Array<Record<string, string | number | null>>;
+};
+
+export type KnowledgeDocument = {
+  id: number;
+  scope: "platform" | "dataset" | "personal";
+  owner_id: number | null;
+  dataset_id: number | null;
+  dataset_name: string | null;
+  title: string;
+  description: string;
+  original_filename: string | null;
+  mime_type: string | null;
+  size_bytes: number;
+  source_type: "upload" | "builtin" | string;
+  source_key: string | null;
+  version: string;
+  status: string;
+  semantic_status: string;
+  page_count: number | null;
+  chunk_count: number;
+  error_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type KnowledgeHit = {
+  key: string;
+  chunk_id: number;
+  document_id: number;
+  title: string;
+  scope: string;
+  dataset_id: number | null;
+  heading: string | null;
+  page_number: number | null;
+  excerpt: string;
+  score: number;
 };

@@ -13,6 +13,8 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(256), nullable=False)
     role = db.Column(db.String(20), default="user")       # 角色：user / admin
     is_enabled = db.Column(db.Boolean, default=True, nullable=False)
+    ai_enabled = db.Column(db.Boolean, default=True, nullable=False)
+    ai_daily_limit_override = db.Column(db.Integer)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     @property
@@ -310,6 +312,9 @@ class Task(db.Model):
     progress = db.Column(db.Integer, default=0)               # 0-100
     message = db.Column(db.String(500), default="")           # 当前阶段描述
     result_json = db.Column(db.Text)                          # JSON 格式的任务结果
+    request_json = db.Column(db.Text)                         # 可复现检索请求
+    source = db.Column(db.String(30), default="query_lab", nullable=False)
+    history_hidden = db.Column(db.Boolean, default=False, nullable=False)
     error_message = db.Column(db.Text)                        # 错误信息
     dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=True)
     created_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -317,6 +322,10 @@ class Task(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     created_by = db.relationship("User", foreign_keys=[created_by_id])
+
+    __table_args__ = (
+        db.Index("ix_tasks_owner_history", "created_by_id", "history_hidden", "updated_at"),
+    )
 
 
 class AuditLog(db.Model):
@@ -340,4 +349,313 @@ class AuditLog(db.Model):
     __table_args__ = (
         db.Index("ix_audit_logs_dataset_created", "dataset_id", "created_at"),
         db.Index("ix_audit_logs_actor_created", "actor_id", "created_at"),
+    )
+
+
+class AiSystemSettings(db.Model):
+    """Singleton settings row for the platform AI feature."""
+    __tablename__ = "ai_system_settings"
+
+    id = db.Column(db.Integer, primary_key=True, default=1)
+    enabled = db.Column(db.Boolean, default=True, nullable=False)
+    daily_request_limit = db.Column(db.Integer, default=50, nullable=False)
+    max_concurrent_runs = db.Column(db.Integer, default=1, nullable=False)
+    max_prompt_chars = db.Column(db.Integer, default=4000, nullable=False)
+    rag_enabled = db.Column(db.Boolean, default=True, nullable=False)
+    default_knowledge_top_k = db.Column(db.Integer, default=8, nullable=False)
+    max_knowledge_file_mb = db.Column(db.Integer, default=25, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class AiProviderConfig(db.Model):
+    """Administrator-managed provider credential shared by enabled users."""
+    __tablename__ = "ai_provider_configs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    provider = db.Column(db.String(30), nullable=False)
+    name = db.Column(db.String(120), nullable=False)
+    base_url = db.Column(db.String(500), nullable=False)
+    api_key_ciphertext = db.Column(db.Text, nullable=False)
+    api_key_hint = db.Column(db.String(32), nullable=False)
+    enabled = db.Column(db.Boolean, default=True, nullable=False)
+    timeout_seconds = db.Column(db.Integer, default=180, nullable=False)
+    last_test_status = db.Column(db.String(20), default="untested", nullable=False)
+    last_test_message = db.Column(db.String(500))
+    last_tested_at = db.Column(db.DateTime)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+
+    model_configs = db.relationship(
+        "AiModelConfig", backref="provider_config", cascade="all, delete-orphan"
+    )
+
+
+class AiModelConfig(db.Model):
+    """One selectable model exposed through an administrator provider config."""
+    __tablename__ = "ai_model_configs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    provider_config_id = db.Column(
+        db.Integer, db.ForeignKey("ai_provider_configs.id", ondelete="CASCADE"), nullable=False
+    )
+    model_id = db.Column(db.String(200), nullable=False)
+    display_name = db.Column(db.String(200), nullable=False)
+    capability = db.Column(db.String(20), default="chat", nullable=False)  # chat / embedding
+    embedding_dimensions = db.Column(db.Integer)
+    enabled = db.Column(db.Boolean, default=False, nullable=False)
+    is_default = db.Column(db.Boolean, default=False, nullable=False)
+    last_test_status = db.Column(db.String(20), default="untested", nullable=False)
+    last_test_message = db.Column(db.String(500))
+    last_tested_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("provider_config_id", "model_id", name="uq_ai_provider_model"),
+    )
+
+
+class AiConversation(db.Model):
+    """Private, user-owned AI conversation."""
+    __tablename__ = "ai_conversations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = db.Column(db.String(200), default="新建 AI 分析", nullable=False)
+    kind = db.Column(db.String(20), default="analysis", nullable=False)  # analysis / assistant
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    user = db.relationship("User", foreign_keys=[user_id])
+    messages = db.relationship("AiMessage", backref="conversation", cascade="all, delete-orphan")
+    runs = db.relationship("AiRun", backref="conversation", cascade="all, delete-orphan")
+
+
+class AiMessage(db.Model):
+    """A persisted user or assistant message; visible only to the owner."""
+    __tablename__ = "ai_messages"
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(
+        db.Integer, db.ForeignKey("ai_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    role = db.Column(db.String(20), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    structured_json = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AiRun(db.Model):
+    """Stateful planning/execution record for an AI analysis request."""
+    __tablename__ = "ai_runs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(
+        db.Integer, db.ForeignKey("ai_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    model_config_id = db.Column(
+        db.Integer, db.ForeignKey("ai_model_configs.id", ondelete="RESTRICT"), nullable=False
+    )
+    input_message_id = db.Column(db.Integer, db.ForeignKey("ai_messages.id", ondelete="SET NULL"))
+    output_message_id = db.Column(db.Integer, db.ForeignKey("ai_messages.id", ondelete="SET NULL"))
+    context_run_id = db.Column(db.Integer, db.ForeignKey("ai_runs.id", ondelete="SET NULL"))
+    search_task_id = db.Column(db.Integer, db.ForeignKey("tasks.id", ondelete="SET NULL"))
+    intent = db.Column(db.String(40), default="single_cell_search", nullable=False)
+    status = db.Column(db.String(30), default="queued", nullable=False)
+    progress = db.Column(db.Integer, default=0, nullable=False)
+    summary_status = db.Column(db.String(30), default="not_started", nullable=False)
+    summary_message = db.Column(db.String(500))
+    response_language = db.Column(db.String(20), default="zh-CN", nullable=False)
+    surface = db.Column(db.String(20), default="analysis", nullable=False)
+    page_context_json = db.Column(db.Text)
+    prompt_revision = db.Column(db.String(60))
+    cancel_requested = db.Column(db.Boolean, default=False, nullable=False)
+    phase_json = db.Column(db.Text)
+    plan_json = db.Column(db.Text)
+    result_json = db.Column(db.Text)
+    error_code = db.Column(db.String(80))
+    error_message = db.Column(db.String(500))
+    provider_request_count = db.Column(db.Integer, default=0, nullable=False)
+    input_tokens = db.Column(db.Integer, default=0, nullable=False)
+    output_tokens = db.Column(db.Integer, default=0, nullable=False)
+    latency_ms = db.Column(db.Float, default=0.0, nullable=False)
+    started_at = db.Column(db.DateTime)
+    completed_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    user = db.relationship("User", foreign_keys=[user_id])
+    model_config = db.relationship("AiModelConfig", foreign_keys=[model_config_id], backref="runs")
+    input_message = db.relationship("AiMessage", foreign_keys=[input_message_id])
+    output_message = db.relationship("AiMessage", foreign_keys=[output_message_id])
+    context_run = db.relationship("AiRun", remote_side=[id], foreign_keys=[context_run_id])
+    search_task = db.relationship("Task", foreign_keys=[search_task_id])
+    tool_calls = db.relationship("AiToolCall", backref="run", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        db.Index("ix_ai_runs_user_created", "user_id", "created_at"),
+        db.Index("ix_ai_runs_status", "status"),
+    )
+
+
+class AiToolCall(db.Model):
+    """Auditable, explicitly approved platform tool call proposed by an AI run."""
+    __tablename__ = "ai_tool_calls"
+
+    id = db.Column(db.Integer, primary_key=True)
+    run_id = db.Column(db.Integer, db.ForeignKey("ai_runs.id", ondelete="CASCADE"), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    status = db.Column(db.String(30), default="proposed", nullable=False)
+    args_json = db.Column(db.Text)
+    result_json = db.Column(db.Text)
+    task_id = db.Column(db.Integer, db.ForeignKey("tasks.id", ondelete="SET NULL"))
+    order_index = db.Column(db.Integer, default=0, nullable=False)
+    approved_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
+    risk_level = db.Column(db.String(20), default="read", nullable=False)
+    idempotency_key = db.Column(db.String(64))
+    expires_at = db.Column(db.DateTime)
+    precondition_json = db.Column(db.Text)
+    approved_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    approved_by = db.relationship("User", foreign_keys=[approved_by_id])
+    task = db.relationship("Task", foreign_keys=[task_id])
+
+    __table_args__ = (
+        db.Index("ix_ai_tool_calls_idempotency", "idempotency_key", unique=True),
+    )
+
+
+class KnowledgeDocument(db.Model):
+    """An uploaded or built-in document available to the grounded AI layer."""
+    __tablename__ = "knowledge_documents"
+
+    id = db.Column(db.Integer, primary_key=True)
+    scope = db.Column(db.String(20), nullable=False)  # platform / dataset / personal
+    owner_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"))
+    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"))
+    title = db.Column(db.String(300), nullable=False)
+    description = db.Column(db.Text, default="")
+    original_filename = db.Column(db.String(300))
+    stored_path = db.Column(db.String(500))
+    mime_type = db.Column(db.String(120))
+    size_bytes = db.Column(db.Integer, default=0, nullable=False)
+    checksum = db.Column(db.String(64), nullable=False)
+    source_type = db.Column(db.String(30), default="upload", nullable=False)  # upload / builtin
+    source_key = db.Column(db.String(200))
+    version = db.Column(db.String(40), default="1", nullable=False)
+    status = db.Column(db.String(30), default="pending", nullable=False)
+    semantic_status = db.Column(db.String(30), default="not_configured", nullable=False)
+    page_count = db.Column(db.Integer)
+    chunk_count = db.Column(db.Integer, default=0, nullable=False)
+    error_message = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    owner = db.relationship("User", foreign_keys=[owner_id])
+    dataset = db.relationship("Dataset", foreign_keys=[dataset_id])
+    chunks = db.relationship("KnowledgeChunk", backref="document", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        db.Index("ix_knowledge_documents_scope_status", "scope", "status"),
+        db.Index("ix_knowledge_documents_owner", "owner_id", "created_at"),
+        db.Index("ix_knowledge_documents_dataset", "dataset_id", "created_at"),
+        db.UniqueConstraint("source_type", "source_key", name="uq_knowledge_builtin_source"),
+    )
+
+
+class KnowledgeChunk(db.Model):
+    """A paragraph-aware RAG chunk with an optional provider embedding."""
+    __tablename__ = "knowledge_chunks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(
+        db.Integer, db.ForeignKey("knowledge_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_index = db.Column(db.Integer, nullable=False)
+    heading = db.Column(db.String(500))
+    page_number = db.Column(db.Integer)
+    content = db.Column(db.Text, nullable=False)
+    content_hash = db.Column(db.String(64), nullable=False)
+    embedding_blob = db.Column(db.LargeBinary)
+    embedding_dimensions = db.Column(db.Integer)
+    embedding_model_config_id = db.Column(
+        db.Integer, db.ForeignKey("ai_model_configs.id", ondelete="SET NULL")
+    )
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    embedding_model = db.relationship("AiModelConfig", foreign_keys=[embedding_model_config_id])
+
+    __table_args__ = (
+        db.UniqueConstraint("document_id", "chunk_index", name="uq_knowledge_chunk_position"),
+        db.Index("ix_knowledge_chunks_document", "document_id", "chunk_index"),
+    )
+
+
+class AiCitation(db.Model):
+    """Stable citation snapshot attached to one private assistant message."""
+    __tablename__ = "ai_citations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    message_id = db.Column(db.Integer, db.ForeignKey("ai_messages.id", ondelete="CASCADE"), nullable=False)
+    chunk_id = db.Column(db.Integer, db.ForeignKey("knowledge_chunks.id", ondelete="SET NULL"))
+    citation_key = db.Column(db.String(80), nullable=False)
+    source_title = db.Column(db.String(300), nullable=False)
+    heading = db.Column(db.String(500))
+    page_number = db.Column(db.Integer)
+    excerpt = db.Column(db.String(300), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    message = db.relationship("AiMessage", foreign_keys=[message_id])
+    chunk = db.relationship("KnowledgeChunk", foreign_keys=[chunk_id])
+
+    __table_args__ = (db.Index("ix_ai_citations_message", "message_id"),)
+
+
+class AiStreamEvent(db.Model):
+    """Replayable private SSE event for an AI run."""
+    __tablename__ = "ai_stream_events"
+
+    id = db.Column(db.Integer, primary_key=True)
+    run_id = db.Column(db.Integer, db.ForeignKey("ai_runs.id", ondelete="CASCADE"), nullable=False)
+    sequence = db.Column(db.Integer, nullable=False)
+    event_type = db.Column(db.String(50), nullable=False)
+    payload_json = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    run = db.relationship("AiRun", foreign_keys=[run_id])
+
+    __table_args__ = (
+        db.UniqueConstraint("run_id", "sequence", name="uq_ai_stream_run_sequence"),
+        db.Index("ix_ai_stream_events_run", "run_id", "sequence"),
+    )
+
+
+class AiProviderCall(db.Model):
+    """Prompt-free accounting for chat and embedding provider requests."""
+    __tablename__ = "ai_provider_calls"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
+    run_id = db.Column(db.Integer, db.ForeignKey("ai_runs.id", ondelete="SET NULL"))
+    document_id = db.Column(db.Integer, db.ForeignKey("knowledge_documents.id", ondelete="SET NULL"))
+    model_config_id = db.Column(db.Integer, db.ForeignKey("ai_model_configs.id", ondelete="SET NULL"))
+    operation = db.Column(db.String(40), nullable=False)
+    status = db.Column(db.String(20), nullable=False)
+    request_count = db.Column(db.Integer, default=1, nullable=False)
+    input_tokens = db.Column(db.Integer, default=0, nullable=False)
+    output_tokens = db.Column(db.Integer, default=0, nullable=False)
+    latency_ms = db.Column(db.Float, default=0.0, nullable=False)
+    error_code = db.Column(db.String(80))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.Index("ix_ai_provider_calls_model_created", "model_config_id", "created_at"),
+        db.Index("ix_ai_provider_calls_user_created", "user_id", "created_at"),
     )

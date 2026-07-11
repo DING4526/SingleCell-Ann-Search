@@ -21,6 +21,9 @@ from app.models import (
     IndexExperiment,
     IndexExperimentRun,
     IndexEvaluation,
+    AiRun,
+    AiToolCall,
+    KnowledgeDocument,
 )
 from app.tasks import (
     executor,
@@ -88,7 +91,69 @@ def _task_to_dict(task: Task, include_result: bool = False) -> dict:
         "created_by_id": task.created_by_id,
         "created_by_name": task.created_by.username if task.created_by else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
     }
+
+
+_SEARCH_TASK_MODES = {
+    "search": "single",
+    "multi_search": "multi",
+    "joint_search": "joint",
+}
+
+
+def _search_history_to_dict(task: Task, *, include_result: bool = False) -> dict:
+    try:
+        request_data = json.loads(task.request_json) if task.request_json else {}
+    except (TypeError, json.JSONDecodeError):
+        request_data = {}
+    try:
+        result = json.loads(task.result_json) if task.result_json else None
+    except (TypeError, json.JSONDecodeError):
+        result = None
+    result_data = (result or {}).get("result_data") or {}
+    mode = _SEARCH_TASK_MODES.get(task.type, request_data.get("mode") or "single")
+    legacy = not bool(request_data)
+    if legacy:
+        request_data = {
+            "mode": mode,
+            "dataset_id": task.dataset_id,
+            "query_cell_index": result_data.get("query_cell_index"),
+            "top_k": result_data.get("top_k"),
+        }
+        if mode == "joint":
+            request_data.update({
+                "joint_index_id": result_data.get("joint_index_id"),
+                "query_dataset_id": result_data.get("query_dataset_id") or task.dataset_id,
+            })
+    linked_run = AiRun.query.filter_by(search_task_id=task.id).order_by(AiRun.id.asc()).first()
+    if linked_run is None:
+        linked_tool = AiToolCall.query.filter_by(task_id=task.id).order_by(AiToolCall.id.asc()).first()
+        linked_run = linked_tool.run if linked_tool else None
+    dataset = db.session.get(Dataset, task.dataset_id) if task.dataset_id else None
+    data = {
+        "id": task.id,
+        "mode": mode,
+        "source": task.source or "query_lab",
+        "status": task.status,
+        "message": task.message,
+        "legacy": legacy,
+        "dataset_id": task.dataset_id,
+        "dataset_name": dataset.name if dataset else None,
+        "query_cell_index": request_data.get("query_cell_index"),
+        "top_k": request_data.get("top_k"),
+        "result_count": len(result_data.get("results") or []),
+        "query_time_ms": result_data.get("query_time_ms"),
+        "request": request_data,
+        "ai_run_id": linked_run.id if linked_run else None,
+        "conversation_id": linked_run.conversation_id if linked_run else None,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+    }
+    if include_result:
+        data["result"] = result
+        data["error"] = task.error_message
+    return data
 
 
 def _user_to_dict(user: User, *, managed: bool = False) -> dict:
@@ -98,6 +163,8 @@ def _user_to_dict(user: User, *, managed: bool = False) -> dict:
         "role": user.role,
         "is_admin": user.role == "admin",
         "is_enabled": bool(user.is_enabled),
+        "ai_enabled": bool(getattr(user, "ai_enabled", True)),
+        "ai_daily_limit_override": getattr(user, "ai_daily_limit_override", None),
     }
     if managed:
         data["created_at"] = user.created_at.isoformat() if user.created_at else None
@@ -261,6 +328,15 @@ def _delete_dataset_files(dataset: Dataset):
         scatter_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.scatter_cache_path
         if scatter_path.exists():
             os.remove(str(scatter_path))
+
+    for document in KnowledgeDocument.query.filter_by(dataset_id=dataset_id).all():
+        if document.stored_path:
+            path = pathlib.Path(document.stored_path)
+            if path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
 
     for idx in AnnIndex.query.filter_by(dataset_id=dataset_id).all():
         if idx.index_path:
@@ -428,12 +504,31 @@ def api_access_user_update(user_id):
     if not user:
         return jsonify(ok=False, message="用户不存在。"), 404
 
-    old = {"role": user.role, "is_enabled": bool(user.is_enabled)}
+    old = {
+        "role": user.role,
+        "is_enabled": bool(user.is_enabled),
+        "ai_enabled": bool(user.ai_enabled),
+        "ai_daily_limit_override": user.ai_daily_limit_override,
+    }
     new_role = request.form.get("role", user.role).strip()
     enabled_raw = request.form.get("is_enabled")
     if enabled_raw is not None and enabled_raw.lower() not in ("0", "1", "false", "true", "no", "yes", "off", "on"):
         return jsonify(ok=False, message="is_enabled 必须是布尔值。"), 400
     new_enabled = user.is_enabled if enabled_raw is None else enabled_raw.lower() in ("1", "true", "yes", "on")
+    ai_enabled_raw = request.form.get("ai_enabled")
+    if ai_enabled_raw is not None and ai_enabled_raw.lower() not in ("0", "1", "false", "true", "no", "yes", "off", "on"):
+        return jsonify(ok=False, message="ai_enabled 必须是布尔值。"), 400
+    new_ai_enabled = user.ai_enabled if ai_enabled_raw is None else ai_enabled_raw.lower() in ("1", "true", "yes", "on")
+    limit_raw = request.form.get("ai_daily_limit_override")
+    if limit_raw in (None, ""):
+        new_ai_limit = user.ai_daily_limit_override if limit_raw is None else None
+    else:
+        try:
+            new_ai_limit = int(limit_raw)
+        except ValueError:
+            return jsonify(ok=False, message="AI 每日限额必须是整数。"), 400
+        if new_ai_limit < 0 or new_ai_limit > 100000:
+            return jsonify(ok=False, message="AI 每日限额应位于 0 到 100000。"), 400
     if new_role not in ("user", "admin"):
         return jsonify(ok=False, message="角色仅支持 user 或 admin。"), 400
     if user.id == current_user.id and not new_enabled:
@@ -444,12 +539,20 @@ def api_access_user_update(user_id):
 
     user.role = new_role
     user.is_enabled = new_enabled
+    user.ai_enabled = new_ai_enabled
+    user.ai_daily_limit_override = new_ai_limit
+    after = {
+        "role": new_role,
+        "is_enabled": new_enabled,
+        "ai_enabled": new_ai_enabled,
+        "ai_daily_limit_override": new_ai_limit,
+    }
     record_audit(
         "user.updated",
         resource_type="user",
         resource_id=user.id,
         target_user_id=user.id,
-        details={"before": old, "after": {"role": new_role, "is_enabled": new_enabled}},
+        details={"before": old, "after": after},
     )
     db.session.commit()
     return jsonify(ok=True, user=_user_to_dict(user, managed=True), message="用户状态已更新。")
@@ -1029,6 +1132,94 @@ def api_build_joint_index_task():
 
 
 # ---------------------------------------------------------------------------
+# 个人检索历史：统一人工检索与 AI 检索
+# ---------------------------------------------------------------------------
+
+def _search_history_query():
+    query = Task.query.filter(
+        Task.created_by_id == current_user.id,
+        Task.type.in_(list(_SEARCH_TASK_MODES)),
+        Task.history_hidden.is_(False),
+    )
+    mode = request.args.get("mode", "all").strip()
+    source = request.args.get("source", "all").strip()
+    status = request.args.get("status", "all").strip()
+    if mode in {"single", "multi", "joint"}:
+        type_name = next(key for key, value in _SEARCH_TASK_MODES.items() if value == mode)
+        query = query.filter(Task.type == type_name)
+    if source in {"query_lab", "ai"}:
+        query = query.filter(Task.source == source)
+    if status in {"pending", "running", "success", "error"}:
+        query = query.filter(Task.status == status)
+    return query
+
+
+def _can_read_search_history(task: Task) -> bool:
+    if not task or task.created_by_id != current_user.id or task.type not in _SEARCH_TASK_MODES:
+        return False
+    if task.dataset_id:
+        if not can_view_dataset(db.session.get(Dataset, task.dataset_id)):
+            return False
+    try:
+        request_data = json.loads(task.request_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        request_data = {}
+    if task.type == "multi_search":
+        for dataset_id in request_data.get("target_dataset_ids") or []:
+            if not can_view_dataset(db.session.get(Dataset, int(dataset_id))):
+                return False
+    if task.type == "joint_search" and request_data.get("joint_index_id"):
+        joint_index = db.session.get(JointIndex, int(request_data["joint_index_id"]))
+        if not joint_index or not _can_view_joint_index(joint_index):
+            return False
+    return True
+
+
+@api_bp.route("/search/history", methods=["GET", "DELETE"])
+@login_required
+def api_search_history():
+    query = _search_history_query().order_by(Task.updated_at.desc(), Task.id.desc())
+    if request.method == "DELETE":
+        rows = query.filter(Task.status.in_(["success", "error"])).all()
+        rows = [row for row in rows if _can_read_search_history(row)]
+        for row in rows:
+            row.history_hidden = True
+        record_audit(
+            "search.history_cleared", resource_type="search_history",
+            details={"count": len(rows)},
+        )
+        db.session.commit()
+        return jsonify(ok=True, hidden_count=len(rows))
+
+    try:
+        limit = min(max(int(request.args.get("limit", 30)), 1), 100)
+    except ValueError:
+        return jsonify(ok=False, message="limit 必须是整数。"), 400
+    rows = query.limit(limit * 2).all()
+    visible = [row for row in rows if _can_read_search_history(row)][:limit]
+    return jsonify(ok=True, history=[_search_history_to_dict(row) for row in visible])
+
+
+@api_bp.route("/search/history/<int:task_id>", methods=["GET", "DELETE"])
+@login_required
+def api_search_history_detail(task_id):
+    task = db.session.get(Task, task_id)
+    if not _can_read_search_history(task):
+        return jsonify(ok=False, message="检索历史不存在。"), 404
+    if request.method == "DELETE":
+        if task.status in {"pending", "running"}:
+            return jsonify(ok=False, message="进行中的检索不能从历史移除。"), 409
+        task.history_hidden = True
+        record_audit(
+            "search.history_hidden", resource_type="task", resource_id=task.id,
+            dataset_id=task.dataset_id, details={"source": task.source, "type": task.type},
+        )
+        db.session.commit()
+        return jsonify(ok=True)
+    return jsonify(ok=True, history=_search_history_to_dict(task, include_result=True))
+
+
+# ---------------------------------------------------------------------------
 # 查询任务状态
 # ---------------------------------------------------------------------------
 
@@ -1117,6 +1308,10 @@ def api_search_task():
 
     task = Task(
         type="search",
+        source="query_lab",
+        request_json=json.dumps({"mode": "single", **{
+            key: value for key, value in params.items() if key != "user_id"
+        }}, ensure_ascii=False),
         status="pending",
         progress=0,
         message="检索任务已提交，等待执行...",
@@ -1311,6 +1506,10 @@ def api_multi_search_task():
 
     task = Task(
         type="multi_search",
+        source="query_lab",
+        request_json=json.dumps({"mode": "multi", **{
+            key: value for key, value in params.items() if key != "user_id"
+        }}, ensure_ascii=False),
         status="pending",
         progress=0,
         message="跨数据集检索任务已提交，等待执行...",
@@ -1366,6 +1565,10 @@ def api_joint_search_task():
 
     task = Task(
         type="joint_search",
+        source="query_lab",
+        request_json=json.dumps({"mode": "joint", **{
+            key: value for key, value in params.items() if key != "user_id"
+        }}, ensure_ascii=False),
         status="pending",
         progress=0,
         message="联合检索任务已提交，等待执行...",

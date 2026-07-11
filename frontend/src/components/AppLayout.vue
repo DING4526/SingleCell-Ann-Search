@@ -15,7 +15,8 @@
         <a-menu-item key="/joint-indexes"><DeploymentUnitOutlined />联合索引</a-menu-item>
         <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
         <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
-        <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
+        <a-menu-item key="/ai-knowledge"><BookOutlined />AI 知识库</a-menu-item>
+        <a-menu-item key="/ai-assistant"><MessageOutlined />AI 助手</a-menu-item>
       </a-menu>
       <div class="sider-capability">
         <div class="capability-title">能力地图</div>
@@ -63,7 +64,8 @@
         <a-menu-item key="/joint-indexes"><DeploymentUnitOutlined />联合索引</a-menu-item>
         <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
         <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
-        <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
+        <a-menu-item key="/ai-knowledge"><BookOutlined />AI 知识库</a-menu-item>
+        <a-menu-item key="/ai-assistant"><MessageOutlined />AI 助手</a-menu-item>
       </a-menu>
     </a-drawer>
     <a-drawer v-model:open="openTasks" title="任务中心" width="420">
@@ -77,6 +79,12 @@
           </a-list-item>
         </template>
       </a-list>
+    </a-drawer>
+    <a-button v-if="route.path !== '/ai-assistant'" class="assistant-fab" type="primary" shape="circle" @click="openAssistant = true">
+      <RobotOutlined />
+    </a-button>
+    <a-drawer v-model:open="openAssistant" title="AI 助手" width="min(620px, 94vw)" :body-style="{ padding: 0 }">
+      <GlobalAiAssistant />
     </a-drawer>
     <a-modal v-model:open="passwordOpen" title="修改密码" ok-text="确认修改" :confirm-loading="passwordLoading" @ok="changePassword">
       <a-form layout="vertical">
@@ -93,12 +101,14 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   ClockCircleOutlined,
+  BookOutlined,
   DashboardOutlined,
   DatabaseOutlined,
   DeploymentUnitOutlined,
   DownOutlined,
   ExperimentOutlined,
   MenuOutlined,
+  MessageOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
@@ -109,6 +119,7 @@ import { useAuthStore } from "@/stores/auth";
 import { useTaskStore } from "@/stores/tasks";
 import { roleText, statusColor, statusText, taskTypeText } from "@/utils/format";
 import type { TaskRecord } from "@/types";
+import GlobalAiAssistant from "@/components/ai/GlobalAiAssistant.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -116,6 +127,7 @@ const auth = useAuthStore();
 const taskStore = useTaskStore();
 const openNav = ref(false);
 const openTasks = ref(false);
+const openAssistant = ref(false);
 const taskLoading = ref(false);
 const passwordOpen = ref(false);
 const passwordLoading = ref(false);
@@ -176,3 +188,15 @@ onMounted(() => {
   taskStore.refreshRecent();
 });
 </script>
+
+<style scoped>
+.assistant-fab {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  width: 52px;
+  height: 52px;
+  z-index: 50;
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.3);
+}
+</style>

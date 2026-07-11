@@ -3,7 +3,7 @@ import pathlib
 from flask import Blueprint, render_template, redirect, url_for, flash, current_app, abort
 from flask_login import login_required
 from app.extensions import db
-from app.models import Dataset, AnnIndex, Cell, Task
+from app.models import Dataset, AnnIndex, Cell, KnowledgeDocument, Task
 from app.services.access_service import accessible_datasets_query, can_manage_dataset, can_view_dataset
 from app.spa import render_spa
 
@@ -64,6 +64,15 @@ def delete(dataset_id):
         idx_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.index_path
         if idx_path.exists():
             os.remove(str(idx_path))
+
+    for document in KnowledgeDocument.query.filter_by(dataset_id=dataset_id).all():
+        if document.stored_path:
+            path = pathlib.Path(document.stored_path)
+            if path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
 
     db.session.delete(dataset)
     db.session.commit()

@@ -542,8 +542,8 @@ def finalize_experiment(experiment_id: int, selected_run_ids: list[int]) -> dict
     if not experiment:
         raise ValueError("实验不存在")
     selected_ids = list(dict.fromkeys(int(value) for value in selected_run_ids))
-    if not 2 <= len(selected_ids) <= 3:
-        raise ValueError("必须选择 2 到 3 个候选索引")
+    if not 1 <= len(selected_ids) <= 3:
+        raise ValueError("必须选择 1 到 3 个候选索引")
 
     if experiment.status == "finalized":
         stored_ids = [int(value) for value in _json_list(experiment.selected_run_ids_json)]
