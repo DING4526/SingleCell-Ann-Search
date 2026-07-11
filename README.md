@@ -2,7 +2,7 @@
 
 基于 Flask + Vue 3 的单细胞近似最近邻检索平台，用于读取 `.h5ad` 数据集、提取 PCA 向量、比较 HNSW/FAISS 索引，并支持 Top-K 相似细胞检索、跨数据集检索、可视化和评估。
 
-前端已重构为专业研究者平台式 SPA，核心页面包括 Overview、Datasets、Index Lab、Joint Indexes、Query Lab、Access、AI Analysis。
+前端已重构为专业研究者平台式 SPA，核心页面包括 Overview、Datasets、Index Lab、Joint Indexes、Query Lab、Access、AI Knowledge 和统一 AI Assistant。
 
 ## 技术栈
 
@@ -273,7 +273,7 @@ Qwen 默认提供中国区 Endpoint，并允许填写国际区或 Workspace 专�
 
 ### 3. 第二阶段 AI 分析与 RAG
 
-进入“AI 分析”，选择可用模型并输入例如：
+进入“AI 助手”，选择可用模型并输入例如：
 
 ```text
 在 demo_liver 中找到与 123 号细胞最相似的 20 个 Hepatocyte，并解释疾病和年龄组分布。
@@ -281,7 +281,7 @@ Qwen 默认提供中国区 Endpoint，并允许填写国际区或 Workspace 专�
 
 平台会根据请求生成最多四步的 `AnalysisPlan`，在单数据集、Fan-out 和联合索引中选择合法模式。用户可以修改模式、数据集、索引、细胞编号、Top-K 和目标数据集；所有 ANN 步骤整份确认一次，确认前不会创建检索 Task。
 
-ANN 完成后，AI 页面立即返回带实际统计值的中文证据回答；模型的定性解读通过 SSE 流式追加，并在结束时校验中文占比、Evidence Key 和 Knowledge Citation。断线时按事件序号续传，不支持 SSE 时自动退回轮询。完整结果表和高亮图仍统一在 Query Lab 展示。
+ANN 完成后，助手立即返回带实际统计值的中文回答；模型的简短定性解读通过 SSE 流式追加，并在结束时校验中文、数字和引用。Evidence Key、RAG 片段和内部工具步骤默认隐藏，完整结果表和高亮图统一在 Query Lab 展示。
 
 同一会话会继承最近一次有效检索状态，并使用受限的近期消息和结果摘要理解“再查 1 号”一类相对指令。针对上一轮结果的解释性问题会直接基于已保存证据回答，不会重复执行 ANN。
 
@@ -295,9 +295,9 @@ Query Lab 的“检索历史”统一包含人工单数据集、Fan-out、联合
 
 第二阶段的 RAG 范围不包含公网搜索、OCR 和基因差异表达；全局平台助手与受审批写操作由第三阶段提供。
 
-## AI 分析第三阶段：全局助手
+## 统一 AI 助手
 
-登录后可从任意页面右下角打开全局 AI 助手，也可以进入 `/ai-assistant` 使用完整工作台。助手会自动附带脱敏页面上下文，支持平台问答、受控页面导航、Query Lab/Index Lab 预填以及向 AI Analysis 移交科学检索请求。
+登录后可从任意页面右下角打开 AI 助手，也可以进入 `/ai-assistant` 使用完整工作台。助手会自动附带脱敏页面上下文，在同一会话中完成平台问答、受控页面导航、Query Lab/Index Lab 预填和可确认的科学检索。旧 `/ai-analysis` 链接会兼容跳转到统一助手，历史分析会话继续可用。
 
 数据处理、索引构建/实验/评估、联合索引和知识维护只会生成待确认操作卡。用户确认后，后端重新校验权限和资源状态并复用现有 Task 服务；删除、权限、所有权、账号、模型和密钥操作不向 AI 开放。
 

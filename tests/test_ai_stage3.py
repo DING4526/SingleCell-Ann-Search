@@ -125,7 +125,7 @@ def test_global_assistant_answer_uses_separate_conversation_kind(monkeypatch):
             conversation = db.session.get(AiConversation, conversation_id)
             assert conversation.kind == "assistant"
             assert run.status == "success" and run.surface == "assistant"
-            assert run.prompt_revision == "stage3-r3"
+            assert run.prompt_revision == "stage3-r4"
             assert "password" not in (run.page_context_json or "")
             assert "数据资源页面" in run.output_message.content
 
@@ -216,6 +216,7 @@ def test_current_dataset_overview_uses_grounded_page_context():
             "id": 7, "name": "Liver01", "status": "indexed", "role": "owner",
             "n_cells": 95514,
             "ready_indexes": [{"id": 3, "algorithm": "hnswlib_hnsw", "metric": "cosine"}],
+            "distributions": {"cell_type": {"Hepatocyte": 8836, "T cell": 8238}},
         }],
     }
     decision = _deterministic_decision("介绍一下 Liver01 数据集", context)
@@ -223,6 +224,8 @@ def test_current_dataset_overview_uses_grounded_page_context():
     assert "Liver01" in decision.direct_answer
     assert "95514" in decision.direct_answer
     assert any("hnswlib_hnsw" in item for item in decision.supporting_points)
+    profile = _deterministic_decision("介绍一下它的主要细胞类型", context)
+    assert "Hepatocyte（8836 个）" in profile.direct_answer
 
 
 def test_global_assistant_persists_replayable_answer_deltas(monkeypatch):
@@ -260,3 +263,63 @@ def test_global_assistant_persists_replayable_answer_deltas(monkeypatch):
             assert "answer.delta" in event_types
             assert event_types.index("answer.delta") < event_types.index("answer.replace")
             assert "可以查看有权访问的数据集" in run.output_message.content
+
+
+def test_scientific_request_stays_in_assistant_conversation_and_reuses_analysis_engine(monkeypatch):
+    from app.ai.assistant import run_assistant
+    from app.ai.schemas import AssistantTurnDecision
+    from app.extensions import db
+    from app.models import AiConversation, AiRun
+    import app.ai.service as service
+
+    decision = AssistantTurnDecision(intent="answer_only", direct_answer="不会使用这份普通回答。")
+    submitted = []
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        app = _make_app(tmpdir)
+        _, conversation_id, run_id = _seed_assistant(app, decision)
+        with app.app_context():
+            run = db.session.get(AiRun, run_id)
+            run.input_message.content = "在当前数据集中找与 123 号细胞最相似的 20 个细胞"
+            db.session.commit()
+        monkeypatch.setattr(service, "submit_planning", lambda _app, value: submitted.append(value))
+        run_assistant(app, run_id)
+        with app.app_context():
+            run = db.session.get(AiRun, run_id)
+            conversation = db.session.get(AiConversation, conversation_id)
+            assert conversation.kind == "assistant"
+            assert run.surface == "analysis" and run.status == "queued"
+            assert run.output_message_id is None
+            assert submitted == [run_id]
+
+
+def test_unified_analysis_mode_is_normalized_from_explicit_user_scope():
+    from app.ai.schemas import AiTurnDecision
+    from app.ai.service import _normalize_analysis_decision
+
+    single = AiTurnDecision(
+        intent="analysis_request", dataset_reference=None, mode="auto",
+        target_dataset_references=[1], query_cell_index=123, top_k=20,
+    )
+    _normalize_analysis_decision(single, "找当前数据集中与 123 号最相似的细胞", 1)
+    assert single.dataset_reference == 1
+    assert single.mode == "single"
+    assert single.target_dataset_references == []
+
+    cross = AiTurnDecision(
+        intent="single_cell_search", dataset_reference=1, mode="single",
+        target_dataset_references=[1, 2], query_cell_index=123,
+    )
+    _normalize_analysis_decision(cross, "跨数据集比较这些相似细胞", 1)
+    assert cross.intent == "analysis_request"
+    assert cross.mode == "auto"
+    assert cross.target_dataset_references == [2]
+
+
+def test_model_interpretation_requires_valid_evidence_citations():
+    from app.ai.service import _valid_grounded_text
+
+    evidence = {"disease_distribution": {"normal": 20}}
+    concise = "近邻的疾病标注集中为 normal。[E:disease_distribution]"
+    unknown = "近邻呈现一致的疾病标注。[E:unknown_distribution]"
+    assert _valid_grounded_text(concise, evidence, [], "zh-CN")
+    assert not _valid_grounded_text(unknown, evidence, [], "zh-CN")

@@ -1,12 +1,11 @@
 <template>
   <div>
-    <PageHeader title="全局 AI 助手" description="结合当前页面和平台实时状态，用自然语言导航、预填并安全调用平台功能。">
+    <PageHeader title="AI 助手" description="在同一会话中完成平台问答、页面操作、知识检索和可确认的单细胞科学分析。">
       <template #actions>
-        <a-button @click="$router.push('/ai-analysis')">进入 AI Analysis</a-button>
         <a-button @click="$router.push('/ai-knowledge')">管理知识库</a-button>
       </template>
     </PageHeader>
-    <a-alert class="assistant-notice" type="info" show-icon message="写操作始终先生成草案并由你确认；删除、权限、所有权和模型配置不会交给 AI 执行。" />
+    <a-alert class="assistant-notice" type="info" show-icon message="ANN 检索和写操作都会先展示计划并由你确认；删除、权限、所有权和模型配置不会交给 AI 执行。" />
     <GlobalAiAssistant embedded />
   </div>
 </template>

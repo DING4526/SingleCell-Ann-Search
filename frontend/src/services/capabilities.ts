@@ -12,5 +12,5 @@ export const capabilities: Capability[] = [
   { key: "merged-index", title: "联合索引", status: "ready", description: "基于 Harmony 对齐的多数据集物理索引。", route: "/index-lab" },
   { key: "multi-algorithm", title: "多算法评估", status: "ready", description: "对比 HNSW、RP-HNSW 与 FAISS IVF/PQ。", route: "/index-lab" },
   { key: "access", title: "访问控制", status: "ready", description: "用户、共享与数据集可见性管理。", route: "/access" },
-  { key: "ai", title: "AI 分析", status: "ready", description: "多供应商自然语言查询和结果解释。", route: "/ai-analysis" },
+  { key: "ai", title: "AI 助手", status: "ready", description: "统一的平台问答、自然语言操作和科学分析。", route: "/ai-assistant" },
 ];

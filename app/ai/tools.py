@@ -89,7 +89,7 @@ CLIENT_ACTIONS = {
     "open_task": "打开当前用户可查看的任务。",
     "prefill_query_lab": "使用受控参数预填检索实验室。",
     "prefill_index_lab": "使用受控参数预填索引实验室。",
-    "handoff_to_ai_analysis": "把科学分析问题移交 AI Analysis。",
+    "handoff_to_ai_analysis": "在当前 AI 助手会话启动科学分析执行器。",
 }
 
 

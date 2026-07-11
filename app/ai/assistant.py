@@ -14,7 +14,7 @@ from app.ai.schemas import AssistantTurnDecision
 from app.extensions import db
 from app.models import (
     AiCitation, AiConversation, AiMessage, AiModelConfig, AiRun, AiToolCall,
-    AnnIndex, Dataset, JointIndex, Task, User,
+    AnnIndex, Cell, Dataset, JointIndex, Task, User,
 )
 from app.services.access_service import (
     accessible_datasets_query, accessible_tasks_query, can_view_dataset,
@@ -108,16 +108,31 @@ def sanitize_page_context(raw, user: User) -> dict:
 
 def _resource_context(user: User, page_context: dict) -> dict:
     datasets = accessible_datasets_query(user=user).order_by(Dataset.created_at.desc()).limit(60).all()
+    page_dataset_id = ((page_context.get("resources") or {}).get("dataset_id"))
     dataset_rows = []
     ready_index_count = 0
     for dataset in datasets:
         indexes = [row for row in dataset.indexes if row.status == "ready" and (row.lifecycle or "active") == "active"]
         ready_index_count += len(indexes)
-        dataset_rows.append({
+        row_data = {
             "id": dataset.id, "name": dataset.name, "status": dataset.status,
             "role": effective_dataset_role(dataset, user), "n_cells": dataset.n_cells,
             "ready_indexes": [{"id": row.id, "algorithm": row.algorithm, "metric": row.metric} for row in indexes[:6]],
-        })
+        }
+        if dataset.id == page_dataset_id:
+            distributions = {}
+            for field in ("cell_type", "disease", "age_group"):
+                column = getattr(Cell, field)
+                rows = (
+                    db.session.query(column, db.func.count(Cell.id))
+                    .filter(Cell.dataset_id == dataset.id)
+                    .group_by(column)
+                    .order_by(db.func.count(Cell.id).desc())
+                    .limit(8).all()
+                )
+                distributions[field] = {str(value or "N/A"): int(count) for value, count in rows}
+            row_data["distributions"] = distributions
+        dataset_rows.append(row_data)
     tasks = accessible_tasks_query(user=user).order_by(Task.updated_at.desc()).limit(20).all()
     task_rows = [{
         "id": row.id, "type": row.type, "status": row.status, "progress": row.progress,
@@ -163,6 +178,44 @@ def _explicit_navigation(prompt: str) -> bool:
     return bool(re.search(r"(?:打开|进入|跳转|带我去|前往|导航到)", prompt or ""))
 
 
+def _should_use_analysis_executor(prompt: str, conversation_id: int) -> bool:
+    """Route real scientific retrieval and evidence follow-ups to the analysis engine."""
+    text = (prompt or "").strip()
+    scientific = bool(
+        re.search(r"(?:找|查找|检索|查询|搜索).{0,20}(?:相似|近邻|细胞)", text, re.I)
+        or re.search(r"(?:相似|近邻|细胞).{0,20}(?:找|查找|检索|查询|搜索)", text, re.I)
+        or re.search(r"(?:Fan-?out|联合索引|跨数据集).{0,20}(?:检索|查询|比较|对比)", text, re.I)
+        or re.search(r"(?:比较|对比).{0,30}(?:数据集|检索结果|细胞分布)", text, re.I)
+    )
+    if scientific:
+        return True
+    follow_up = bool(re.search(
+        r"(?:这些|上述|上一轮|刚才|检索结果|结果).{0,24}(?:分布|疾病|年龄|类型|距离|解释|比较|差异|说明|意味)",
+        text, re.I,
+    ))
+    if not follow_up:
+        return False
+    return AiRun.query.filter(
+        AiRun.conversation_id == conversation_id,
+        AiRun.surface == "analysis",
+        AiRun.status.in_(["success", "cancelled"]),
+    ).first() is not None
+
+
+def _queue_analysis_executor(app, run: AiRun) -> None:
+    """Reuse the same run and conversation while switching to scientific planning."""
+    from app.ai.service import set_run_phase, submit_planning
+
+    run.surface = "analysis"
+    run.intent = "analysis_request"
+    run.status = "queued"
+    run.progress = 5
+    run.prompt_revision = PROMPT_REVISION
+    set_run_phase(run, "planning", "正在生成可确认的科学分析计划。")
+    db.session.commit()
+    submit_planning(app, run.id)
+
+
 def _deterministic_decision(prompt: str, resource_context: dict) -> AssistantTurnDecision | None:
     """Resolve unambiguous, safety-critical turns without paying model latency."""
     text = (prompt or "").strip()
@@ -174,9 +227,26 @@ def _deterministic_decision(prompt: str, resource_context: dict) -> AssistantTur
     if re.search(r"(?:最相似|相似细胞|近邻细胞|跨数据集.*比较)", text):
         return AssistantTurnDecision(
             intent="analysis_handoff",
-            direct_answer="这个请求需要真实单细胞检索，我会将原始问题移交 AI Analysis，并在执行 ANN 前让你确认完整计划。",
+            direct_answer="这个请求需要真实单细胞检索，我会在当前会话生成科学分析计划，并在执行 ANN 前让你确认。",
             handoff_prompt=text,
         )
+    if re.search(r"(?:主要|常见|最多|分布).{0,8}(?:细胞类型|疾病|年龄)|(?:细胞类型|疾病|年龄).{0,8}(?:主要|常见|最多|分布)", text):
+        datasets = resource_context.get("datasets") or []
+        page_dataset_id = ((resource_context.get("page") or {}).get("resources") or {}).get("dataset_id")
+        selected = next((row for row in datasets if row.get("id") == page_dataset_id), None)
+        if selected and selected.get("distributions"):
+            field, label = (
+                ("cell_type", "细胞类型") if "细胞类型" in text
+                else ("disease", "疾病") if "疾病" in text else ("age_group", "年龄组")
+            )
+            values = (selected["distributions"].get(field) or {})
+            rows = list(values.items())[:5]
+            description = "、".join(f"{name}（{count} 个）" for name, count in rows) or "暂无可用标注"
+            return AssistantTurnDecision(
+                intent="answer_only",
+                direct_answer=f"{selected.get('name')} 的主要{label}为：{description}。",
+                supporting_points=["以上来自当前数据集的实时元数据统计，不是模型推测。"],
+            )
     if "数据集" in text and re.search(r"(?:介绍|概况|信息|详情|是什么|怎么样|状态)", text):
         datasets = resource_context.get("datasets") or []
         page_dataset_id = ((resource_context.get("page") or {}).get("resources") or {}).get("dataset_id")
@@ -364,6 +434,9 @@ def run_assistant(app, run_id: int) -> None:
             prompt = run.input_message.content if run.input_message else ""
             page_context = sanitize_page_context(json_loads(run.page_context_json, {}), user)
             run.page_context_json = json_dumps(page_context)
+            if _should_use_analysis_executor(prompt, run.conversation_id):
+                _queue_analysis_executor(app, run)
+                return
             resource_context = _resource_context(user, page_context)
             dataset_ids = []
             if (page_context.get("resources") or {}).get("dataset_id"):
@@ -397,6 +470,9 @@ def run_assistant(app, run_id: int) -> None:
                 _update_usage(run, completion.usage)
                 _record_run_provider_call(run, model, "assistant_decision", completion.usage, "success")
                 decision = completion.value
+            if decision.intent == "analysis_handoff":
+                _queue_analysis_executor(app, run)
+                return
             answer = _assistant_text(decision, "我已读取当前页面，但还需要更具体的问题。")
             allowed_knowledge = {row["key"] for row in hits}
             rendered, text_cited = _validated_answer(answer, resource_context, allowed_knowledge)

@@ -15,9 +15,8 @@
         <a-menu-item key="/joint-indexes"><DeploymentUnitOutlined />联合索引</a-menu-item>
         <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
         <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
-        <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
         <a-menu-item key="/ai-knowledge"><BookOutlined />AI 知识库</a-menu-item>
-        <a-menu-item key="/ai-assistant"><MessageOutlined />全局 AI 助手</a-menu-item>
+        <a-menu-item key="/ai-assistant"><MessageOutlined />AI 助手</a-menu-item>
       </a-menu>
       <div class="sider-capability">
         <div class="capability-title">能力地图</div>
@@ -65,9 +64,8 @@
         <a-menu-item key="/joint-indexes"><DeploymentUnitOutlined />联合索引</a-menu-item>
         <a-menu-item key="/query-lab"><SearchOutlined />检索实验室</a-menu-item>
         <a-menu-item key="/access"><SafetyCertificateOutlined />权限管理</a-menu-item>
-        <a-menu-item key="/ai-analysis"><RobotOutlined />AI 分析</a-menu-item>
         <a-menu-item key="/ai-knowledge"><BookOutlined />AI 知识库</a-menu-item>
-        <a-menu-item key="/ai-assistant"><MessageOutlined />全局 AI 助手</a-menu-item>
+        <a-menu-item key="/ai-assistant"><MessageOutlined />AI 助手</a-menu-item>
       </a-menu>
     </a-drawer>
     <a-drawer v-model:open="openTasks" title="任务中心" width="420">
@@ -85,7 +83,7 @@
     <a-button v-if="route.path !== '/ai-assistant'" class="assistant-fab" type="primary" shape="circle" @click="openAssistant = true">
       <RobotOutlined />
     </a-button>
-    <a-drawer v-model:open="openAssistant" title="全局 AI 助手" width="min(560px, 92vw)" :body-style="{ padding: 0 }">
+    <a-drawer v-model:open="openAssistant" title="AI 助手" width="min(620px, 94vw)" :body-style="{ padding: 0 }">
       <GlobalAiAssistant />
     </a-drawer>
     <a-modal v-model:open="passwordOpen" title="修改密码" ok-text="确认修改" :confirm-loading="passwordLoading" @ok="changePassword">

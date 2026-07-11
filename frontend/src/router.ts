@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from "vue-router";
+import { createRouter, createWebHistory, type RouteLocationGeneric } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 
 const routes = [
@@ -12,7 +12,7 @@ const routes = [
   { path: "/query-lab", name: "query-lab", component: () => import("@/views/QueryLabView.vue") },
   { path: "/evaluation", redirect: "/index-lab" },
   { path: "/access", name: "access", component: () => import("@/views/AccessView.vue") },
-  { path: "/ai-analysis", name: "ai-analysis", component: () => import("@/views/AiAnalysisView.vue") },
+  { path: "/ai-analysis", redirect: (to: RouteLocationGeneric) => ({ path: "/ai-assistant", query: to.query }) },
   { path: "/ai-knowledge", name: "ai-knowledge", component: () => import("@/views/AiKnowledgeView.vue") },
   { path: "/ai-assistant", name: "ai-assistant", component: () => import("@/views/AiAssistantView.vue") },
   { path: "/:pathMatch(.*)*", redirect: "/overview" },

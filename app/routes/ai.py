@@ -264,7 +264,11 @@ def conversations():
         db.session.commit()
         return jsonify(ok=True, conversation=conversation_to_dict(row)), 201
     query = AiConversation.query.filter_by(user_id=current_user.id)
-    if requested_kind:
+    if requested_kind == "assistant":
+        # The unified assistant also exposes legacy analysis conversations so
+        # users do not lose history during the product-surface migration.
+        query = query.filter(AiConversation.kind.in_(["assistant", "analysis"]))
+    elif requested_kind:
         query = query.filter_by(kind=requested_kind)
     rows = query.order_by(AiConversation.updated_at.desc()).all()
     return jsonify(ok=True, conversations=[conversation_to_dict(row) for row in rows])
@@ -298,6 +302,9 @@ def create_message(conversation_id: int):
     if not conversation:
         return _error("AI 会话不存在。", 404, "AI_CONVERSATION_NOT_FOUND")
     payload = _json()
+    assistant_turn = conversation.kind == "assistant" or payload.get("surface") == "assistant"
+    if assistant_turn and conversation.kind != "assistant":
+        conversation.kind = "assistant"
     content = str(payload.get("content") or "").strip()
     if not content:
         return _error("请输入自然语言检索需求。", 400, "AI_EMPTY_PROMPT")
@@ -329,9 +336,9 @@ def create_message(conversation_id: int):
         input_message_id=message.id,
         status="queued",
         progress=0,
-        surface="assistant" if conversation.kind == "assistant" else "analysis",
+        surface="assistant" if assistant_turn else "analysis",
         page_context_json=json_dumps(sanitize_page_context(payload.get("page_context"), current_user))
-        if payload.get("context_enabled", True) and conversation.kind == "assistant" else None,
+        if payload.get("context_enabled", True) and assistant_turn else None,
         plan_json=json_dumps({
             "requested_knowledge_scopes": [
                 item for item in (payload.get("knowledge_scopes") or [])
@@ -349,7 +356,7 @@ def create_message(conversation_id: int):
         details={"model_config_id": model.id},
     )
     db.session.commit()
-    if conversation.kind == "assistant":
+    if assistant_turn:
         submit_assistant(current_app._get_current_object(), run.id)
     else:
         submit_planning(current_app._get_current_object(), run.id)
