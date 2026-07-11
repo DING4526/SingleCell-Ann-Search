@@ -6,7 +6,10 @@ import json
 import re
 from urllib.parse import urlencode
 
-from app.ai.prompts import ASSISTANT_EXAMPLES, GLOBAL_ASSISTANT_SYSTEM, PLATFORM_INVARIANTS, PROMPT_REVISION, QUALITY_REPAIR_SYSTEM
+from app.ai.prompts import (
+    ASSISTANT_ANSWER_SYSTEM, ASSISTANT_EXAMPLES, GLOBAL_ASSISTANT_SYSTEM,
+    PLATFORM_INVARIANTS, PROMPT_REVISION, QUALITY_REPAIR_SYSTEM,
+)
 from app.ai.schemas import AssistantTurnDecision
 from app.extensions import db
 from app.models import (
@@ -174,6 +177,47 @@ def _deterministic_decision(prompt: str, resource_context: dict) -> AssistantTur
             direct_answer="这个请求需要真实单细胞检索，我会将原始问题移交 AI Analysis，并在执行 ANN 前让你确认完整计划。",
             handoff_prompt=text,
         )
+    if "数据集" in text and re.search(r"(?:介绍|概况|信息|详情|是什么|怎么样|状态)", text):
+        datasets = resource_context.get("datasets") or []
+        page_dataset_id = ((resource_context.get("page") or {}).get("resources") or {}).get("dataset_id")
+        named = [row for row in datasets if str(row.get("name") or "").lower() in text.lower()]
+        selected = named[0] if len(named) == 1 else next(
+            (row for row in datasets if row.get("id") == page_dataset_id), None
+        )
+        if selected:
+            status_text = {
+                "uploaded": "已上传，尚未完成向量处理",
+                "processing": "正在处理",
+                "processed": "已完成向量处理，可以构建索引",
+                "indexed": "已完成向量处理并且已有索引",
+                "error": "处理失败，需要先查看任务错误",
+            }.get(str(selected.get("status") or ""), str(selected.get("status") or "未知"))
+            role_text = {
+                "admin": "管理员",
+                "owner": "所有者",
+                "editor": "编辑者",
+                "viewer": "只读查看者",
+            }.get(str(selected.get("role") or ""), str(selected.get("role") or "未知权限"))
+            indexes = selected.get("ready_indexes") or []
+            cell_text = (
+                f"包含 {selected['n_cells']} 个细胞"
+                if selected.get("n_cells") is not None else "细胞数量尚未记录"
+            )
+            index_text = "、".join(
+                f"{row.get('algorithm')}（{row.get('metric')}）" for row in indexes
+            ) or "暂无 ready/active 索引"
+            return AssistantTurnDecision(
+                intent="answer_only",
+                direct_answer=(
+                    f"{selected.get('name')} 是当前可访问的单细胞数据集，{cell_text}。"
+                    f"当前状态为 {selected.get('status')}：{status_text}。"
+                ),
+                supporting_points=[
+                    f"你的有效权限是{role_text}。",
+                    f"当前可用索引：{index_text}。",
+                    "可以继续查看统计分布，或前往 Query Lab 进行相似细胞检索。",
+                ],
+            )
     if not _explicit_navigation(text):
         return None
     route_terms = [
@@ -229,6 +273,22 @@ def _numbers_grounded(text: str, resource_context: dict) -> bool:
     observed = re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?", text or "")
     trusted = set(re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?", json.dumps(resource_context, ensure_ascii=False)))
     return all(value in trusted for value in observed)
+
+
+def _validated_answer(text: str, resource_context: dict, allowed_knowledge: set[str]) -> tuple[str | None, set[str]]:
+    rendered = _render_evidence(text, resource_context["evidence"])
+    cited = set(re.findall(r"\[(K:[^\]]+)\]", text or ""))
+    valid = (
+        rendered is not None
+        and cited.issubset(allowed_knowledge)
+        and _chinese_dominant(rendered)
+        and _numbers_grounded(rendered, resource_context)
+    )
+    return (rendered if valid else None), cited
+
+
+def _text_chunks(text: str, size: int = 48) -> list[str]:
+    return [text[index:index + size] for index in range(0, len(text), size)]
 
 
 def resolve_navigation(target: str | None, params: dict, user: User) -> dict | None:
@@ -338,13 +398,10 @@ def run_assistant(app, run_id: int) -> None:
                 _record_run_provider_call(run, model, "assistant_decision", completion.usage, "success")
                 decision = completion.value
             answer = _assistant_text(decision, "我已读取当前页面，但还需要更具体的问题。")
-            rendered = _render_evidence(answer, resource_context["evidence"])
             allowed_knowledge = {row["key"] for row in hits}
-            cited = set(re.findall(r"\[(K:[^\]]+)\]", answer)) | set(decision.knowledge_keys)
-            valid = rendered is not None and (not cited or cited.issubset(allowed_knowledge))
-            valid = valid and _numbers_grounded(rendered or "", resource_context)
-            if not _chinese_dominant(rendered or ""):
-                valid = False
+            rendered, text_cited = _validated_answer(answer, resource_context, allowed_knowledge)
+            cited = text_cited | set(decision.knowledge_keys)
+            valid = rendered is not None and cited.issubset(allowed_knowledge)
             if not valid and completion is not None and provider is not None:
                 repair = provider.complete_structured(
                     model=model.model_id,
@@ -355,12 +412,67 @@ def run_assistant(app, run_id: int) -> None:
                 _update_usage(run, repair.usage)
                 _record_run_provider_call(run, model, "assistant_repair", repair.usage, "success")
                 decision = repair.value
+                completion = repair
                 answer = _assistant_text(decision, "请补充你希望完成的具体平台操作。")
-                rendered = _render_evidence(answer, resource_context["evidence"])
-                cited = set(re.findall(r"\[(K:[^\]]+)\]", answer)) | set(decision.knowledge_keys)
-                valid = rendered is not None and _chinese_dominant(rendered or "") and cited.issubset(allowed_knowledge)
-                valid = valid and _numbers_grounded(rendered or "", resource_context)
+                rendered, text_cited = _validated_answer(answer, resource_context, allowed_knowledge)
+                cited = text_cited | set(decision.knowledge_keys)
+                valid = rendered is not None and cited.issubset(allowed_knowledge)
             answer = rendered if valid and rendered else "我暂时无法可靠完成这次理解。请明确说明目标页面、数据集或希望执行的操作。"
+
+            stream_started = False
+            stream_emitted = False
+            if completion is not None and provider is not None and decision.intent in {"answer_only", "need_clarification"}:
+                set_run_phase(run, "answer", "正在流式生成中文回答。")
+                emit_stream_event(run.id, "answer.started", {"mode": "assistant_answer"})
+                stream_started = True
+                db.session.commit()
+                pending = ""
+
+                def on_answer_delta(delta: str) -> None:
+                    nonlocal pending, stream_emitted
+                    pending += delta
+                    if len(pending) < 36:
+                        return
+                    emit_stream_event(run.id, "answer.delta", {"delta": pending})
+                    pending = ""
+                    stream_emitted = True
+                    db.session.commit()
+
+                answer_messages = [
+                    {"role": "system", "content": ASSISTANT_ANSWER_SYSTEM},
+                    {"role": "system", "content": PLATFORM_INVARIANTS},
+                    {"role": "system", "content": "实时平台上下文：" + json_dumps(resource_context)},
+                    {"role": "system", "content": "可引用知识：" + json_dumps(knowledge_context)},
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "已校验决策：" + completion.raw_text},
+                ]
+                try:
+                    streamed, stream_usage = provider.complete_text_stream(
+                        model=model.model_id, messages=answer_messages, max_tokens=1200,
+                        on_delta=on_answer_delta,
+                    )
+                    _update_usage(run, stream_usage)
+                    _record_run_provider_call(run, model, "assistant_answer_stream", stream_usage, "success")
+                    if pending:
+                        emit_stream_event(run.id, "answer.delta", {"delta": pending})
+                        stream_emitted = True
+                        pending = ""
+                        db.session.commit()
+                    streamed_rendered, streamed_cited = _validated_answer(
+                        streamed.strip(), resource_context, allowed_knowledge
+                    )
+                    if streamed_rendered:
+                        answer = streamed_rendered
+                        cited = streamed_cited
+                        valid = True
+                except Exception as stream_exc:
+                    stream_usage = getattr(stream_exc, "usage", None)
+                    if stream_usage is not None:
+                        _update_usage(run, stream_usage)
+                        _record_run_provider_call(
+                            run, model, "assistant_answer_stream", stream_usage, "error",
+                            "AI_ASSISTANT_STREAM_FAILED",
+                        )
 
             structured: dict = {"type": "assistant_answer", "intent": decision.intent, "prompt_revision": PROMPT_REVISION}
             client_action = None
@@ -409,7 +521,11 @@ def run_assistant(app, run_id: int) -> None:
             run.result_json = json_dumps({"assistant": structured, "knowledge_hits": hits, "summary": {"summary": answer}})
             selected_hits = [row for row in hits if row["key"] in cited]
             _persist_citations(output, selected_hits)
-            emit_stream_event(run.id, "answer.started", {"message_id": output.id})
+            if not stream_started:
+                emit_stream_event(run.id, "answer.started", {"message_id": output.id, "mode": "assistant_answer"})
+            if not stream_emitted:
+                for chunk in _text_chunks(answer):
+                    emit_stream_event(run.id, "answer.delta", {"message_id": output.id, "delta": chunk})
             emit_stream_event(run.id, "answer.replace", {"message_id": output.id, "content": answer, "structured": structured})
             if client_action:
                 event = "assistant.handoff" if decision.intent == "analysis_handoff" else "ui.navigate"

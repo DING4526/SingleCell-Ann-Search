@@ -1,11 +1,23 @@
 <template>
   <div :class="['global-assistant', { workspace: embedded }]">
-    <aside v-if="embedded" class="assistant-history">
-      <div class="history-head"><strong>助手会话</strong><a-button size="small" @click="newConversation">新建</a-button></div>
+    <aside v-if="embedded || historyOpen" :class="['assistant-history', { floating: !embedded }]">
+      <div class="history-head">
+        <strong>助手会话</strong>
+        <div class="history-actions">
+          <a-button size="small" :loading="creating" @click="newConversation">新建</a-button>
+          <a-button v-if="!embedded" size="small" type="text" @click="historyOpen = false">收起</a-button>
+        </div>
+      </div>
+      <a-empty v-if="!loading && !conversations.length" description="暂无会话" />
       <a-list size="small" :data-source="conversations" :loading="loading">
         <template #renderItem="{ item }">
           <a-list-item :class="{ active: item.id === conversationId }" @click="openConversation(item.id)">
             <a-list-item-meta :title="item.title" />
+            <template #actions>
+              <a-popconfirm title="删除这个会话及其消息？" ok-text="删除" cancel-text="取消" @confirm="deleteConversation(item.id)">
+                <a-button type="text" size="small" danger :loading="deletingId === item.id" @click.stop>删除</a-button>
+              </a-popconfirm>
+            </template>
           </a-list-item>
         </template>
       </a-list>
@@ -16,8 +28,9 @@
         <div><strong>全局 AI 助手</strong><small>理解当前页面，帮助导航和调用平台功能</small></div>
         <div class="head-actions">
           <a-select v-model:value="modelId" size="small" style="min-width:150px" :options="modelOptions" />
+          <a-button v-if="!embedded" size="small" @click="historyOpen = true">会话</a-button>
           <a-button v-if="!embedded" size="small" @click="$router.push('/ai-assistant')">完整工作台</a-button>
-          <a-button v-else size="small" @click="newConversation">新建会话</a-button>
+          <a-button v-else size="small" :loading="creating" @click="newConversation">新建会话</a-button>
         </div>
       </header>
 
@@ -55,8 +68,12 @@
             <a-tag v-for="citation in item.citations" :key="citation.key">{{ citation.source_title }}</a-tag>
           </div>
         </article>
+        <article v-if="streamingText" class="assistant-message assistant streaming">
+          <small>AI 助手 <a-tag color="processing">正在生成</a-tag></small>
+          <div class="message-content">{{ streamingText }}<span class="stream-cursor">▍</span></div>
+        </article>
         <a-card v-if="currentRun && !terminal(currentRun)" size="small" class="run-card">
-          <a-spin size="small" /> {{ currentRun.stage?.message || 'AI 正在处理…' }}
+          <a-spin size="small" /> {{ streamStage || currentRun.stage?.message || 'AI 正在处理…' }}
           <a-button v-if="currentRun.can_cancel" size="small" type="link" danger @click="cancelRun">取消</a-button>
         </a-card>
       </div>
@@ -76,7 +93,7 @@ import { message } from "ant-design-vue";
 import { api } from "@/services/api";
 import type { AiAssistantClientAction, AiConversation, AiMessage, AiModelConfig, AiRun } from "@/types";
 
-defineProps<{ embedded?: boolean }>();
+const props = defineProps<{ embedded?: boolean }>();
 
 const route = useRoute();
 const router = useRouter();
@@ -91,10 +108,19 @@ const contextEnabled = ref(true);
 const loading = ref(false);
 const sending = ref(false);
 const actionLoading = ref(false);
+const creating = ref(false);
+const deletingId = ref<number>();
+const historyOpen = ref(false);
 const currentRun = ref<AiRun | null>(null);
+const streamingText = ref("");
+const streamStage = ref("");
 const messagePane = ref<HTMLElement>();
 let source: EventSource | null = null;
 let pollTimer: number | null = null;
+let reconnectTimer: number | null = null;
+let realtimeRunId: number | null = null;
+let lastEventId = 0;
+let reconnectAttempts = 0;
 
 const modelOptions = computed(() => models.value.map((item) => ({ value: item.id, label: item.display_name })));
 const pageContext = computed<Record<string, unknown>>(() => {
@@ -141,15 +167,52 @@ async function openConversation(id: number) {
   stopRealtime();
   const detail = (await api.aiConversation(id)).conversation;
   conversationId.value = id;
+  streamingText.value = "";
+  streamStage.value = "";
   messages.value = detail.messages || [];
   runs.value = detail.runs || [];
   currentRun.value = [...runs.value].reverse().find((item) => !terminal(item)) || runs.value[runs.value.length - 1] || null;
   if (currentRun.value && !terminal(currentRun.value)) startRealtime(currentRun.value);
+  if (!props.embedded) historyOpen.value = false;
+  if (props.embedded && Number(route.query.conversation_id) !== id) {
+    await router.replace({ query: { ...route.query, conversation_id: String(id) } });
+  }
   await scrollEnd();
 }
 
-function newConversation() {
-  stopRealtime(); conversationId.value = undefined; messages.value = []; runs.value = []; currentRun.value = null; prompt.value = "";
+async function newConversation() {
+  if (creating.value) return;
+  creating.value = true;
+  try {
+    stopRealtime();
+    const row = (await api.createAiConversation("新建全局助手会话", "assistant")).conversation;
+    conversations.value = [row, ...conversations.value.filter((item) => item.id !== row.id)];
+    await openConversation(row.id);
+    prompt.value = "";
+  } catch (error) { message.error((error as Error).message); }
+  finally { creating.value = false; }
+}
+
+async function deleteConversation(id: number) {
+  if (deletingId.value) return;
+  deletingId.value = id;
+  try {
+    await api.deleteAiConversation(id);
+    conversations.value = conversations.value.filter((item) => item.id !== id);
+    if (conversationId.value === id) {
+      stopRealtime();
+      conversationId.value = undefined;
+      messages.value = [];
+      runs.value = [];
+      currentRun.value = null;
+      streamingText.value = "";
+      const next = conversations.value[0];
+      if (next) await openConversation(next.id);
+      else if (props.embedded) await router.replace({ query: { ...route.query, conversation_id: undefined } });
+    }
+    message.success("会话已删除");
+  } catch (error) { message.error((error as Error).message); }
+  finally { deletingId.value = undefined; }
 }
 
 async function refreshConversation() {
@@ -178,29 +241,69 @@ async function send() {
 
 function startRealtime(run: AiRun) {
   stopRealtime();
-  if (typeof EventSource !== "undefined") {
-    source = new EventSource(run.stream_url);
-    const refreshEvents = ["answer.replace", "answer.completed", "action.proposed", "action.status", "run.completed", "error"];
-    refreshEvents.forEach((name) => source?.addEventListener(name, async (event) => {
-      const payload = JSON.parse((event as MessageEvent).data || "{}");
-      if (name === "run.completed" || name === "error") stopRealtime();
+  realtimeRunId = run.id;
+  lastEventId = 0;
+  reconnectAttempts = 0;
+  streamingText.value = "";
+  streamStage.value = run.stage?.message || "";
+  if (typeof EventSource !== "undefined") connectRealtime(run);
+  else startPolling(run.id);
+}
+
+function connectRealtime(run: AiRun) {
+  if (realtimeRunId !== run.id) return;
+  const separator = run.stream_url.includes("?") ? "&" : "?";
+  source = new EventSource(lastEventId ? `${run.stream_url}${separator}after=${lastEventId}` : run.stream_url);
+  const eventNames = [
+    "run.stage", "answer.started", "answer.delta", "answer.replace", "answer.completed",
+    "action.proposed", "action.status", "ui.navigate", "assistant.handoff", "run.completed", "error",
+  ];
+  eventNames.forEach((name) => source?.addEventListener(name, async (event) => {
+    if (realtimeRunId !== run.id) return;
+    const messageEvent = event as MessageEvent;
+    const sequence = Number(messageEvent.lastEventId);
+    if (Number.isFinite(sequence) && sequence > lastEventId) lastEventId = sequence;
+    const payload = JSON.parse(messageEvent.data || "{}");
+    if (name === "run.stage") streamStage.value = String(payload.message || payload.label || "");
+    if (name === "answer.started") streamingText.value = "";
+    if (name === "answer.delta") {
+      streamingText.value += String(payload.delta || "");
+      await scrollEnd();
+    }
+    if (name === "ui.navigate" || name === "assistant.handoff") {
+      if (payload.auto) await navigate(payload as AiAssistantClientAction);
+    }
+    if (["answer.replace", "answer.completed", "action.proposed", "action.status", "run.completed", "error"].includes(name)) {
       await refreshConversation();
-      if ((name === "ui.navigate" || name === "assistant.handoff") && payload.auto) await navigate(payload);
-    }));
-    ["ui.navigate", "assistant.handoff"].forEach((name) => source?.addEventListener(name, async (event) => {
-      const payload = JSON.parse((event as MessageEvent).data || "{}"); if (payload.auto) await navigate(payload);
-    }));
-    source.onerror = () => { source?.close(); source = null; startPolling(run.id); };
-  } else startPolling(run.id);
+    }
+    if (name === "answer.replace" || name === "answer.completed") streamingText.value = "";
+    if (name === "run.completed" || name === "error") stopRealtime();
+  }));
+  source.onopen = () => { reconnectAttempts = 0; };
+  source.onerror = () => {
+    source?.close();
+    source = null;
+    if (realtimeRunId !== run.id) return;
+    reconnectAttempts += 1;
+    if (reconnectAttempts <= 2) {
+      reconnectTimer = window.setTimeout(() => connectRealtime(run), 600);
+    } else startPolling(run.id);
+  };
 }
 
 function startPolling(runId: number) {
+  if (pollTimer !== null) window.clearInterval(pollTimer);
   pollTimer = window.setInterval(async () => {
     const run = (await api.aiRun(runId)).run; currentRun.value = run; await refreshConversation();
     if (terminal(run)) stopRealtime();
   }, 1200);
 }
-function stopRealtime() { source?.close(); source = null; if (pollTimer !== null) window.clearInterval(pollTimer); pollTimer = null; }
+function stopRealtime() {
+  source?.close(); source = null;
+  if (pollTimer !== null) window.clearInterval(pollTimer); pollTimer = null;
+  if (reconnectTimer !== null) window.clearTimeout(reconnectTimer); reconnectTimer = null;
+  realtimeRunId = null;
+}
 
 async function navigate(action: AiAssistantClientAction) {
   if (!action.path.startsWith("/")) return message.error("助手返回了无效页面地址");
@@ -217,10 +320,12 @@ onBeforeUnmount(stopRealtime);
 </script>
 
 <style scoped>
-.global-assistant { height: 100%; display: flex; min-height: 0; background: #f8fafc; }
+.global-assistant { position: relative; height: 100%; display: flex; min-height: 0; background: #f8fafc; overflow: hidden; }
 .global-assistant.workspace { min-height: calc(100vh - 150px); border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
 .assistant-history { width: 250px; background: white; border-right: 1px solid #e2e8f0; overflow: auto; }
+.assistant-history.floating { position: absolute; inset: 0 auto 0 0; z-index: 20; width: min(310px, 82%); box-shadow: 8px 0 24px rgba(15, 23, 42, .16); }
 .history-head, .assistant-head, .context-strip, .assistant-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.history-actions { display: flex; align-items: center; gap: 4px; }
 .history-head { padding: 14px; border-bottom: 1px solid #e2e8f0; }
 .assistant-history :deep(.ant-list-item) { cursor: pointer; padding: 10px 14px; }
 .assistant-history :deep(.ant-list-item.active) { background: #eff6ff; }
@@ -233,8 +338,10 @@ onBeforeUnmount(stopRealtime);
 .assistant-message { max-width: 88%; padding: 11px 13px; border-radius: 10px; margin-bottom: 12px; white-space: pre-wrap; }
 .assistant-message.user { margin-left: auto; background: #dbeafe; }
 .assistant-message.assistant { background: white; border: 1px solid #e2e8f0; }
+.assistant-message.streaming { border-color: #93c5fd; box-shadow: 0 0 0 2px rgba(59, 130, 246, .06); }
 .assistant-message small { color: #64748b; display: block; margin-bottom: 4px; }
 .message-content { line-height: 1.65; }
+.stream-cursor { color: #2563eb; animation: blink 1s steps(1) infinite; }
 .action-card { margin-top: 12px; white-space: normal; }
 .action-buttons { display: flex; gap: 8px; margin-top: 12px; }
 .assistant-citations { margin-top: 8px; }
@@ -242,5 +349,6 @@ onBeforeUnmount(stopRealtime);
 .assistant-composer { padding: 12px 14px; background: white; border-top: 1px solid #e2e8f0; }
 .assistant-composer > div { margin-top: 8px; }
 .muted { color: #94a3b8; font-size: 12px; }
-@media (max-width: 800px) { .assistant-history { display: none; } .head-actions :deep(.ant-select) { display: none; } }
+@keyframes blink { 50% { opacity: 0; } }
+@media (max-width: 800px) { .assistant-history:not(.floating) { display: none; } .head-actions :deep(.ant-select) { display: none; } }
 </style>

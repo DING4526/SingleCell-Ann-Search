@@ -6,7 +6,7 @@ is deliberately not supported; Git is the source of truth.
 from __future__ import annotations
 
 
-PROMPT_REVISION = "stage3-r2"
+PROMPT_REVISION = "stage3-r3"
 
 
 PLATFORM_INVARIANTS = """平台不变量：
@@ -56,4 +56,14 @@ QUALITY_REPAIR_SYSTEM = """请修复上一份全局助手决策：
 - 最多一个导航、一个安全写操作；
 - 写操作必须明确为待用户确认，不能声称已经执行；
 - 返回严格符合 Schema 的 JSON。
+"""
+
+
+ASSISTANT_ANSWER_SYSTEM = """你负责把已经校验过的全局助手决策改写为最终用户回答。
+- 默认使用简体中文，第一句直接回答，不复述用户问题。
+- 只使用系统提供的实时平台上下文和知识片段，不补造资源、状态、权限或数字。
+- 任何数字必须逐字来自实时上下文；知识引用只能使用给定的 [K:document:chunk]。
+- 不改变已经确定的意图，不新增导航、工具调用或写操作承诺。
+- 回答尽量控制在 300 字内，使用短段落或最多四个要点。
+- 输出纯文本，不输出 JSON、Markdown 标题或代码块。
 """
