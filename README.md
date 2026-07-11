@@ -1,196 +1,292 @@
-# 单细胞 ANN 检索系统
+# 单细胞 ANN 检索研究平台
 
-基于 Flask + Vue 3 的单细胞近似最近邻检索平台，用于读取 `.h5ad` 数据集、提取 PCA 向量、比较 HNSW/FAISS 索引，并支持 Top-K 相似细胞检索、跨数据集检索、可视化和评估。
+一个面向单细胞转录组数据的可视化近似最近邻检索工作台。平台读取 AnnData `.h5ad` 文件，使用 PCA 向量构建 HNSW/FAISS 索引，并提供单数据集检索、跨数据集 Fan-out、Harmony 联合索引、UMAP 高亮、算法评估、权限管理和可选 AI/RAG 助手。
 
-前端已重构为专业研究者平台式 SPA，核心页面包括 Overview、Datasets、Index Lab、Joint Indexes、Query Lab、Access、AI Knowledge 和统一 AI Assistant。
+> 当前版本适合课程演示、本地研究和受控内网环境。公网部署前请完成[发布阻断清单](docs/发布阻断清单.md)。
 
-本地开发与课程演示配置不等同于生产配置；对外部署前请逐项完成 [`docs/发布阻断清单.md`](docs/发布阻断清单.md)。
+## 主要能力
 
-## 技术栈
+- 上传和处理 `.h5ad`，浏览细胞、基因、PCA 与元数据统计。
+- 在 UMAP/PCA 图中按细胞类型、疾病和年龄组着色并查看细胞详情。
+- 比较 HNSW、随机投影 HNSW、FAISS IVF-Flat、IVF-PQ 等候选索引。
+- 使用 Recall@K、平均/P95 时延、构建耗时和索引体积选择正式索引。
+- 执行单数据集 Top-K、多个独立索引 Fan-out 和 Harmony 联合空间检索。
+- 通过 Viewer、Editor、Owner 和 Admin 管理数据访问与审计。
+- 安全删除资源、移除历史、跟踪后台任务和重试文件清理。
+- 可选配置 OpenAI-compatible 模型、三级知识库和需要用户确认的 AI 操作。
 
-- 后端：Flask, Flask-Login, Flask-SQLAlchemy
-- 前端：Vue 3, Vite, TypeScript, Pinia, Vue Router, Ant Design Vue
-- 数据库：SQLite + SQLAlchemy
-- 数据处理：Scanpy, AnnData, NumPy, Pandas
-- ANN 索引：HNSWLIB
-- 可视化：Plotly
-- 测试：pytest, vue-tsc, Vite build
+## 快速开始
 
-## 目录结构
+### 1. 环境要求
 
-```text
-single-cell-ann-search/
-├── app/
-│   ├── __init__.py          # Flask 应用工厂
-│   ├── config.py            # 配置
-│   ├── extensions.py        # db, login_manager
-│   ├── models.py            # 用户、数据集权限、索引、任务、查询与审计模型
-│   ├── routes/              # 页面路由与 API 路由
-│   ├── services/            # 数据处理、索引、评估、绘图服务
-│   └── spa.py               # Flask 托管 Vite SPA，并提供正式 503 回退页
-├── frontend/
-│   ├── src/                 # Vue 3 SPA 源码
-│   ├── package.json         # 前端依赖与脚本
-│   └── dist/                # 前端构建产物，本地生成，不提交
-├── data/
-│   ├── raw/                 # 上传的 h5ad 文件
-│   ├── cache/               # 缓存的 npy 向量
-│   └── indexes/             # HNSW 索引文件
-├── instance/                # SQLite 数据库，本地生成，不提交
-├── scripts/
-│   ├── init_db.py           # 初始化数据库
-│   ├── seed_admin.py        # 创建管理员用户
-│   └── create_demo_h5ad.py  # 生成 demo 数据集
-├── tests/
-├── requirements.txt
-├── run.py
-└── README.md
-```
+- Python 3.10+
+- Node.js 20.19+、22.12+ 或 24.x
+- Git 2.x
+- 推荐 Chromium 内核桌面浏览器，界面基线为 1366×768
 
-## 环境要求
+以下命令默认在项目根目录执行。
 
-- Python 3.10 推荐
-- Node.js 18+ 推荐
-- Windows PowerShell、Git Bash 或 macOS/Linux Shell 均可
-
-以下命令默认在项目根目录执行：
+### 2. Clone 项目
 
 ```powershell
-cd D:\03_Courses\3_2_01_Software_Engineering\lab5_final\single-cell-ann-search
+git clone https://github.com/DING4526/SingleCell-Ann-Search.git
+cd SingleCell-Ann-Search
 ```
 
-## 首次初始化
+### 3. 安装后端
 
-### 1. 创建 Python 虚拟环境
-
-PowerShell：
+Windows PowerShell：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-如果使用 conda：
-
-```powershell
-conda create -n sc-ann python=3.10
-conda activate sc-ann
-```
-
-### 2. 安装后端依赖
-
-```powershell
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 3. 初始化数据库
+macOS/Linux：
 
-```powershell
-python scripts/init_db.py
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-### 4. 创建管理员账号
-
-```powershell
-python scripts/seed_admin.py
-```
-
-默认管理员账号：
-
-```text
-用户名：admin
-密码：admin123
-```
-
-### 5. 生成 demo 数据
-
-```powershell
-python scripts/create_demo_h5ad.py
-```
-
-生成后可在平台中上传：
-
-```text
-data/raw/demo_liver.h5ad
-```
-
-### 6. 安装前端依赖
-
-```powershell
-cd frontend
-npm install
-cd ..
-```
-
-## 本地浏览器运行
-
-本项目支持两种本地运行方式。
-
-### 方式 A：生产构建模式，推荐用于演示和验收
-
-先构建前端 SPA，再由 Flask 托管静态文件：
-
-```powershell
-cd frontend
-npm run build
-cd ..
-python run.py
-```
-
-然后在本地浏览器打开：
-
-```text
-http://127.0.0.1:5000
-```
-
-登录：
-
-```text
-admin / admin123
-```
-
-这个模式最接近课程演示和部署形态。Flask 会返回 Vue SPA，并继续提供 `/api/*` 接口。
-
-### 方式 B：前端开发模式，推荐用于改 UI
-
-开两个终端。
-
-终端 1：启动 Flask API：
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python run.py
-```
-
-终端 2：启动 Vite：
-
-```powershell
-cd frontend
-npm run dev
-```
-
-然后在本地浏览器打开：
-
-```text
-http://127.0.0.1:5173
-```
-
-Vite 会把 `/api` 请求代理到 Flask，因此前端热更新更快，适合继续调页面、交互和组件。
-
-## 常见初始化问题
-
-### PowerShell 不允许激活虚拟环境
-
-如果 `Activate.ps1` 被执行策略拦截，可以在当前 PowerShell 会话中执行：
+如果 PowerShell 阻止激活脚本：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-### 访问页面看到旧内容或资源 404
+### 4. 创建本地配置
 
-生产构建模式下需要先执行：
+Windows：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+macOS/Linux：
+
+```bash
+cp .env.example .env
+```
+
+至少把 `.env` 中的 `SECRET_KEY` 替换为随机值：
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+AI 功能可以暂不配置，不影响数据、索引和检索主流程。不要提交 `.env` 或真实密钥。
+
+### 5. 初始化数据库和演示数据
+
+```powershell
+python scripts/init_db.py
+python scripts/seed_admin.py
+python scripts/create_demo_h5ad.py
+```
+
+这会创建：
+
+- 本地 SQLite 数据库；
+- 演示管理员：`admin / admin123`；
+- 演示数据：`data/raw/demo_liver.h5ad`。
+
+首次登录后请立即从右上角账号菜单修改默认密码。
+
+### 6. 安装并构建前端
+
+```powershell
+cd frontend
+npm ci
+npm run build
+cd ..
+```
+
+### 7. 启动平台
+
+```powershell
+python run.py
+```
+
+打开 <http://127.0.0.1:5000>，使用 `admin / admin123` 登录。
+
+`run.py` 使用 Flask 开发服务器，只用于本地运行和演示。
+
+## 完成第一次检索
+
+1. 打开“数据资源”，上传 `data/raw/demo_liver.h5ad`。
+2. 进入数据集详情，点击“处理数据集”，等待任务完成。
+3. 查看数据统计和 UMAP；可切换图例、双击独显分类、点击散点查看细胞。
+4. 打开“索引实验室”，选择该数据集并运行默认候选实验。
+5. 实验完成后选择 1–3 个 Recall 达标的候选，确认保留为现用索引。
+6. 打开“检索实验室”，选择“单数据集”、数据集和索引。
+7. 输入细胞编号 `0`、Top-K `10`，运行检索。
+8. 查看排名表和“嵌入空间高亮”。
+
+后台任务可从页面顶部“任务”入口查看。离开当前业务页面不会主动取消任务。
+
+## 输入数据要求
+
+平台接收 AnnData `.h5ad` 文件。
+
+必须包含：
+
+```python
+adata.obsm["X_pca"]  # 二维数值数组，ANN 检索向量
+```
+
+推荐包含：
+
+```python
+adata.obsm["X_umap"]       # 可选；缺失时使用 PCA 前两维绘图
+adata.obs["cell_type"]     # 可选
+adata.obs["disease"]       # 可选
+adata.obs["AgeGroup"]      # 可选，注意大小写
+```
+
+可在上传前检查：
+
+```python
+import scanpy as sc
+
+adata = sc.read_h5ad("your_dataset.h5ad")
+print(adata.shape)
+print(adata.obsm.keys())
+print(adata.obs.columns.tolist())
+assert "X_pca" in adata.obsm
+```
+
+平台上传上限为 3 GiB，但 Scanpy 会在处理阶段读取数据到内存；文件上限不代表普通电脑一定能稳定处理同等规模。
+
+## 三种检索模式
+
+| 模式 | 适用场景 | 说明 |
+| --- | --- | --- |
+| 单数据集 | 在一个数据集内寻找相似细胞 | 支持细胞类型过滤和 UMAP/PCA 高亮 |
+| Fan-out | 同一向量查询多个独立索引 | 要求索引距离度量和向量维度兼容；结果按距离归并 |
+| 联合索引 | 多数据集经过公共基因与 Harmony 对齐后检索 | 在统一空间中查询并展示联合 UMAP |
+
+Fan-out 中“维度相同”不等于不同数据集的生物学距离严格可比；正式跨数据集分析优先使用联合索引，并结合研究设计验证结果。
+
+## 前端开发模式
+
+需要修改页面时，打开两个终端。
+
+终端 1：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python run.py
+```
+
+终端 2：
+
+```powershell
+cd frontend
+npm run dev
+```
+
+访问 <http://127.0.0.1:5173>。Vite 会把 `/api` 和 `/assets` 代理到 Flask 的 5000 端口。
+
+前端修改不会自动更新 5000 端口使用的生产产物；演示前需重新执行 `npm run build`。
+
+## 可选：配置 AI 与知识库
+
+### 1. 配置凭据加密密钥
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+把输出写入 `.env`：
+
+```dotenv
+AI_CREDENTIAL_ENCRYPTION_KEY=生成的Fernet密钥
+```
+
+该密钥与 Flask `SECRET_KEY` 不同。丢失后已保存的 Provider API Key 无法解密。
+
+### 2. 在平台中启用模型
+
+1. 使用管理员登录。
+2. 打开“权限管理 → AI 模型”。
+3. 新增 OpenAI-compatible Provider 和 API Key。
+4. 新增对话模型或 Embedding 模型。
+5. 测试连接，成功后启用模型。
+6. 按需开启用户 AI 权限和每日限额。
+
+自定义 Endpoint 默认要求公网 HTTPS。只有明确使用可信内网模型服务时，才考虑设置 `AI_ALLOW_PRIVATE_ENDPOINTS=true`。
+
+知识库支持 PDF、Markdown 和 TXT，分为平台、数据集和个人空间。没有 Embedding 模型时会自动使用中文关键词检索；扫描版 PDF 暂不支持 OCR。
+
+AI 可以生成检索或部分维护操作的草案，但必须由用户确认后执行。删除、权限、所有权、账号、模型和密钥操作不会交给 AI。
+
+## 权限与删除规则
+
+| 数据集角色 | 主要能力 |
+| --- | --- |
+| Viewer | 查看、统计和检索 |
+| Editor | Viewer + 处理、建索引、实验、评估、数据集知识维护 |
+| Owner | Editor + 分享、转移所有权、永久删除数据集 |
+| Admin | 平台全局管理、账号、审计和 AI 配置 |
+
+删除策略：
+
+- 数据集、普通索引和联合索引：满足权限且无运行任务/依赖时永久删除。
+- 任务、检索、实验和评估记录：从历史移除。
+- 用户账号：停用，不物理删除。
+- 审计日志：保留，不提供删除。
+- 文件清理失败：任务中心显示错误，可重试清理。
+
+收到删除冲突提示时，应先处理页面列出的依赖项，不要手工删除 `data/` 文件或直接修改 SQLite。
+
+## 项目结构
+
+```text
+single-cell-ann-search/
+├─ app/
+│  ├─ ai/                 AI、RAG、SSE 和安全
+│  ├─ routes/             Flask API 与 SPA 入口
+│  ├─ services/           数据、索引、检索、评估、绘图和删除
+│  ├─ models.py           SQLAlchemy 数据模型
+│  └─ tasks.py            后台任务编排
+├─ frontend/              Vue 3 + TypeScript SPA
+├─ data/                  上传、缓存、索引和知识文件
+├─ instance/              本地 SQLite 数据库
+├─ scripts/               初始化、demo 和评测脚本
+├─ tests/                 后端测试
+├─ docs/                  开发文档与发布说明
+├─ requirements.txt
+└─ run.py
+```
+
+## 验证
+
+后端：
+
+```powershell
+python -m pytest -q
+```
+
+前端：
+
+```powershell
+cd frontend
+npm test -- --run
+npm run typecheck
+npm run build
+```
+
+## 常见问题
+
+### 页面显示 503
+
+前端产物尚未生成。停止正在运行的服务后执行：
 
 ```powershell
 cd frontend
@@ -199,151 +295,33 @@ cd ..
 python run.py
 ```
 
-如果刚改过前端但仍看到旧页面，重跑 `npm run build` 后刷新浏览器。
+### 数据处理提示缺少 `X_pca`
+
+先在 AnnData 中执行 PCA，并把结果保存到 `adata.obsm["X_pca"]` 后重新导出 `.h5ad`。
+
+### 表格已有检索结果，但高亮图仍未出现
+
+结果查询和绘图是两个任务。等待图表任务完成；失败时点击“重新加载”。切换检索模式会清理旧图。
+
+### Fan-out 跳过数据集
+
+检查当前用户是否有查看权限、目标是否存在同距离度量的 ready 索引，以及 PCA 向量维度是否一致。
+
+### Windows 构建提示无法创建 `dist/assets`
+
+先停止旧的 Python/Node 服务，确认 `frontend/dist` 可写，再运行 `npm run build`。
 
 ### 端口被占用
 
-默认端口：
+默认端口为 Flask 5000、Vite 5173。正常停止旧服务后重新启动。
 
-```text
-Flask: 5000
-Vite: 5173
-```
+## 更多文档
 
-如果端口被占用，先关闭旧的 Python 或 Node 进程，再重新启动。
+- [完整开发文档与用户手册](docs/单细胞ANN检索研究平台开发文档.md)
+- [公网部署前发布阻断清单](docs/发布阻断清单.md)
+- [AI 平台内置知识](docs/ai-knowledge/)
+- [中期开发分工手册](docs/单细胞%20ANN%20检索系统中期开发分工手册.md)
 
-## 演示流程
+## 生产部署提醒
 
-1. 打开 `http://127.0.0.1:5000` 或 `http://127.0.0.1:5173`
-2. 使用 `admin / admin123` 登录
-3. 进入 Datasets，上传 `data/raw/demo_liver.h5ad`
-4. 在数据集详情页处理数据集，提取向量和细胞元信息
-5. 查看数据集统计信息和 UMAP/PCA 可视化
-6. 进入 Index Lab，一次构建并统一评估候选索引，选择最终保留的 2–3 个索引
-7. 进入 Query Lab，选择数据集和索引
-8. 输入查询细胞索引，例如 `0`
-9. 设置 Top-K，例如 `10`
-10. 运行检索并查看结果表格、耗时和散点图联动
-11. 可选：使用跨数据集检索
-12. 进入 Access 查看有效权限；Owner 可在数据集详情中配置 Viewer/Editor
-
-## 权限模型
-
-- 系统角色为 `admin / user`；数据集有效角色为 `admin / owner / editor / viewer`。
-- `private` 数据集仅 Owner、Admin 和显式成员可见；`shared` 向所有登录用户开放 Viewer。
-- Editor 可处理数据、构建和评估索引、完成索引实验以及使用数据构建联合索引。
-- 只有 Owner/Admin 可以修改共享范围、管理成员、转移所有权或删除数据集。
-- 联合索引构建要求对所有源数据集至少拥有 Editor；查看和查询要求全部源数据集可见。
-- Access 页面提供权限总览、管理员用户管理和审计日志；账号停用不会删除资源或历史记录。
-
-## AI 分析第一阶段
-
-平台支持由管理员统一维护 OpenAI、DeepSeek、智谱、Qwen 以及自定义 OpenAI-compatible 服务。普通用户只能选择管理员已测试并启用的模型，无法读取 API Key。
-
-### 1. 配置凭据加密主密钥
-
-先安装依赖并生成 Fernet 密钥：
-
-```powershell
-pip install -r requirements.txt
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-复制 `.env.example` 为 `.env`，将输出填写到：
-
-```text
-AI_CREDENTIAL_ENCRYPTION_KEY=生成的Fernet密钥
-```
-
-此密钥与 Flask `SECRET_KEY` 分离。请备份并避免提交 `.env`；丢失后已保存的模型 API Key 无法解密，只能由管理员重新填写。
-
-### 2. 管理员配置模型
-
-1. 使用管理员账号登录。
-2. 进入“权限管理 → AI 模型”。
-3. 添加供应商凭据，只在创建或替换时填写 API Key。
-4. 添加一个或多个模型 ID，并选择“对话模型”或“Embedding”。
-5. 对模型执行连接测试。
-6. 测试成功后启用模型，并选择默认模型。
-7. 按需设置全局每日请求限额、并发数和单用户 AI 权限。
-
-供应商的“超时（秒）”用于规划、流式解读和 Embedding 调用，新配置默认 180 秒，可在 15–600 秒之间调整。连接失败、429 和 5xx 最多透明重试一次；模型增强失败不会改变已经成功的检索结果。
-
-Qwen 默认提供中国区 Endpoint，并允许填写国际区或 Workspace 专属 Endpoint。自定义 Endpoint 默认必须使用公网 HTTPS；只有明确设置 `AI_ALLOW_PRIVATE_ENDPOINTS=true` 才允许可信内网模型服务。
-
-### 3. 第二阶段 AI 分析与 RAG
-
-进入“AI 助手”，选择可用模型并输入例如：
-
-```text
-在 demo_liver 中找到与 123 号细胞最相似的 20 个 Hepatocyte，并解释疾病和年龄组分布。
-```
-
-平台会根据请求生成最多四步的 `AnalysisPlan`，在单数据集、Fan-out 和联合索引中选择合法模式。用户可以修改模式、数据集、索引、细胞编号、Top-K 和目标数据集；所有 ANN 步骤整份确认一次，确认前不会创建检索 Task。
-
-ANN 完成后，助手立即返回带实际统计值的中文回答；模型的简短定性解读通过 SSE 流式追加，并在结束时校验中文、数字和引用。Evidence Key、RAG 片段和内部工具步骤默认隐藏，完整结果表和高亮图统一在 Query Lab 展示。
-
-同一会话会继承最近一次有效检索状态，并使用受限的近期消息和结果摘要理解“再查 1 号”一类相对指令。针对上一轮结果的解释性问题会直接基于已保存证据回答，不会重复执行 ANN。
-
-Query Lab 的“检索历史”统一包含人工单数据集、Fan-out、联合索引和 AI 检索。通过 AI 回答中的按钮进入 Query Lab 时，会直接恢复已保存的参数和结果，只异步生成高亮图，不会再次执行 ANN。
-
-### 4. AI 知识库
-
-“AI 知识库”支持 PDF、Markdown 和 TXT，分为平台、数据集和个人三级空间。中文字符关键词检索始终可用；管理员可以使用现有供应商凭据另外配置并测试 Embedding 模型，测试成功后文档会建立语义向量。没有 Embedding 或向量重建失败时自动降级为关键词检索。
-
-内置知识来自 `docs/ai-knowledge/`，包含平台入门、索引选择、AI 证据规则和故障排查。数据集、索引和权限清单在每次提问时实时读取，不固化到文档中。
-
-第二阶段的 RAG 范围不包含公网搜索、OCR 和基因差异表达；全局平台助手与受审批写操作由第三阶段提供。
-
-## 统一 AI 助手
-
-登录后可从任意页面右下角打开 AI 助手，也可以进入 `/ai-assistant` 使用完整工作台。助手会自动附带脱敏页面上下文，在同一会话中完成平台问答、受控页面导航、Query Lab/Index Lab 预填和可确认的科学检索。旧 `/ai-analysis` 链接会兼容跳转到统一助手，历史分析会话继续可用。
-
-数据处理、索引构建/实验/评估、联合索引和知识维护只会生成待确认操作卡。用户确认后，后端重新校验权限和资源状态并复用现有 Task 服务；删除、权限、所有权、账号、模型和密钥操作不向 AI 开放。
-
-默认回答以简体中文为主体。明确导航、科学移交和敏感操作拒绝使用确定性快路径；其余问题结合平台实时资源与三级 RAG，由模型生成并经过中文、数字、引用和工具权限校验。
-
-开发者可运行脱敏真实模型评测：
-
-```powershell
-.venv\Scripts\python.exe scripts\evaluate_ai_quality.py --provider qwen --limit 5
-```
-
-评测读取管理员已加密保存且测试启用的模型，不创建用户会话或真实写任务；原始输出目录已加入 Git 忽略规则。
-
-## 验证命令
-
-后端测试：
-
-```powershell
-pytest tests -q
-```
-
-前端类型检查：
-
-```powershell
-cd frontend
-npm run typecheck
-```
-
-前端生产构建：
-
-```powershell
-cd frontend
-npm run build
-```
-
-前端生产依赖安全检查：
-
-```powershell
-cd frontend
-npm audit --omit=dev
-```
-
-## 后续扩展方向
-
-- 多 ANN 算法选择：FAISS IVF/PQ/HNSW 参数实验
-- 索引合并：Harmony 对齐后的多数据集物理联合索引、全局 cell id 与联合高亮图
-- 外部专业文献检索、OCR、marker gene 与差异表达分析
-- 批量查询与结果导出
-- Plotly 按需加载，降低首屏构建包体积
+本项目当前使用 SQLite、本地文件系统、进程内线程池和 Flask 开发服务器。公网或高并发部署前，至少需要生产 WSGI、HTTPS/反向代理、强密钥和独立管理员、持久任务队列、数据库与文件一致备份、上传防护、监控告警及安全评审。详见[发布阻断清单](docs/发布阻断清单.md)。
