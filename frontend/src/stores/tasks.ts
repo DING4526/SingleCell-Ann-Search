@@ -3,7 +3,6 @@ import { api } from "@/services/api";
 import type { TaskRecord } from "@/types";
 
 let activeTimer: number | undefined;
-
 export const useTaskStore = defineStore("tasks", {
   state: () => ({
     active: [] as TaskRecord[],
@@ -23,18 +22,33 @@ export const useTaskStore = defineStore("tasks", {
       if (activeTimer) return;
       this.polling = true;
       const tick = async () => {
+        if (!this.polling) return;
         try {
           await this.refreshActive();
+        } catch {
+          // A transient request failure must not create an unhandled promise;
+          // the next scheduled poll will retry unless logout stopped polling.
         } finally {
-          activeTimer = window.setTimeout(tick, this.active.length ? 2000 : 12000);
+          if (this.polling) activeTimer = window.setTimeout(tick, this.active.length ? 2500 : 12000);
         }
       };
-      tick();
+      void tick();
     },
     stopActivePolling() {
       if (activeTimer) window.clearTimeout(activeTimer);
       activeTimer = undefined;
       this.polling = false;
+    },
+    async removeTask(taskId: number) {
+      const result = await api.removeTask(taskId);
+      this.recent = this.recent.filter((task) => task.id !== taskId);
+      this.active = this.active.filter((task) => task.id !== taskId);
+      return result;
+    },
+    async clearTerminalTasks() {
+      const result = await api.clearTerminalTasks();
+      await this.refreshRecent();
+      return result.hidden_count ?? 0;
     },
     async waitForTask(taskId: number, onTick?: (task: TaskRecord) => void, options: { timeoutMs?: number; intervalMs?: number } = {}) {
       const startedAt = Date.now();
@@ -48,9 +62,9 @@ export const useTaskStore = defineStore("tasks", {
           await this.refreshRecent().catch(() => undefined);
           return task;
         }
-        if (task.status === "error") {
+        if (["error", "cancelled"].includes(task.status)) {
           await this.refreshRecent().catch(() => undefined);
-          throw new Error(task.error || task.message || "任务失败");
+          throw new Error(task.error || task.message || (task.status === "cancelled" ? "任务已取消" : "任务失败"));
         }
         if (timeoutMs > 0 && Date.now() - startedAt > timeoutMs) {
           throw new Error(task.message ? `任务等待超时：${task.message}` : "任务等待超时");

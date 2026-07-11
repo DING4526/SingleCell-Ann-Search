@@ -4,6 +4,8 @@
 
 前端已重构为专业研究者平台式 SPA，核心页面包括 Overview、Datasets、Index Lab、Joint Indexes、Query Lab、Access、AI Knowledge 和统一 AI Assistant。
 
+本地开发与课程演示配置不等同于生产配置；对外部署前请逐项完成 [`docs/发布阻断清单.md`](docs/发布阻断清单.md)。
+
 ## 技术栈
 
 - 后端：Flask, Flask-Login, Flask-SQLAlchemy
@@ -25,9 +27,7 @@ single-cell-ann-search/
 │   ├── models.py            # 用户、数据集权限、索引、任务、查询与审计模型
 │   ├── routes/              # 页面路由与 API 路由
 │   ├── services/            # 数据处理、索引、评估、绘图服务
-│   ├── spa.py               # Flask 托管 Vite SPA
-│   ├── templates/           # 旧 Jinja 模板，保留部分兼容页面
-│   └── static/              # 旧静态资源
+│   └── spa.py               # Flask 托管 Vite SPA，并提供正式 503 回退页
 ├── frontend/
 │   ├── src/                 # Vue 3 SPA 源码
 │   ├── package.json         # 前端依赖与脚本

@@ -1,18 +1,22 @@
 <template>
   <PageHeader :title="dataset?.name || '数据集详情'" :description="dataset?.description || '数据集资源详情、可视化、索引和任务记录。'">
     <template #actions>
-      <a-space>
+      <a-space wrap>
         <a-button @click="$router.push('/datasets')">返回列表</a-button>
         <a-tag v-if="dataset" :color="accessRoleColor(dataset.effective_role)">{{ accessRoleLabel(dataset.effective_role) }}</a-tag>
         <a-button v-if="dataset?.can_manage" @click="openAccess">共享设置</a-button>
         <a-button v-if="dataset?.can_edit && (dataset.status === 'uploaded' || dataset.status === 'error')" type="primary" :loading="actionLoading" @click="process">处理数据集</a-button>
         <a-button v-if="dataset?.can_edit && ['processed', 'indexed'].includes(dataset.status)" type="primary" @click="$router.push(`/index-lab?dataset=${dataset.id}`)">构建索引</a-button>
         <a-button v-if="dataset?.ready_index_count" @click="$router.push(`/query-lab?dataset=${dataset.id}`)">检索细胞</a-button>
+        <a-button v-if="dataset?.can_manage" danger ghost @click="confirmDeleteDataset">删除数据集</a-button>
       </a-space>
     </template>
   </PageHeader>
 
   <a-spin :spinning="store.loading">
+    <a-result v-if="pageError && !dataset" status="error" title="数据集加载失败" :sub-title="pageError">
+      <template #extra><a-button type="primary" @click="reload">重新加载</a-button></template>
+    </a-result>
     <template v-if="dataset">
       <div class="metric-grid">
         <div class="metric-tile"><div class="metric-label">细胞数</div><div class="metric-value">{{ numberOrDash(dataset.n_cells) }}</div></div>
@@ -58,9 +62,14 @@
 
           <div class="surface">
             <div class="toolbar"><span class="toolbar-title">最近任务</span></div>
-            <a-list :data-source="store.recentTasks" size="small">
+            <a-list :data-source="store.recentTasks" size="small" :locale="{ emptyText: '暂无任务记录' }">
               <template #renderItem="{ item }">
                 <a-list-item>
+                  <template #actions>
+                    <a-popconfirm v-if="isTerminalTask(item) && item.can_remove" title="从任务历史移除此记录？" @confirm="removeTask(item.id)">
+                      <a-button type="link" danger size="small">移除</a-button>
+                    </a-popconfirm>
+                  </template>
                   <a-list-item-meta :title="taskTypeText(item.type)" :description="item.message || item.error || '-'">
                     <template #avatar><StatusTag :status="item.status" /></template>
                   </a-list-item-meta>
@@ -76,9 +85,9 @@
               <span class="toolbar-title">嵌入图</span>
               <a-button size="small" :disabled="!canPlot" :loading="plotLoading" @click="loadScatter">重新加载</a-button>
             </div>
-            <div class="surface-pad">
+            <div class="plot-content">
               <a-alert v-if="plotError" style="margin-bottom: 12px" type="error" show-icon :message="plotError" />
-              <PlotlyPanel v-if="scatter" :payload="scatter" :interactive="true" :height="560" />
+              <PlotlyPanel v-if="scatter" :payload="scatter" :interactive="true" :height="500" aria-label="数据集细胞嵌入分布" @point-click="openPlotCell" />
               <div v-else class="placeholder-panel">{{ canPlot ? "加载细胞分布图" : "处理数据集后可查看 UMAP/PCA 分布" }}</div>
             </div>
           </div>
@@ -88,9 +97,20 @@
               <span class="toolbar-title">索引</span>
               <a-button v-if="dataset.can_edit" size="small" type="primary" :disabled="!['processed', 'indexed'].includes(dataset.status)" @click="$router.push(`/index-lab?dataset=${dataset.id}`)">索引实验室</a-button>
             </div>
-            <a-table :data-source="dataset.indexes" :columns="indexColumns" row-key="id" size="small" :pagination="false">
+            <a-table class="compact-table" :data-source="dataset.indexes" :columns="indexColumns" row-key="id" size="small" :pagination="false" :locale="{ emptyText: '尚未构建索引' }">
               <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'status'"><StatusTag :status="record.status" /></template>
+                <template v-if="column.key === 'algorithm'">
+                  <div class="index-name">{{ algorithmText(record.algorithm) }}</div>
+                  <div class="index-meta">{{ metricText(record.metric) }} · M {{ record.M }} · 查询深度 {{ record.ef_search }}</div>
+                </template>
+                <template v-else-if="column.key === 'build_time'"><span class="numeric-cell">{{ formatMilliseconds(record.build_time_ms) }}</span></template>
+                <template v-else-if="column.key === 'status'"><StatusTag :status="record.lifecycle === 'discarded' ? 'discarded' : record.status" /></template>
+                <template v-else-if="column.key === 'actions'">
+                  <a-popconfirm v-if="record.can_delete" title="永久删除此索引及其物理文件？" @confirm="deleteIndex(record.id)">
+                    <a-button type="link" danger size="small">删除</a-button>
+                  </a-popconfirm>
+                  <a-button v-else-if="dataset.can_edit" type="link" danger size="small" disabled :title="deleteBlockerText(record)">删除</a-button>
+                </template>
               </template>
             </a-table>
           </div>
@@ -99,14 +119,14 @@
     </template>
   </a-spin>
 
-  <a-drawer v-model:open="accessOpen" title="共享设置" width="520" :destroy-on-close="false">
+  <a-drawer v-model:open="accessOpen" title="共享设置" width="min(540px, 96vw)" :destroy-on-close="false">
     <a-spin :spinning="accessLoading">
       <template v-if="accessConfig">
         <a-alert
           :type="accessConfig.visibility === 'shared' ? 'info' : 'success'"
           show-icon
           :message="accessConfig.visibility === 'shared' ? '全员只读' : '仅成员可见'"
-          :description="accessConfig.visibility === 'shared' ? '所有登录用户拥有 Viewer 权限；显式 Editor 仍可处理数据和运行索引实验。' : '只有 Owner、Admin 和下方明确授权的成员可以访问。'"
+          :description="accessConfig.visibility === 'shared' ? '所有登录用户拥有只读权限；明确授予的可编辑成员仍可处理数据和运行索引实验。' : '只有所有者、管理员和下方明确授权的成员可以访问。'"
           style="margin-bottom: 18px"
         />
 
@@ -133,7 +153,7 @@
             :loading="userSearching"
             @search="searchUsers"
           />
-          <a-select v-model:value="selectedLevel" style="width: 112px"><a-select-option value="viewer">Viewer</a-select-option><a-select-option value="editor">Editor</a-select-option></a-select>
+          <a-select v-model:value="selectedLevel" style="width: 112px"><a-select-option value="viewer">只读</a-select-option><a-select-option value="editor">可编辑</a-select-option></a-select>
           <a-button type="primary" :disabled="!selectedUserId" :loading="accessSaving" @click="savePermission">添加</a-button>
         </div>
 
@@ -145,7 +165,7 @@
             </template>
             <template v-else-if="column.key === 'level'">
               <a-select :value="record.level" size="small" style="width: 105px" :disabled="!record.user_enabled" @change="updatePermission(record.user_id, $event)">
-                <a-select-option value="viewer">Viewer</a-select-option><a-select-option value="editor">Editor</a-select-option>
+                <a-select-option value="viewer">只读</a-select-option><a-select-option value="editor">可编辑</a-select-option>
               </a-select>
             </template>
             <template v-else-if="column.key === 'actions'"><a-button danger type="link" size="small" @click="removePermission(record.user_id, record.username)">移除</a-button></template>
@@ -154,7 +174,7 @@
 
         <a-divider />
         <div class="panel-title">转移所有权</div>
-        <a-alert type="warning" show-icon message="转移后你将自动保留 Editor 权限，新的 Owner 可以修改共享设置或删除数据集。" style="margin-bottom: 12px" />
+        <a-alert type="warning" show-icon message="转移后你将自动保留可编辑权限，新的所有者可以修改共享设置或删除数据集。" style="margin-bottom: 12px" />
         <div class="member-add-row">
           <a-select v-model:value="transferUserId" show-search allow-clear :filter-option="false" placeholder="搜索新的所有者" style="flex: 1" :options="userOptions" :loading="userSearching" @search="searchUsers" />
           <a-button danger :disabled="!transferUserId" :loading="accessSaving" @click="transferOwnership">确认转移</a-button>
@@ -162,11 +182,24 @@
       </template>
     </a-spin>
   </a-drawer>
+
+  <a-drawer v-model:open="plotCellOpen" title="细胞详情" width="min(440px, 96vw)">
+    <a-spin :spinning="plotCellLoading">
+      <a-descriptions v-if="plotCell" :column="1" bordered size="small">
+        <a-descriptions-item label="细胞编号">{{ numberOrDash(plotCell.cell_index) }}</a-descriptions-item>
+        <a-descriptions-item label="细胞名称">{{ plotCell.cell_name || '未命名细胞' }}</a-descriptions-item>
+        <a-descriptions-item label="细胞类型">{{ plotCell.cell_type || '未知' }}</a-descriptions-item>
+        <a-descriptions-item label="疾病">{{ plotCell.disease || '未知' }}</a-descriptions-item>
+        <a-descriptions-item label="年龄组">{{ plotCell.age_group || '未知' }}</a-descriptions-item>
+      </a-descriptions>
+      <a-button v-if="plotCell" type="primary" block style="margin-top:16px" @click="$router.push(`/query-lab?dataset=${datasetId}&cell_index=${plotCell.cell_index}`)">检索此细胞</a-button>
+    </a-spin>
+  </a-drawer>
 </template>
 
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { message, Modal } from "ant-design-vue";
 import PageHeader from "@/components/PageHeader.vue";
 import PlotlyPanel from "@/components/PlotlyPanel.vue";
@@ -174,17 +207,22 @@ import StatusTag from "@/components/StatusTag.vue";
 import { api } from "@/services/api";
 import { useDatasetStore } from "@/stores/datasets";
 import { useTaskStore } from "@/stores/tasks";
-import { formatDate, numberOrDash, taskTypeText } from "@/utils/format";
+import { algorithmText, formatDate, formatMilliseconds, metricText, numberOrDash, taskTypeText } from "@/utils/format";
 import type { DatasetAccess, EffectiveRole, ManagedUser, PlotlyPayload, TaskRecord } from "@/types";
 
 const route = useRoute();
+const router = useRouter();
 const store = useDatasetStore();
 const taskStore = useTaskStore();
 const actionLoading = ref(false);
+const pageError = ref("");
 const plotLoading = ref(false);
 const plotError = ref("");
 const currentTask = ref<TaskRecord | null>(null);
 const scatter = ref<PlotlyPayload | null>(null);
+const plotCellOpen = ref(false);
+const plotCellLoading = ref(false);
+const plotCell = ref<{ cell_index: number; cell_name: string; cell_type: string; disease: string; age_group: string } | null>(null);
 const accessOpen = ref(false);
 const accessLoading = ref(false);
 const accessSaving = ref(false);
@@ -203,12 +241,10 @@ const userOptions = computed(() => userResults.value
   .map((user) => ({ value: user.id, label: `${user.username}${user.role === "admin" ? " · Admin" : ""}` })));
 
 const indexColumns = [
-  { title: "算法", dataIndex: "algorithm", width: 110 },
-  { title: "距离度量", dataIndex: "metric", width: 90 },
-  { title: "M", dataIndex: "M", width: 70 },
-  { title: "ef", dataIndex: "ef_search", width: 80 },
-  { title: "构建耗时 ms", dataIndex: "build_time_ms", width: 120 },
-  { title: "状态", key: "status", width: 100 },
+  { title: "索引", key: "algorithm" },
+  { title: "构建耗时", key: "build_time", width: 116, align: "right" },
+  { title: "状态", key: "status", width: 104 },
+  { title: "操作", key: "actions", width: 72, align: "center" },
 ];
 const permissionColumns = [
   { title: "成员", key: "user" },
@@ -217,7 +253,7 @@ const permissionColumns = [
 ];
 
 function accessRoleLabel(role: EffectiveRole | null | undefined) {
-  return ({ admin: "Admin", owner: "Owner", editor: "Editor", viewer: "Viewer" } as Record<string, string>)[role || ""] || "无权限";
+  return ({ admin: "管理员", owner: "所有者", editor: "可编辑", viewer: "只读" } as Record<string, string>)[role || ""] || "无权限";
 }
 
 function accessRoleColor(role: EffectiveRole | null | undefined) {
@@ -245,8 +281,77 @@ const StatList = defineComponent({
 });
 
 async function reload() {
-  await store.loadDetail(datasetId.value);
-  if (canPlot.value) loadScatter();
+  pageError.value = "";
+  try {
+    await store.loadDetail(datasetId.value);
+    if (canPlot.value) void loadScatter();
+  } catch (error) {
+    pageError.value = (error as Error).message;
+  }
+}
+
+function confirmDeleteDataset() {
+  if (!dataset.value) return;
+  const blockers = dataset.value.delete_blockers || [];
+  Modal.confirm({
+    title: `永久删除「${dataset.value.name}」？`,
+    content: blockers.length
+      ? `当前无法删除：${blockers.map((item) => item.label).join("；")}`
+      : "数据集记录、细胞、索引和受管文件将被永久删除。此操作不可撤销。",
+    okText: "永久删除",
+    okType: "danger",
+    cancelText: "取消",
+    okButtonProps: { disabled: blockers.length > 0 },
+    async onOk() {
+      await api.deleteDataset(datasetId.value);
+      message.success("数据集已删除");
+      await router.push("/datasets");
+    },
+  });
+}
+
+function isTerminalTask(task: TaskRecord) {
+  return ["success", "error", "cancelled", "skipped"].includes(task.status);
+}
+
+function deleteBlockerText(record: { delete_blockers?: Array<{ label: string }> }) {
+  return record.delete_blockers?.map((item) => item.label).join("；") || "当前索引不可删除";
+}
+
+async function removeTask(taskId: number) {
+  try {
+    await api.removeTask(taskId);
+    message.success("已从任务历史移除");
+    await store.loadDetail(datasetId.value);
+  } catch (error) {
+    message.error((error as Error).message);
+  }
+}
+
+async function deleteIndex(indexId: number) {
+  try {
+    await api.deleteIndex(datasetId.value, indexId);
+    message.success("索引已删除");
+    await reload();
+  } catch (error) {
+    message.error((error as Error).message);
+  }
+}
+
+async function openPlotCell(event: { customdata: unknown }) {
+  const data = Array.isArray(event.customdata) ? event.customdata : [];
+  const cellIndex = Number(data[0]);
+  if (!Number.isFinite(cellIndex)) return;
+  plotCellOpen.value = true;
+  plotCellLoading.value = true;
+  plotCell.value = null;
+  try {
+    plotCell.value = (await api.cellMeta(datasetId.value, cellIndex)).cell;
+  } catch (error) {
+    message.error((error as Error).message);
+  } finally {
+    plotCellLoading.value = false;
+  }
 }
 
 async function loadScatter() {
@@ -378,5 +483,10 @@ onMounted(async () => {
 
 <style scoped>
 .member-add-row { display: flex; align-items: center; gap: 10px; }
-@media (max-width: 620px) { .member-add-row { align-items: stretch; flex-direction: column; } }
+.plot-content { min-width: 0; }
+.plot-content > .ant-alert { margin: 12px; }
+.plot-content .placeholder-panel { margin: 14px; }
+.index-name { color: #172033; font-weight: 600; }
+.index-meta { margin-top: 3px; color: #64748b; font-size: 12px; }
+.numeric-cell { font-variant-numeric: tabular-nums; }
 </style>

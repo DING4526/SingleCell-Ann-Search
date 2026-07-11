@@ -2,7 +2,6 @@
 import json
 import os
 import uuid
-import pathlib
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify, current_app
 from flask_login import login_required, current_user, login_user, logout_user
@@ -18,12 +17,12 @@ from app.models import (
     QueryLog,
     User,
     JointIndex,
+    JointQueryLog,
     IndexExperiment,
     IndexExperimentRun,
     IndexEvaluation,
     AiRun,
     AiToolCall,
-    KnowledgeDocument,
 )
 from app.tasks import (
     executor,
@@ -51,6 +50,22 @@ from app.services.access_service import (
     is_admin,
 )
 from app.services.audit_service import audit_to_dict, record_audit
+from app.services.deletion_service import (
+    ACTIVE_TASK_STATUSES,
+    DeletionConflict,
+    ann_index_delete_blockers,
+    conflict_payload,
+    dataset_delete_blockers,
+    delete_ann_index,
+    delete_dataset,
+    delete_joint_index,
+    joint_index_delete_blockers,
+    process_cleanup_task,
+    remove_evaluation,
+    remove_experiment,
+    remove_task,
+    remove_terminal_tasks_for_user,
+)
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -92,6 +107,12 @@ def _task_to_dict(task: Task, include_result: bool = False) -> dict:
         "created_by_name": task.created_by.username if task.created_by else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
         "created_at": task.created_at.isoformat() if task.created_at else None,
+        "history_hidden": bool(task.history_hidden),
+        "can_remove": bool(
+            task.status not in ACTIVE_TASK_STATUSES
+            and not (task.type == "artifact_cleanup" and task.status == "error")
+            and (task.created_by_id == current_user.id or is_admin())
+        ),
     }
 
 
@@ -235,6 +256,8 @@ def _index_to_dict(idx: AnnIndex) -> dict:
             "quality": idx.source_run.quality,
             "recommendation": idx.source_run.recommendation,
         }
+    blockers = ann_index_delete_blockers(idx)
+    can_delete = bool(idx.dataset and can_edit_dataset(idx.dataset) and not blockers)
     return {
         "id": idx.id,
         "dataset_id": idx.dataset_id,
@@ -256,11 +279,14 @@ def _index_to_dict(idx: AnnIndex) -> dict:
         "status": idx.status,
         "error_message": idx.error_message,
         "created_at": idx.created_at.isoformat() if idx.created_at else None,
+        "can_delete": can_delete,
+        "delete_blockers": blockers,
     }
 
 
 def _dataset_to_dict(dataset: Dataset, include_indexes: bool = True) -> dict:
     effective_role = effective_dataset_role(dataset)
+    blockers = dataset_delete_blockers(dataset)
     data = {
         "id": dataset.id,
         "name": dataset.name,
@@ -278,6 +304,8 @@ def _dataset_to_dict(dataset: Dataset, include_indexes: bool = True) -> dict:
         "permission_source": dataset_permission_source(dataset),
         "can_edit": can_edit_dataset(dataset),
         "can_manage": can_manage_dataset(dataset),
+        "can_delete": bool(can_manage_dataset(dataset) and not blockers),
+        "delete_blockers": blockers,
     }
     if include_indexes:
         active_indexes = [idx for idx in dataset.indexes if (idx.lifecycle or "active") == "active"]
@@ -295,6 +323,28 @@ def _can_view_joint_index(joint_index: JointIndex) -> bool:
     return all(row.dataset and can_view_dataset(row.dataset) for row in included_rows)
 
 
+def _can_manage_joint_index(joint_index: JointIndex) -> bool:
+    return bool(joint_index and (is_admin() or joint_index.owner_id == current_user.id))
+
+
+def _joint_index_to_dict(joint_index: JointIndex) -> dict:
+    from app.services.joint_index_service import joint_index_to_dict
+
+    payload = joint_index_to_dict(joint_index)
+    blockers = joint_index_delete_blockers(joint_index)
+    payload.update({
+        "owner_name": joint_index.owner.username if joint_index.owner else None,
+        "can_manage": _can_manage_joint_index(joint_index),
+        "can_delete": bool(_can_manage_joint_index(joint_index) and not blockers),
+        "delete_blockers": blockers,
+    })
+    return payload
+
+
+def _conflict_response(exc: DeletionConflict):
+    return jsonify(**conflict_payload(exc)), 409
+
+
 def _dataset_stats(dataset_id: int) -> dict:
     stats = {}
     for col in ["cell_type", "disease", "age_group"]:
@@ -307,46 +357,6 @@ def _dataset_stats(dataset_id: int) -> dict:
         )
         stats[col] = [{"name": key or "N/A", "count": count} for key, count in rows]
     return stats
-
-
-def _delete_dataset_files(dataset: Dataset):
-    dataset_id = dataset.id
-    if dataset.file_path:
-        other_refs = Dataset.query.filter(
-            Dataset.id != dataset_id,
-            Dataset.file_path == dataset.file_path,
-        ).count()
-        if other_refs == 0 and os.path.exists(dataset.file_path):
-            os.remove(dataset.file_path)
-
-    if dataset.vector_path:
-        vec_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.vector_path
-        if vec_path.exists():
-            os.remove(str(vec_path))
-
-    if dataset.scatter_cache_path:
-        scatter_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.scatter_cache_path
-        if scatter_path.exists():
-            os.remove(str(scatter_path))
-
-    for document in KnowledgeDocument.query.filter_by(dataset_id=dataset_id).all():
-        if document.stored_path:
-            path = pathlib.Path(document.stored_path)
-            if path.is_file():
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-
-    for idx in AnnIndex.query.filter_by(dataset_id=dataset_id).all():
-        if idx.index_path:
-            idx_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.index_path
-            if idx_path.exists():
-                os.remove(str(idx_path))
-        if idx.preprocess_path:
-            prep_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.preprocess_path
-            if prep_path.exists():
-                os.remove(str(prep_path))
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +793,7 @@ def api_dataset_detail(dataset_id):
 
     tasks = (
         accessible_tasks_query(Task.query.filter_by(dataset_id=dataset_id))
+        .filter(Task.history_hidden.is_(False))
         .order_by(Task.updated_at.desc())
         .limit(8)
         .all()
@@ -804,17 +815,45 @@ def api_dataset_delete(dataset_id):
     if not can_manage_dataset(dataset):
         return jsonify(ok=False, message="没有权限删除该数据集。"), 403
 
-    record_audit(
-        "dataset.deleted",
-        resource_type="dataset",
-        resource_id=dataset.id,
-        dataset_id=dataset.id,
-        details={"name": dataset.name},
-    )
-    _delete_dataset_files(dataset)
-    db.session.delete(dataset)
-    db.session.commit()
-    return jsonify(ok=True, message="数据集已删除。")
+    try:
+        result = delete_dataset(dataset, actor=current_user)
+        return jsonify(ok=True, message="数据集已删除。", **result)
+    except DeletionConflict as exc:
+        return _conflict_response(exc)
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Failed to delete dataset %s", dataset_id)
+        return jsonify(
+            ok=False,
+            code="DATASET_DELETE_FAILED",
+            error_code="DATASET_DELETE_FAILED",
+            message="数据集删除未完整结束，请刷新资源与任务状态后重试。",
+            blockers=[],
+        ), 500
+
+
+@api_bp.route("/datasets/<int:dataset_id>/indexes/<int:index_id>", methods=["DELETE"])
+@login_required
+def api_ann_index_delete(dataset_id, index_id):
+    """Permanently delete one ANN index while retaining evaluation history."""
+    dataset = db.session.get(Dataset, dataset_id)
+    index = db.session.get(AnnIndex, index_id)
+    if not dataset or not index or index.dataset_id != dataset_id:
+        return jsonify(ok=False, message="索引不存在。"), 404
+    if not can_edit_dataset(dataset):
+        return jsonify(ok=False, message="没有权限删除该索引。"), 403
+    try:
+        result = delete_ann_index(index, actor=current_user)
+        return jsonify(ok=True, message="索引已删除。", **result)
+    except DeletionConflict as exc:
+        return _conflict_response(exc)
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Failed to delete ANN index %s", index_id)
+        return jsonify(
+            ok=False, code="ANN_INDEX_DELETE_FAILED", error_code="ANN_INDEX_DELETE_FAILED",
+            message="索引删除失败。", blockers=[],
+        ), 500
 
 
 # ---------------------------------------------------------------------------
@@ -887,6 +926,7 @@ def api_process(dataset_id):
         status="pending",
         progress=0,
         message="任务已提交，等待执行...",
+        request_json=json.dumps({"dataset_id": dataset_id}, ensure_ascii=False),
         dataset_id=dataset_id,
         created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
@@ -1015,6 +1055,7 @@ def api_build_index(dataset_id):
         status="pending",
         progress=0,
         message="任务已提交，等待执行...",
+        request_json=json.dumps(params, ensure_ascii=False),
         dataset_id=dataset_id,
         created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
@@ -1041,25 +1082,36 @@ def api_build_index(dataset_id):
 @login_required
 def api_joint_indexes():
     """返回当前用户可见的联合索引列表。"""
-    from app.services.joint_index_service import joint_index_to_dict
-
     rows = JointIndex.query.order_by(JointIndex.created_at.desc()).all()
     visible = [row for row in rows if _can_view_joint_index(row)]
-    return jsonify(ok=True, joint_indexes=[joint_index_to_dict(row) for row in visible])
+    return jsonify(ok=True, joint_indexes=[_joint_index_to_dict(row) for row in visible])
 
 
-@api_bp.route("/joint-indexes/<int:joint_index_id>", methods=["GET"])
+@api_bp.route("/joint-indexes/<int:joint_index_id>", methods=["GET", "DELETE"])
 @login_required
 def api_joint_index_detail(joint_index_id):
     """返回单个联合索引详情。"""
-    from app.services.joint_index_service import joint_index_to_dict
-
     joint_index = db.session.get(JointIndex, joint_index_id)
     if not joint_index:
         return jsonify(ok=False, message="联合索引不存在。"), 404
-    if not _can_view_joint_index(joint_index):
+    if request.method == "GET" and not _can_view_joint_index(joint_index):
         return jsonify(ok=False, message="没有权限查看该联合索引。"), 403
-    return jsonify(ok=True, joint_index=joint_index_to_dict(joint_index))
+    if request.method == "DELETE":
+        if not _can_manage_joint_index(joint_index):
+            return jsonify(ok=False, message="没有权限删除该联合索引。"), 403
+        try:
+            result = delete_joint_index(joint_index, actor=current_user)
+            return jsonify(ok=True, message="联合索引已删除。", **result)
+        except DeletionConflict as exc:
+            return _conflict_response(exc)
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception("Failed to delete joint index %s", joint_index_id)
+            return jsonify(
+                ok=False, code="JOINT_INDEX_DELETE_FAILED", error_code="JOINT_INDEX_DELETE_FAILED",
+                message="联合索引删除失败。", blockers=[],
+            ), 500
+    return jsonify(ok=True, joint_index=_joint_index_to_dict(joint_index))
 
 
 @api_bp.route("/joint-indexes/build/task", methods=["POST"])
@@ -1115,6 +1167,7 @@ def api_build_joint_index_task():
         status="pending",
         progress=0,
         message="联合索引构建任务已提交，等待执行...",
+        request_json=json.dumps(params, ensure_ascii=False),
         dataset_id=None,
         created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
@@ -1223,7 +1276,7 @@ def api_search_history_detail(task_id):
 # 查询任务状态
 # ---------------------------------------------------------------------------
 
-@api_bp.route("/tasks/<int:task_id>", methods=["GET"])
+@api_bp.route("/tasks/<int:task_id>", methods=["GET", "DELETE"])
 @login_required
 def api_task_status(task_id):
     """查询后台任务状态与进度。"""
@@ -1232,7 +1285,32 @@ def api_task_status(task_id):
         return jsonify(ok=False, message="任务不存在。"), 404
     if not can_view_task(task):
         return jsonify(ok=False, message="没有权限查看该任务。"), 403
+    if request.method == "DELETE":
+        if task.created_by_id != current_user.id and not is_admin():
+            return jsonify(ok=False, message="只能移除自己创建的任务记录。"), 403
+        try:
+            remove_task(task, actor=current_user)
+            return jsonify(ok=True, message="任务已从历史移除。")
+        except DeletionConflict as exc:
+            return _conflict_response(exc)
     return jsonify(ok=True, **_task_to_dict(task, include_result=True))
+
+
+@api_bp.route("/tasks/<int:task_id>/retry-cleanup", methods=["POST"])
+@login_required
+def api_retry_cleanup_task(task_id):
+    task = db.session.get(Task, task_id)
+    if not task or task.type != "artifact_cleanup":
+        return jsonify(ok=False, message="清理任务不存在。"), 404
+    if task.created_by_id != current_user.id and not is_admin():
+        return jsonify(ok=False, message="没有权限重试该清理任务。"), 403
+    if task.status not in {"pending", "error"}:
+        return jsonify(
+            ok=False, code="CLEANUP_NOT_RETRYABLE", error_code="CLEANUP_NOT_RETRYABLE",
+            message="当前清理任务无需重试。", blockers=[],
+        ), 409
+    result = process_cleanup_task(task)
+    return jsonify(ok=True, cleanup=result)
 
 
 # ---------------------------------------------------------------------------
@@ -1364,6 +1442,7 @@ def api_search_plot_task():
         status="pending",
         progress=0,
         message="检索高亮图任务已提交，等待执行...",
+        request_json=json.dumps(params, ensure_ascii=False),
         dataset_id=dataset_id,
         created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
@@ -1623,6 +1702,7 @@ def api_joint_search_plot_task():
         status="pending",
         progress=0,
         message="联合高亮图任务已提交，等待执行...",
+        request_json=json.dumps(params, ensure_ascii=False),
         dataset_id=None,
         created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
@@ -1638,12 +1718,23 @@ def api_joint_search_plot_task():
 # AJAX 评估（同步，直接返回结果）
 # ---------------------------------------------------------------------------
 
+def _experiment_payload(experiment: IndexExperiment, *, include_runs: bool) -> dict:
+    from app.services.index_experiment_service import experiment_to_dict
+
+    payload = experiment_to_dict(experiment, include_runs=include_runs)
+    payload["history_hidden"] = bool(experiment.history_hidden)
+    payload["can_remove"] = bool(
+        experiment.dataset
+        and can_edit_dataset(experiment.dataset)
+        and experiment.status not in {"pending", "running"}
+    )
+    return payload
+
+
 @api_bp.route("/index-experiments", methods=["GET"])
 @login_required
 def api_index_experiments():
     """List ANN algorithm experiments visible to the current user."""
-    from app.services.index_experiment_service import experiment_to_dict
-
     dataset_id = request.args.get("dataset_id", "").strip()
     query = IndexExperiment.query.join(Dataset, Dataset.id == IndexExperiment.dataset_id)
     visible_dataset_ids = [
@@ -1652,25 +1743,37 @@ def api_index_experiments():
     ]
     if not visible_dataset_ids:
         return jsonify(ok=True, experiments=[])
-    query = query.filter(IndexExperiment.dataset_id.in_(visible_dataset_ids))
+    query = query.filter(
+        IndexExperiment.dataset_id.in_(visible_dataset_ids),
+        IndexExperiment.history_hidden.is_(False),
+    )
     if dataset_id:
-        query = query.filter(IndexExperiment.dataset_id == int(dataset_id))
+        try:
+            query = query.filter(IndexExperiment.dataset_id == int(dataset_id))
+        except ValueError:
+            return jsonify(ok=False, message="dataset_id 必须是整数。"), 400
     rows = query.order_by(IndexExperiment.created_at.desc()).limit(50).all()
-    return jsonify(ok=True, experiments=[experiment_to_dict(row, include_runs=False) for row in rows])
+    return jsonify(ok=True, experiments=[_experiment_payload(row, include_runs=False) for row in rows])
 
 
-@api_bp.route("/index-experiments/<int:experiment_id>", methods=["GET"])
+@api_bp.route("/index-experiments/<int:experiment_id>", methods=["GET", "DELETE"])
 @login_required
 def api_index_experiment_detail(experiment_id):
     """Return one ANN algorithm experiment with run metrics."""
-    from app.services.index_experiment_service import experiment_to_dict
-
     experiment = db.session.get(IndexExperiment, experiment_id)
     if not experiment:
-        return jsonify(ok=False, message="Experiment does not exist."), 404
+        return jsonify(ok=False, message="实验不存在。"), 404
     if not experiment.dataset or not can_view_dataset(experiment.dataset):
-        return jsonify(ok=False, message="No permission to view this experiment."), 403
-    return jsonify(ok=True, experiment=experiment_to_dict(experiment))
+        return jsonify(ok=False, message="没有权限查看该实验。"), 403
+    if request.method == "DELETE":
+        if not can_edit_dataset(experiment.dataset):
+            return jsonify(ok=False, message="没有权限从历史移除该实验。"), 403
+        try:
+            remove_experiment(experiment, actor=current_user)
+            return jsonify(ok=True, message="实验已从历史移除。")
+        except DeletionConflict as exc:
+            return _conflict_response(exc)
+    return jsonify(ok=True, experiment=_experiment_payload(experiment, include_runs=True))
 
 
 @api_bp.route("/index-experiments/task", methods=["POST"])
@@ -1683,14 +1786,14 @@ def api_index_experiment_task():
         dataset_id = _int_form("dataset_id", 0, min_value=1)
         dataset = db.session.get(Dataset, dataset_id)
         if not dataset:
-            return jsonify(ok=False, message="Dataset does not exist."), 404
+            return jsonify(ok=False, message="数据集不存在。"), 404
         if not can_edit_dataset(dataset):
             return jsonify(ok=False, message="没有权限为该数据集构建候选索引。"), 403
         if dataset.status not in ("processed", "indexed"):
-            return jsonify(ok=False, message="Dataset must be processed first."), 400
+            return jsonify(ok=False, message="请先完成数据集处理。"), 400
         metric = request.form.get("metric", "l2").strip()
         if metric not in ("l2", "cosine"):
-            raise ValueError("metric must be l2 or cosine")
+            raise ValueError("距离度量仅支持 L2 或余弦距离。")
         candidate_keys = request.form.getlist("candidate_keys")
         if len(candidate_keys) == 1 and "," in candidate_keys[0]:
             candidate_keys = [item for item in candidate_keys[0].split(",") if item.strip()]
@@ -1725,6 +1828,7 @@ def api_index_experiment_task():
         status="pending",
         progress=0,
         message="候选索引实验已提交，等待执行...",
+        request_json=json.dumps(params, ensure_ascii=False),
         dataset_id=dataset_id,
         created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
@@ -1808,12 +1912,23 @@ def api_cleanup_index_experiment(experiment_id):
     return jsonify(ok=True, cleanup=cleanup, message="清理重试完成。")
 
 
+def _evaluation_payload(evaluation: IndexEvaluation) -> dict:
+    from app.services.index_evaluation_service import index_evaluation_to_dict
+
+    payload = index_evaluation_to_dict(evaluation)
+    payload["history_hidden"] = bool(evaluation.history_hidden)
+    payload["can_remove"] = bool(
+        evaluation.dataset
+        and can_edit_dataset(evaluation.dataset)
+        and evaluation.status not in {"pending", "running"}
+    )
+    return payload
+
+
 @api_bp.route("/index-evaluations", methods=["GET"])
 @login_required
 def api_index_evaluations():
     """List persisted index evaluations visible to the current user."""
-    from app.services.index_evaluation_service import index_evaluation_to_dict
-
     visible_dataset_ids = [
         row.id
         for row in accessible_datasets_query(Dataset.query.with_entities(Dataset.id)).all()
@@ -1821,7 +1936,10 @@ def api_index_evaluations():
     if not visible_dataset_ids:
         return jsonify(ok=True, evaluations=[])
 
-    query = IndexEvaluation.query.filter(IndexEvaluation.dataset_id.in_(visible_dataset_ids))
+    query = IndexEvaluation.query.filter(
+        IndexEvaluation.dataset_id.in_(visible_dataset_ids),
+        IndexEvaluation.history_hidden.is_(False),
+    )
     dataset_id = request.args.get("dataset_id", "").strip()
     index_id = request.args.get("index_id", "").strip()
     try:
@@ -1829,37 +1947,43 @@ def api_index_evaluations():
             dataset_id_int = int(dataset_id)
             dataset = db.session.get(Dataset, dataset_id_int)
             if not dataset:
-                return jsonify(ok=False, message="Dataset does not exist."), 404
+                return jsonify(ok=False, message="数据集不存在。"), 404
             if not can_view_dataset(dataset):
-                return jsonify(ok=False, message="No permission to view this dataset."), 403
+                return jsonify(ok=False, message="没有权限查看该数据集。"), 403
             query = query.filter(IndexEvaluation.dataset_id == dataset_id_int)
         if index_id:
             index_id_int = int(index_id)
             ann_index = db.session.get(AnnIndex, index_id_int)
             if not ann_index:
-                return jsonify(ok=False, message="Index does not exist."), 404
+                return jsonify(ok=False, message="索引不存在。"), 404
             if not ann_index.dataset or not can_view_dataset(ann_index.dataset):
-                return jsonify(ok=False, message="No permission to view this index."), 403
+                return jsonify(ok=False, message="没有权限查看该索引。"), 403
             query = query.filter(IndexEvaluation.index_id == index_id_int)
     except ValueError:
-        return jsonify(ok=False, message="dataset_id and index_id must be integers."), 400
+        return jsonify(ok=False, message="dataset_id 和 index_id 必须是整数。"), 400
 
     rows = query.order_by(IndexEvaluation.created_at.desc()).limit(80).all()
-    return jsonify(ok=True, evaluations=[index_evaluation_to_dict(row) for row in rows])
+    return jsonify(ok=True, evaluations=[_evaluation_payload(row) for row in rows])
 
 
-@api_bp.route("/index-evaluations/<int:evaluation_id>", methods=["GET"])
+@api_bp.route("/index-evaluations/<int:evaluation_id>", methods=["GET", "DELETE"])
 @login_required
 def api_index_evaluation_detail(evaluation_id):
     """Return one persisted index evaluation."""
-    from app.services.index_evaluation_service import index_evaluation_to_dict
-
     evaluation = db.session.get(IndexEvaluation, evaluation_id)
     if not evaluation:
-        return jsonify(ok=False, message="Evaluation does not exist."), 404
+        return jsonify(ok=False, message="评估记录不存在。"), 404
     if not evaluation.dataset or not can_view_dataset(evaluation.dataset):
-        return jsonify(ok=False, message="No permission to view this evaluation."), 403
-    return jsonify(ok=True, evaluation=index_evaluation_to_dict(evaluation))
+        return jsonify(ok=False, message="没有权限查看该评估。"), 403
+    if request.method == "DELETE":
+        if not can_edit_dataset(evaluation.dataset):
+            return jsonify(ok=False, message="没有权限从历史移除该评估。"), 403
+        try:
+            remove_evaluation(evaluation, actor=current_user)
+            return jsonify(ok=True, message="评估已从历史移除。")
+        except DeletionConflict as exc:
+            return _conflict_response(exc)
+    return jsonify(ok=True, evaluation=_evaluation_payload(evaluation))
 
 
 @api_bp.route("/index-evaluations/task", methods=["POST"])
@@ -1871,14 +1995,14 @@ def api_index_evaluation_task():
         index_id = _int_form("index_id", 0, min_value=1)
         dataset = db.session.get(Dataset, dataset_id)
         if not dataset:
-            return jsonify(ok=False, message="Dataset does not exist."), 404
+            return jsonify(ok=False, message="数据集不存在。"), 404
         if not can_edit_dataset(dataset):
-            return jsonify(ok=False, message="No permission to evaluate this dataset."), 403
+            return jsonify(ok=False, message="没有权限评估该数据集。"), 403
         ann_index = db.session.get(AnnIndex, index_id)
         if not ann_index or ann_index.dataset_id != dataset_id:
-            return jsonify(ok=False, message="Please choose a ready index from this dataset."), 400
+            return jsonify(ok=False, message="请选择该数据集下已就绪的索引。"), 400
         if ann_index.status != "ready":
-            return jsonify(ok=False, message="Index is not ready."), 400
+            return jsonify(ok=False, message="索引尚未就绪。"), 400
         params = {
             "dataset_id": dataset_id,
             "index_id": index_id,
@@ -1893,7 +2017,8 @@ def api_index_evaluation_task():
         type="index_evaluation",
         status="pending",
         progress=0,
-        message="Index evaluation task submitted.",
+        message="索引评估任务已提交，等待执行...",
+        request_json=json.dumps(params, ensure_ascii=False),
         dataset_id=dataset_id,
         created_by_id=current_user.id,
         updated_at=datetime.utcnow(),
@@ -2012,7 +2137,7 @@ def api_dataset_scatter(dataset_id):
     cache_dir = pathlib.Path(current_app.config["CACHE_DIR"])
 
     # 若已有有效缓存文件，直接读取返回
-    if dataset.scatter_cache_path:
+    if dataset.scatter_cache_path and dataset.scatter_cache_path.startswith("scatter_v5_"):
         cache_path = cache_dir / dataset.scatter_cache_path
         if cache_path.exists():
             import json as _json
@@ -2044,7 +2169,10 @@ def api_active_tasks():
     """返回所有进行中（pending/running）的任务列表。"""
     tasks = (
         accessible_tasks_query(Task.query)
-        .filter(Task.status.in_(["pending", "running"]))
+        .filter(
+            Task.status.in_(["pending", "running"]),
+            Task.history_hidden.is_(False),
+        )
         .order_by(Task.updated_at.desc())
         .all()
     )
@@ -2055,14 +2183,24 @@ def api_active_tasks():
 # 任务列表（支持状态过滤，用于任务中心）
 # ---------------------------------------------------------------------------
 
-@api_bp.route("/tasks", methods=["GET"])
+@api_bp.route("/tasks", methods=["GET", "DELETE"])
 @login_required
 def api_tasks():
     """返回任务列表，支持状态过滤。"""
+    if request.method == "DELETE":
+        if request.args.get("scope", "").strip() != "terminal":
+            return jsonify(ok=False, message="scope 必须为 terminal。"), 400
+        hidden_count = remove_terminal_tasks_for_user(current_user.id, actor=current_user)
+        return jsonify(ok=True, hidden_count=hidden_count, message="终态任务已从历史移除。")
     status_filter = request.args.get("status", "all").strip()
-    limit = min(int(request.args.get("limit", 20)), 100)
+    try:
+        limit = min(max(int(request.args.get("limit", 20)), 1), 100)
+    except ValueError:
+        return jsonify(ok=False, message="limit 必须是整数。"), 400
 
-    query = accessible_tasks_query(Task.query).order_by(Task.updated_at.desc())
+    query = accessible_tasks_query(Task.query).filter(
+        Task.history_hidden.is_(False)
+    ).order_by(Task.updated_at.desc())
     if status_filter != "all" and status_filter in ("pending", "running", "success", "error"):
         query = query.filter_by(status=status_filter)
 
@@ -2119,7 +2257,13 @@ def api_dashboard_summary():
         AnnIndex.lifecycle == "active",
         AnnIndex.dataset_id.in_(dataset_ids) if dataset_ids else False,
     ).count()
-    recent_queries = QueryLog.query.count() if is_admin() else QueryLog.query.filter(QueryLog.dataset_id.in_(dataset_ids)).count()
+    if is_admin():
+        recent_queries = QueryLog.query.count() + JointQueryLog.query.count()
+    else:
+        recent_queries = (
+            QueryLog.query.filter(QueryLog.dataset_id.in_(dataset_ids)).count()
+            + JointQueryLog.query.filter(JointQueryLog.query_dataset_id.in_(dataset_ids)).count()
+        )
 
     recent_datasets = [
         {
@@ -2134,7 +2278,9 @@ def api_dashboard_summary():
 
     recent_tasks = [
         _task_to_dict(t)
-        for t in accessible_tasks_query(Task.query).order_by(Task.updated_at.desc()).limit(5).all()
+        for t in accessible_tasks_query(Task.query)
+        .filter(Task.history_hidden.is_(False))
+        .order_by(Task.updated_at.desc()).limit(5).all()
     ]
 
     first_uploaded = next((d.id for d in datasets if d.status == "uploaded"), None)

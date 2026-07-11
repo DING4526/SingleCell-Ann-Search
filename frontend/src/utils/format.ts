@@ -24,14 +24,32 @@ export function statusText(status: string) {
     deleted: "已清理",
     cleanup_error: "清理失败",
     planned: "规划中",
-  }[status] || status;
+    active: "可用于检索",
+    candidate: "待选优",
+    disabled: "已停用",
+    extracting: "正在提取",
+    indexing: "正在建立索引",
+    degraded: "降级可用",
+    rejected: "已拒绝",
+    cancelled: "已取消",
+    proposed: "待确认",
+    queued: "排队中",
+    not_started: "尚未开始",
+    completed: "已完成",
+    failed: "失败",
+    approved: "已确认",
+    expired: "已过期",
+    included: "已纳入",
+    excluded: "未纳入",
+  }[status] || "状态未知";
 }
 
 export function statusColor(status: string) {
-  if (["indexed", "ready", "success", "finalized"].includes(status)) return "success";
+  if (["indexed", "ready", "success", "finalized", "active"].includes(status)) return "success";
   if (["processed", "running", "building", "evaluating"].includes(status)) return "processing";
   if (["uploaded", "pending"].includes(status)) return "default";
-  if (status === "error") return "error";
+  if (["error", "cleanup_error"].includes(status)) return "error";
+  if (["discarded", "deleted", "disabled", "cancelled"].includes(status)) return "default";
   return "default";
 }
 
@@ -39,11 +57,48 @@ export function numberOrDash(value?: number | null) {
   return value === undefined || value === null ? "-" : value.toLocaleString();
 }
 
+export function formatDistance(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "-";
+  return value.toLocaleString("zh-CN", { minimumFractionDigits: 3, maximumFractionDigits: 4 });
+}
+
+export function formatMilliseconds(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "-";
+  const maximumFractionDigits = value < 1 ? 4 : value < 100 ? 3 : 1;
+  return `${value.toLocaleString("zh-CN", { maximumFractionDigits })} ms`;
+}
+
+export function formatCellIndex(value?: number | null) {
+  return value === undefined || value === null || !Number.isFinite(value) ? "-" : value.toLocaleString("zh-CN");
+}
+
+export function algorithmText(value?: string | null) {
+  const normalized = (value || "").toLowerCase();
+  return {
+    hnswlib_hnsw: "HNSW",
+    hnsw: "HNSW",
+    rp_hnsw: "RP-HNSW",
+    faiss_flat: "FAISS Flat",
+    flat: "FAISS Flat",
+    faiss_ivf_flat: "FAISS IVF-Flat",
+    ivf_flat: "FAISS IVF-Flat",
+    faiss_ivf_pq: "FAISS IVF-PQ",
+    ivf_pq: "FAISS IVF-PQ",
+  }[normalized] || "未知算法";
+}
+
+export function metricText(value?: string | null) {
+  return {
+    l2: "L2 欧氏距离",
+    cosine: "余弦距离",
+  }[(value || "").toLowerCase()] || "未知度量";
+}
+
 export function roleText(role?: string | null) {
   return {
     admin: "管理员",
     user: "普通用户",
-  }[role || ""] || role || "-";
+  }[role || ""] || "未知角色";
 }
 
 export function taskTypeText(type?: string | null) {
@@ -58,7 +113,8 @@ export function taskTypeText(type?: string | null) {
     build_joint_index: "构建联合索引",
     joint_search: "联合索引检索",
     joint_search_plot: "生成联合图",
-  }[type || ""] || type || "任务";
+    artifact_cleanup: "清理资源文件",
+  }[type || ""] || "后台任务";
 }
 
 export function visibilityText(visibility?: string | null) {
@@ -66,7 +122,7 @@ export function visibilityText(visibility?: string | null) {
     public: "公开",
     private: "私有",
     shared: "共享",
-  }[visibility || ""] || visibility || "-";
+  }[visibility || ""] || "未知范围";
 }
 
 export function qualityText(value?: string | null) {

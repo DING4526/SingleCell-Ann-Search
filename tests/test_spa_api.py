@@ -332,7 +332,10 @@ def test_spa_processing_index_search_and_scatter_baseline():
             plot_task_id = plot_task.get_json()["task_id"]
             plot_payload = _wait_for_task(client, plot_task_id)
             assert plot_payload["status"] == "success"
-            assert plot_payload["result"]["scatter_plot"]["data"]
+            search_plot = plot_payload["result"]["scatter_plot"]
+            assert search_plot["data"]
+            assert search_plot["metadata"]["legend"]["default_dimension"] == "cell_type"
+            assert all(trace.get("x") != [None] for trace in search_plot["data"])
 
             task_list = client.get("/api/tasks?status=all&limit=30")
             assert task_list.status_code == 200
@@ -369,7 +372,10 @@ def test_spa_processing_index_search_and_scatter_baseline():
 
             scatter = client.get(f"/api/datasets/{dataset_id}/scatter")
             assert scatter.status_code == 200
-            assert scatter.get_json()["scatter_plot"]["data"]
+            dataset_plot = scatter.get_json()["scatter_plot"]
+            assert len(dataset_plot["data"]) == 1
+            assert set(dataset_plot["metadata"]["legend"]["dimensions"]) == {"cell_type", "disease", "age_group"}
+            assert dataset_plot["layout"]["showlegend"] is False
 
             db.session.remove()
             db.engine.dispose()
@@ -486,7 +492,10 @@ def test_joint_index_build_search_plot_and_access_control():
             plot_task_id = plot_joint.get_json()["task_id"]
             plot_payload = _wait_for_task(client, plot_task_id)
             assert plot_payload["status"] == "success", plot_payload.get("error")
-            assert plot_payload["result"]["scatter_plot"]["data"]
+            joint_plot = plot_payload["result"]["scatter_plot"]
+            assert joint_plot["data"]
+            assert joint_plot["metadata"]["legend"]["default_dimension"] == "dataset"
+            assert all(trace.get("x") != [None] for trace in joint_plot["data"])
 
             task_list = client.get("/api/tasks?status=all&limit=50")
             rows = task_list.get_json()["tasks"]

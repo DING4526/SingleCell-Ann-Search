@@ -8,6 +8,8 @@ export type User = {
   ai_daily_limit_override: number | null;
 };
 
+export type DeleteBlocker = { type: string; id?: number; label: string; status?: string; count?: number };
+
 export type EffectiveRole = "admin" | "owner" | "editor" | "viewer";
 export type PermissionSource = "admin" | "owner" | "explicit" | "shared";
 
@@ -72,6 +74,8 @@ export type AnnIndex = {
   status: "building" | "ready" | "error" | "deleted" | "cleanup_error" | string;
   error_message?: string | null;
   created_at: string | null;
+  can_delete?: boolean;
+  delete_blockers?: DeleteBlocker[];
 };
 
 export type AnnAlgorithm = {
@@ -183,13 +187,15 @@ export type IndexExperiment = {
   error_message: string | null;
   created_at: string | null;
   runs?: IndexExperimentRun[];
+  history_hidden?: boolean;
+  can_remove?: boolean;
 };
 
 export type IndexEvaluation = {
   id: number;
   dataset_id: number;
   dataset_name: string | null;
-  index_id: number;
+  index_id: number | null;
   index_label: string | null;
   algorithm: string;
   metric: "l2" | "cosine" | string;
@@ -208,6 +214,8 @@ export type IndexEvaluation = {
   status: string;
   error_message: string | null;
   created_at: string | null;
+  history_hidden?: boolean;
+  can_remove?: boolean;
 };
 
 export type JointIndexDataset = {
@@ -236,6 +244,10 @@ export type JointIndex = {
   owner_id: number | null;
   created_at: string | null;
   datasets: JointIndexDataset[];
+  owner_name?: string | null;
+  can_delete?: boolean;
+  can_manage?: boolean;
+  delete_blockers?: DeleteBlocker[];
 };
 
 export type Dataset = {
@@ -257,6 +269,8 @@ export type Dataset = {
   can_manage: boolean;
   indexes: AnnIndex[];
   ready_index_count: number;
+  can_delete?: boolean;
+  delete_blockers?: DeleteBlocker[];
 };
 
 export type TaskRecord = {
@@ -273,6 +287,8 @@ export type TaskRecord = {
   created_by_id: number | null;
   created_by_name: string | null;
   updated_at: string | null;
+  history_hidden?: boolean;
+  can_remove?: boolean;
 };
 
 export type SearchResult = {
@@ -382,6 +398,8 @@ export type AiProviderConfig = {
   last_test_message: string | null;
   last_tested_at: string | null;
   created_at: string | null;
+  can_delete?: boolean;
+  delete_blockers?: DeleteBlocker[];
 };
 
 export type AiModelConfig = {
@@ -399,6 +417,8 @@ export type AiModelConfig = {
   last_test_message?: string | null;
   last_tested_at?: string | null;
   created_at?: string | null;
+  can_delete?: boolean;
+  delete_blockers?: DeleteBlocker[];
 };
 
 export type AiSearchPlan = {
@@ -557,6 +577,8 @@ export type AiConversation = {
   updated_at: string | null;
   messages?: AiMessage[];
   runs?: AiRun[];
+  can_delete?: boolean;
+  delete_blockers?: DeleteBlocker[];
 };
 
 export type AiToolCall = {
@@ -617,6 +639,8 @@ export type KnowledgeDocument = {
   error_message: string | null;
   created_at: string | null;
   updated_at: string | null;
+  can_delete?: boolean;
+  delete_blockers?: DeleteBlocker[];
 };
 
 export type KnowledgeHit = {

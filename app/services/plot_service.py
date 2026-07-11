@@ -1,5 +1,6 @@
 import json
 import pathlib
+from collections import Counter
 import numpy as np
 import scanpy as sc
 import plotly.graph_objects as go
@@ -80,6 +81,19 @@ def _build_disease_color_map(labels: list[str]) -> dict[str, str]:
     return _build_color_map(labels, use_dark_cycle=True)
 
 
+def _legend_dimension(label: str, customdata_index: int, values: list[str], colors: dict[str, str]) -> dict:
+    """Build the compact legend contract consumed by the SPA plot panel."""
+    counts = Counter(values)
+    return {
+        "label": label,
+        "customdata_index": customdata_index,
+        "items": [
+            {"key": key, "label": key, "color": color, "count": counts.get(key, 0)}
+            for key, color in colors.items()
+        ],
+    }
+
+
 def _muted_color(hex_color: str, alpha: float = 0.28, darken: float = 0.62) -> str:
     """压暗并透明化背景颜色。"""
     hex_color = hex_color.lstrip("#")
@@ -97,20 +111,12 @@ def _apply_dark_layout(fig: go.Figure, title: str, xaxis_title: str, yaxis_title
         plot_bgcolor="#ffffff",
         font=dict(color="#172033", size=12),
         height=height,
-        margin=dict(l=54, r=156, t=58, b=58),
+        margin=dict(l=54, r=28, t=54, b=54),
         xaxis=dict(title=xaxis_title, gridcolor="#edf2f7", zeroline=False, showline=True,
                    linecolor="#d8e1ec", mirror=False),
         yaxis=dict(title=yaxis_title, gridcolor="#edf2f7", zeroline=False, showline=True,
                    linecolor="#d8e1ec", mirror=False),
-        legend=dict(
-            orientation="v", y=1, x=1.02,
-            xanchor="left", yanchor="top",
-            title=dict(text="图例"),
-            bgcolor="rgba(255, 255, 255, 0.92)",
-            bordercolor="#e5eaf2",
-            borderwidth=1,
-            font=dict(size=11, color="#334155"),
-        ),
+        showlegend=False,
         hovermode="closest",
         dragmode="pan",
     )
@@ -121,7 +127,7 @@ def _fig_to_plotly_json(fig: go.Figure) -> dict:
     return {"data": raw.get("data", []), "layout": raw.get("layout", {})}
 
 
-# ------------------ 数据集详情页缓存（v3 格式） ------------------
+# ------------------ 数据集详情页缓存（v5：紧凑图例 + laptop 点数预算） ------------------
 def generate_scatter_cache(dataset_id: int) -> str:
     dataset = db.session.get(Dataset, dataset_id)
     if not dataset:
@@ -137,18 +143,30 @@ def generate_scatter_cache(dataset_id: int) -> str:
         raise ValueError("无细胞信息")
 
     usable_count = min(len(cells), coords.shape[0])
-    cells = cells[:usable_count]
+    all_cells = cells[:usable_count]
     coords = coords[:usable_count, :]
 
-    cell_indices = [c.cell_index for c in cells]
-    cell_types = [c.cell_type or "未知" for c in cells]
-    diseases = [c.disease or "未知" for c in cells]
-    age_groups = [c.age_group or "未知" for c in cells]
+    # Keep category counts based on the complete resource while limiting the
+    # WebGL payload to a deterministic representative sample on laptop GPUs.
+    all_cell_types = [c.cell_type or "未知" for c in all_cells]
+    all_diseases = [c.disease or "未知" for c in all_cells]
+    all_age_groups = [c.age_group or "未知" for c in all_cells]
 
     # 三个维度的颜色映射（年龄组/疾病使用专用配色函数）
-    cell_type_color_map = _build_color_map(cell_types, use_dark_cycle=True)
-    disease_color_map = _build_disease_color_map(diseases)
-    age_group_color_map = _build_age_group_color_map(age_groups)
+    cell_type_color_map = _build_color_map(all_cell_types, use_dark_cycle=True)
+    disease_color_map = _build_disease_color_map(all_diseases)
+    age_group_color_map = _build_age_group_color_map(all_age_groups)
+
+    max_points = 20_000
+    if usable_count > max_points:
+        rng = np.random.default_rng(dataset_id)
+        positions = np.sort(rng.choice(usable_count, size=max_points, replace=False))
+        cells = [all_cells[int(position)] for position in positions]
+        coords = coords[positions, :]
+    else:
+        cells = all_cells
+
+    cell_types = [c.cell_type or "未知" for c in cells]
 
     # 默认按 cell_type 着色
     marker_colors = [cell_type_color_map[ct] for ct in cell_types]
@@ -168,37 +186,38 @@ def generate_scatter_cache(dataset_id: int) -> str:
         mode="markers",
         marker=dict(size=3.2, opacity=0.38, color=marker_colors),
         customdata=customdata,
-        hovertemplate="类型: %{customdata[1]}<br>疾病: %{customdata[2]}<br>年龄: %{customdata[3]}<extra>索引 #%{customdata[0]}</extra>",
+        hovertemplate="细胞编号：%{customdata[0]:,}<br>细胞类型：%{customdata[1]}<br>疾病：%{customdata[2]}<br>年龄组：%{customdata[3]}<extra></extra>",
         name="细胞",
+        showlegend=False,
     ))
-
-    # 伪图例条目：每种 cell_type 一条不可见轨迹，仅用于图例显示
-    for label, color in cell_type_color_map.items():
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None],
-            mode="markers",
-            marker=dict(size=8, color=color),
-            name=label,
-            showlegend=True,
-            hoverinfo="skip",
-        ))
 
     _apply_dark_layout(fig, title=f"{dataset.name} · {coord_label} 预览", xaxis_title=f"{coord_label}1", yaxis_title=f"{coord_label}2", height=640)
 
     plot_json = _fig_to_plotly_json(fig)
 
-    # v3 元数据：颜色映射表，供前端颜色切换使用
+    # Compact external legend metadata; the real points remain in one WebGL trace.
     plot_json["metadata"] = {
         "color_domains": {
             "cell_type": cell_type_color_map,
             "disease": disease_color_map,
             "age_group": age_group_color_map,
-        }
+        },
+        "legend": {
+            "target_trace_index": 0,
+            "default_dimension": "cell_type",
+            "dimensions": {
+                "cell_type": _legend_dimension("细胞类型", 1, all_cell_types, cell_type_color_map),
+                "disease": _legend_dimension("疾病", 2, all_diseases, disease_color_map),
+                "age_group": _legend_dimension("年龄组", 3, all_age_groups, age_group_color_map),
+            },
+        },
+        "point_action": {"kind": "cell", "customdata_index": 0},
+        "point_summary": {"rendered": len(cells), "total": usable_count},
     }
 
     cache_dir = pathlib.Path(current_app.config["CACHE_DIR"])
     cache_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"scatter_v3_{dataset_id}.json"
+    filename = f"scatter_v5_{dataset_id}.json"
     cache_path = cache_dir / filename
 
     with open(cache_path, "w", encoding="utf-8") as f:
@@ -245,18 +264,6 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
 
     # Muted background points stay in one WebGL trace for fast rendering.
     muted_color_map = {ct: _muted_color(color) for ct, color in color_map.items()}
-    color_labels = list(color_map.keys())
-    color_code_by_type = {label: i for i, label in enumerate(color_labels)}
-    if not color_labels:
-        background_colorscale = [[0, "#95b1b0"], [1, "#95b1b0"]]
-    elif len(color_labels) == 1:
-        only_color = muted_color_map[color_labels[0]]
-        background_colorscale = [[0, only_color], [1, only_color]]
-    else:
-        background_colorscale = [
-            [i / (len(color_labels) - 1), muted_color_map[label]]
-            for i, label in enumerate(color_labels)
-        ]
     fig = go.Figure()
     fig.add_trace(go.Scattergl(
         x=coords[background_positions, 0].astype(float).tolist(),
@@ -265,29 +272,14 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
         marker=dict(
             size=3,
             opacity=0.92,
-            color=[color_code_by_type[cell_types[i]] for i in background_positions],
-            colorscale=background_colorscale,
-            cmin=0,
-            cmax=max(len(color_labels) - 1, 1),
+            color=[muted_color_map[cell_types[i]] for i in background_positions],
             showscale=False,
         ),
         customdata=[[cell_indices[i], cell_types[i]] for i in background_positions],
-        hovertemplate="cell_type: %{customdata[1]}<br>cell_index: %{customdata[0]}<extra></extra>",
-        name="Background cells",
+        hovertemplate="细胞编号：%{customdata[0]:,}<br>细胞类型：%{customdata[1]}<extra></extra>",
+        name="背景细胞",
         showlegend=False,
     ))
-
-    # Legend-only entries keep cell-type colors without splitting the background.
-    for label, color in color_map.items():
-        fig.add_trace(go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            marker=dict(size=7, color=muted_color_map.get(label, _muted_color(color))),
-            name=label,
-            showlegend=True,
-            hoverinfo="skip",
-        ))
 
     # 结果点高亮
     result_positions = [
@@ -316,7 +308,8 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
                 marker=dict(size=8, color="#0891b2", opacity=0.98, line=dict(width=1.4, color="#ffffff")),
                 name="相似细胞",
                 customdata=result_customdata,
-                hovertemplate="cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>age_group: %{customdata[4]}<extra></extra>",
+                hovertemplate="细胞编号：%{customdata[0]:,}<br>细胞名称：%{customdata[1]}<br>细胞类型：%{customdata[2]}<br>疾病：%{customdata[3]}<br>年龄组：%{customdata[4]}<extra></extra>",
+                showlegend=False,
             ))
 
     # 查询点星形突出
@@ -335,11 +328,28 @@ def search_scatter_json(dataset_id: int, query_cell_index: int, result_cell_indi
         marker=dict(size=16, color="#d97706", symbol="star", line=dict(width=2.4, color="#ffffff"), opacity=1.0),
         name="查询细胞",
         customdata=query_customdata,
-        hovertemplate="查询细胞<br>cell_index: %{customdata[0]}<br>cell_name: %{customdata[1]}<br>cell_type: %{customdata[2]}<br>disease: %{customdata[3]}<br>age_group: %{customdata[4]}<extra></extra>",
+        hovertemplate="查询细胞<br>细胞编号：%{customdata[0]:,}<br>细胞名称：%{customdata[1]}<br>细胞类型：%{customdata[2]}<br>疾病：%{customdata[3]}<br>年龄组：%{customdata[4]}<extra></extra>",
+        showlegend=False,
     ))
 
     _apply_dark_layout(fig, title=f"检索结果高亮 · {coord_label} 视图", xaxis_title=f"{coord_label}1", yaxis_title=f"{coord_label}2", height=640)
-    return _fig_to_plotly_json(fig)
+    plot_json = _fig_to_plotly_json(fig)
+    background_types = [cell_types[i] for i in background_positions]
+    plot_json["metadata"] = {
+        "legend": {
+            "target_trace_index": 0,
+            "default_dimension": "cell_type",
+            "dimensions": {
+                "cell_type": _legend_dimension("细胞类型", 1, background_types, muted_color_map),
+            },
+            "role_items": [
+                {"label": "相似细胞", "color": "#0891b2"},
+                {"label": "查询细胞", "color": "#d97706"},
+            ],
+        },
+        "point_action": {"kind": "cell", "customdata_index": 0},
+    }
+    return plot_json
 
 
 # ------------------ 检索性能柱状图 ------------------

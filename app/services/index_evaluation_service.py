@@ -16,7 +16,7 @@ def index_evaluation_to_dict(evaluation: IndexEvaluation) -> dict:
     dataset_name = evaluation.dataset.name if evaluation.dataset else None
     index_label = None
     if evaluation.ann_index:
-        index_label = f"#{evaluation.ann_index.id} {evaluation.ann_index.algorithm} {evaluation.ann_index.metric}"
+        index_label = f"{evaluation.ann_index.algorithm} · {evaluation.ann_index.metric.upper()}"
     return {
         "id": evaluation.id,
         "dataset_id": evaluation.dataset_id,
@@ -48,6 +48,7 @@ def refresh_evaluation_recommendations(dataset_id: int, sample_size: int, top_k:
     rows = (
         IndexEvaluation.query
         .filter_by(dataset_id=dataset_id, sample_size=sample_size, top_k=top_k, seed=seed, status="success")
+        .filter(IndexEvaluation.index_id.isnot(None))
         .order_by(IndexEvaluation.created_at.desc())
         .all()
     )
@@ -80,11 +81,11 @@ def run_index_evaluation(
     dataset = db.session.get(Dataset, dataset_id)
     ann_index = db.session.get(AnnIndex, index_id)
     if not dataset:
-        raise ValueError("Dataset does not exist")
+        raise ValueError("数据集不存在")
     if not ann_index or ann_index.dataset_id != dataset_id:
-        raise ValueError("Index does not belong to the selected dataset")
+        raise ValueError("索引不属于所选数据集")
     if ann_index.status != "ready":
-        raise ValueError("Index is not ready")
+        raise ValueError("索引尚未就绪")
 
     sample_size = max(1, min(int(sample_size), 200))
     top_k = max(1, min(int(top_k), 100))

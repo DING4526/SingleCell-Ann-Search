@@ -4,4 +4,5 @@ declare module "*.vue" {
   export default component;
 }
 
-declare module "plotly.js-dist-min";
+declare module "plotly.js/lib/core";
+declare module "plotly.js/lib/scattergl";

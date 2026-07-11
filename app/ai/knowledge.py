@@ -418,15 +418,11 @@ def create_personal_note(*, title: str, content: str, user: User) -> KnowledgeDo
     return document
 
 
-def delete_document(document: KnowledgeDocument) -> None:
-    path = pathlib.Path(document.stored_path) if document.stored_path else None
-    db.session.delete(document)
-    db.session.commit()
-    if path and path.is_file():
-        try:
-            path.unlink()
-        except OSError:
-            pass
+def delete_document(document: KnowledgeDocument) -> dict:
+    """Compatibility wrapper for the transaction-safe deletion service."""
+    from app.services.deletion_service import delete_knowledge_document
+
+    return delete_knowledge_document(document)
 
 
 def ensure_builtin_knowledge() -> None:

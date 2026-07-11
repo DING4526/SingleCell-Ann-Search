@@ -3,8 +3,8 @@
     <template #actions>
       <a-space class="page-actions" wrap>
         <a-select v-model:value="selectedDatasetId" class="dataset-picker" placeholder="选择数据集" :options="datasetOptions" @change="selectDataset" />
-        <a-button @click="indexInventoryOpen = true">全部索引</a-button>
-        <a-button @click="historyOpen = true">历史实验</a-button>
+        <a-button @click="openRecords('indexes')">索引记录</a-button>
+        <a-button @click="openRecords('experiments')">实验与评估历史</a-button>
       </a-space>
     </template>
   </PageHeader>
@@ -13,11 +13,11 @@
     <div class="retained-copy">
       <span class="eyebrow">当前保留集</span>
       <strong>{{ dataset?.name || "未选择数据集" }}</strong>
-      <span>{{ workspaceLoading ? "正在读取索引和实验状态…" : activeIndexes.length ? `${activeIndexes.length} 个 active 索引可用于检索` : "尚无可检索索引" }}</span>
+      <span>{{ workspaceLoading ? "正在读取索引和实验状态…" : activeIndexes.length ? `${activeIndexes.length} 个现用索引可用于检索` : "尚无可检索索引" }}</span>
     </div>
     <div class="retained-list">
       <div v-for="index in activeIndexes" :key="index.id" class="retained-chip">
-        <span>#{{ index.id }} {{ algorithmShort(index.algorithm) }}</span>
+        <span>{{ algorithmShort(index.algorithm) }}</span>
         <small>{{ selectionText(index.selection_labels) }}</small>
       </div>
       <a-button type="link" :loading="workspaceLoading" @click="indexInventoryOpen = true">查看 {{ allIndexes.length }} 条索引记录</a-button>
@@ -49,7 +49,7 @@
       <div class="config-summary">
         <span>评估强度</span>
         <strong>{{ form.sample_size }} 个查询 × {{ form.repetitions }} 轮</strong>
-        <small>预热 {{ form.warmup_count }} 次 · seed {{ form.seed }}</small>
+        <small>预热 {{ form.warmup_count }} 次 · 随机种子 {{ form.seed }}</small>
       </div>
       <div class="config-summary">
         <span>候选预设</span>
@@ -61,7 +61,7 @@
         <a-button type="primary" :loading="experimentRunning" :disabled="!canStartExperiment" @click="startExperiment">开始构建与评估</a-button>
       </div>
     </div>
-    <a-alert v-if="blockingExperiment" class="config-alert" type="warning" show-icon :message="`实验 #${blockingExperiment.id} 尚待处理，请先完成选优或放弃。`" />
+    <a-alert v-if="blockingExperiment" class="config-alert" type="warning" show-icon message="当前实验尚待处理，请先完成选优或放弃。" />
   </section>
 
   <section v-if="experimentResult && ['pending', 'running'].includes(experimentResult.status)" class="surface progress-panel">
@@ -70,14 +70,14 @@
         <span class="step-label">02</span>
         <div><h2>构建与真实评估</h2><p>{{ currentTask?.message || "候选任务运行中，离开页面也不会中断。" }}</p></div>
       </div>
-      <a-tag color="processing">实验 #{{ experimentResult.id }}</a-tag>
+      <a-tag color="processing">当前实验</a-tag>
     </div>
     <a-progress :percent="currentTask?.progress || progressFromRuns" status="active" />
     <div class="run-status-grid">
       <div v-for="run in experimentResult.runs || []" :key="run.id" class="run-status-card">
         <StatusTag :status="run.status" />
         <strong>{{ run.name }}</strong>
-        <small>{{ run.error_message || paramsSummary(run.params) }}</small>
+        <small>{{ run.error_message || friendlyParamsSummary(run.algorithm, run.params) }}</small>
       </div>
     </div>
   </section>
@@ -93,7 +93,7 @@
           </div>
         </div>
         <a-space wrap>
-          <a-tag>实验 #{{ experimentResult.id }}</a-tag>
+          <a-tag>当前实验</a-tag>
           <StatusTag :status="experimentResult.status" />
           <a-button v-if="canDiscard" danger size="small" @click="confirmDiscard">放弃实验</a-button>
         </a-space>
@@ -144,7 +144,8 @@
         </template>
         <template #expandedRowRender="{ record }">
           <div class="expanded-detail">
-            <span><strong>参数：</strong>{{ paramsSummary(record.params) }}</span>
+            <strong>技术详情</strong>
+            <span><b>参数：</b>{{ paramsSummary(record.params) }}</span>
             <span v-if="record.error_message"><strong>失败原因：</strong>{{ record.error_message }}</span>
             <span v-if="record.skip_reason"><strong>跳过原因：</strong>{{ record.skip_reason }}</span>
           </div>
@@ -169,39 +170,86 @@
     </div>
   </section>
 
-  <a-drawer v-model:open="indexInventoryOpen" title="全部索引" width="860">
-    <a-alert type="info" show-icon message="这里展示当前数据集的全部索引记录；active 可用于检索，candidate 等待实验选优，discarded 仅保留审计记录且文件通常已清理。" />
-    <div class="inventory-summary">
-      <div><span>全部</span><strong>{{ allIndexes.length }}</strong></div>
-      <div><span>可检索</span><strong>{{ inventoryCounts.active }}</strong></div>
-      <div><span>候选</span><strong>{{ inventoryCounts.candidate }}</strong></div>
-      <div><span>已清理</span><strong>{{ inventoryCounts.discarded }}</strong></div>
-    </div>
-    <div class="inventory-toolbar">
-      <a-segmented v-model:value="inventoryFilter" :options="inventoryFilterOptions" />
-      <span class="muted">共 {{ filteredIndexes.length }} 条</span>
-    </div>
-    <a-table :data-source="filteredIndexes" :columns="inventoryColumns" row-key="id" size="small" :pagination="{ pageSize: 10 }" :scroll="{ x: 940 }">
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'index'">
-          <div class="candidate-cell"><strong>#{{ record.id }} · {{ algorithmShort(record.algorithm) }}</strong><small>{{ record.metric.toUpperCase() }} · {{ paramsSummary(record.params) }}</small></div>
-        </template>
-        <template v-else-if="column.key === 'lifecycle'">
-          <a-tag :color="lifecycleColor(record.lifecycle)">{{ lifecycleText(record.lifecycle) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'status'"><StatusTag :status="record.status" /></template>
-        <template v-else-if="column.key === 'source'">
-          <a-button v-if="record.source_experiment_id" type="link" size="small" @click="openInventoryExperiment(record.source_experiment_id)">实验 #{{ record.source_experiment_id }}</a-button>
-          <span v-else>人工构建</span>
-        </template>
-        <template v-else-if="column.key === 'size'">{{ formatBytes(record.index_size_bytes) }}</template>
-        <template v-else-if="column.key === 'created'">{{ formatDate(record.created_at) }}</template>
-        <template v-else-if="column.key === 'actions'">
-          <a-button v-if="record.lifecycle === 'active' && record.status === 'ready'" type="link" size="small" @click="openIndexInQuery(record.id)">用于检索</a-button>
-          <span v-else class="muted">仅查看</span>
-        </template>
-      </template>
-    </a-table>
+  <a-drawer v-model:open="indexInventoryOpen" title="索引与实验记录" width="900">
+    <a-tabs v-model:active-key="recordsTab" class="records-tabs">
+      <a-tab-pane key="indexes" tab="索引">
+        <a-alert type="info" show-icon message="现用索引可直接检索；候选索引等待实验选优；已清理记录仅用于追踪历史。" />
+        <div class="inventory-summary">
+          <div><span>全部</span><strong>{{ allIndexes.length }}</strong></div>
+          <div><span>可检索</span><strong>{{ inventoryCounts.active }}</strong></div>
+          <div><span>候选</span><strong>{{ inventoryCounts.candidate }}</strong></div>
+          <div><span>已清理</span><strong>{{ inventoryCounts.discarded }}</strong></div>
+        </div>
+        <div class="inventory-toolbar">
+          <a-segmented v-model:value="inventoryFilter" :options="inventoryFilterOptions" />
+          <span class="muted">共 {{ filteredIndexes.length }} 条</span>
+        </div>
+        <a-table :data-source="filteredIndexes" :columns="inventoryColumns" row-key="id" size="small" :pagination="{ pageSize: 10 }" :locale="{ emptyText: '暂无索引记录' }">
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'index'">
+              <div class="candidate-cell"><strong>{{ algorithmShort(record.algorithm) }}</strong><small>{{ metricText(record.metric) }} · {{ friendlyIndexSummary(record) }}</small></div>
+            </template>
+            <template v-else-if="column.key === 'lifecycle'">
+              <a-tag :color="lifecycleColor(record.lifecycle)">{{ lifecycleText(record.lifecycle) }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'status'"><StatusTag :status="record.status" /></template>
+            <template v-else-if="column.key === 'source'">
+              <a-button v-if="record.source_experiment_id" type="link" size="small" @click="openInventoryExperiment(record.source_experiment_id)">查看来源实验</a-button>
+              <span v-else>单独构建</span>
+            </template>
+            <template v-else-if="column.key === 'size'">{{ formatBytes(record.index_size_bytes) }}</template>
+            <template v-else-if="column.key === 'created'">{{ formatDate(record.created_at) }}</template>
+            <template v-else-if="column.key === 'actions'">
+              <a-space :size="4">
+                <a-button v-if="record.lifecycle === 'active' && record.status === 'ready'" type="link" size="small" @click="openIndexInQuery(record.id)">用于检索</a-button>
+                <a-button
+                  v-if="record.can_delete && record.status !== 'deleted'"
+                  type="link"
+                  danger
+                  size="small"
+                  :disabled="!!record.delete_blockers?.length"
+                  :title="record.delete_blockers?.join('；')"
+                  @click="confirmDeleteIndex(record)"
+                >删除</a-button>
+              </a-space>
+            </template>
+          </template>
+        </a-table>
+      </a-tab-pane>
+
+      <a-tab-pane key="experiments" tab="实验历史">
+        <a-list :data-source="experiments" :loading="historyLoading" :locale="{ emptyText: '暂无实验历史' }">
+          <template #renderItem="{ item }">
+            <a-list-item class="record-list-item">
+              <a-list-item-meta :title="item.dataset_name || dataset?.name || '索引实验'" :description="`${metricText(item.metric)} · Top-${item.top_k} · ${item.candidate_count} 个候选 · ${formatDate(item.created_at)}`">
+                <template #avatar><StatusTag :status="item.status" /></template>
+              </a-list-item-meta>
+              <a-space>
+                <a-button size="small" @click="openHistoryExperiment(item.id)">载入</a-button>
+                <a-popconfirm v-if="item.can_remove" title="从历史中移除这次实验？" ok-text="移除" cancel-text="取消" @confirm="removeExperiment(item.id)">
+                  <a-button type="link" danger size="small">从历史移除</a-button>
+                </a-popconfirm>
+              </a-space>
+            </a-list-item>
+          </template>
+        </a-list>
+      </a-tab-pane>
+
+      <a-tab-pane key="evaluations" tab="评估历史">
+        <a-list :data-source="evaluations" :loading="historyLoading" :locale="{ emptyText: '暂无评估历史' }">
+          <template #renderItem="{ item }">
+            <a-list-item class="record-list-item">
+              <a-list-item-meta :title="`${algorithmShort(item.algorithm)} · ${item.dataset_name || dataset?.name || '数据集'}`" :description="`${metricText(item.metric)} · Recall ${percent(item.recall_at_k)} · ${formatDate(item.created_at)}`">
+                <template #avatar><StatusTag :status="item.status" /></template>
+              </a-list-item-meta>
+              <a-popconfirm v-if="item.can_remove" title="从历史中移除这次评估？" ok-text="移除" cancel-text="取消" @confirm="removeEvaluation(item.id)">
+                <a-button type="link" danger size="small">从历史移除</a-button>
+              </a-popconfirm>
+            </a-list-item>
+          </template>
+        </a-list>
+      </a-tab-pane>
+    </a-tabs>
   </a-drawer>
 
   <a-drawer v-model:open="advancedOpen" title="高级实验配置" width="620">
@@ -223,28 +271,20 @@
           <a-button size="small" @click="duplicateCandidate(candidate)">复制</a-button>
           <a-button size="small" danger :disabled="candidates.length <= 2" @click="removeCandidate(candidate.key)">删除</a-button>
         </div>
-        <a-textarea v-model:value="candidate.paramsText" :rows="3" placeholder="JSON 参数" />
+        <a-collapse ghost class="technical-collapse">
+          <a-collapse-panel key="json" header="技术详情 · JSON 参数">
+            <a-alert type="warning" show-icon message="仅建议熟悉对应算法参数的用户编辑。" />
+            <a-textarea v-model:value="candidate.paramsText" :rows="4" placeholder="JSON 参数" />
+          </a-collapse-panel>
+        </a-collapse>
       </article>
     </div>
-  </a-drawer>
-
-  <a-drawer v-model:open="historyOpen" title="实验历史" width="520">
-    <a-list :data-source="experiments" :loading="historyLoading">
-      <template #renderItem="{ item }">
-        <a-list-item>
-          <a-list-item-meta :title="`实验 #${item.id} · ${item.dataset_name || '-'}`" :description="`${item.metric.toUpperCase()} · Top-${item.top_k} · ${item.candidate_count} 个候选 · ${formatDate(item.created_at)}`">
-            <template #avatar><StatusTag :status="item.status" /></template>
-          </a-list-item-meta>
-          <a-button size="small" @click="openHistoryExperiment(item.id)">载入</a-button>
-        </a-list-item>
-      </template>
-    </a-list>
   </a-drawer>
 
   <a-modal v-model:open="finalizeOpen" title="确认最终保留集合" ok-text="确认保留并立即清理" cancel-text="返回调整" :confirm-loading="finalizing" @ok="finalizeSelection">
     <a-alert type="warning" show-icon message="确认后，新选择将成为该数据集唯一可检索索引；物理文件删除不可撤销。" />
     <div class="confirm-group"><strong>即将保留</strong><ul><li v-for="run in selectedRuns" :key="run.id">{{ run.name }} · Recall {{ percent(run.recall_at_k) }} · {{ fixed(run.speedup) }}x</li></ul></div>
-    <div class="confirm-group"><strong>即将退役的旧 active 索引</strong><ul><li v-for="index in activeIndexes" :key="index.id">#{{ index.id }} {{ algorithmShort(index.algorithm) }}</li><li v-if="!activeIndexes.length">无</li></ul></div>
+    <div class="confirm-group"><strong>即将退役的现用索引</strong><ul><li v-for="index in activeIndexes" :key="index.id">{{ algorithmShort(index.algorithm) }} · {{ metricText(index.metric) }}</li><li v-if="!activeIndexes.length">无</li></ul></div>
     <div class="confirm-group"><strong>即将清理的未选候选</strong><ul><li v-for="run in candidatesToClean" :key="run.id">{{ run.name }} · {{ formatBytes(run.index_size_bytes) }}</li><li v-if="!candidatesToClean.length">无</li></ul></div>
     <div class="reclaim-total">预计释放 <strong>{{ formatBytes(estimatedReclaimBytes) }}</strong></div>
   </a-modal>
@@ -260,8 +300,8 @@ import StatusTag from "@/components/StatusTag.vue";
 import { api } from "@/services/api";
 import { useDatasetStore } from "@/stores/datasets";
 import { useTaskStore } from "@/stores/tasks";
-import { formatDate, recommendationColor, recommendationText, statusText } from "@/utils/format";
-import type { AnnAlgorithm, AnnIndex, IndexCandidateConfig, IndexExperiment, IndexExperimentRun, PlotlyPayload, TaskRecord } from "@/types";
+import { algorithmText, formatDate, metricText, recommendationColor, recommendationText, statusText } from "@/utils/format";
+import type { AnnAlgorithm, AnnIndex, IndexCandidateConfig, IndexEvaluation, IndexExperiment, IndexExperimentRun, PlotlyPayload, TaskRecord } from "@/types";
 
 type CandidateDraft = IndexCandidateConfig & { paramsText: string };
 
@@ -273,6 +313,7 @@ const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE;
 const selectedDatasetId = ref<number | undefined>();
 const algorithms = ref<AnnAlgorithm[]>([]);
 const experiments = ref<IndexExperiment[]>([]);
+const evaluations = ref<IndexEvaluation[]>([]);
 const experimentResult = ref<IndexExperiment | null>(null);
 const selectedRunIds = ref<number[]>([]);
 const candidates = ref<CandidateDraft[]>([]);
@@ -280,10 +321,10 @@ const currentTask = ref<TaskRecord | null>(null);
 const experimentRunning = ref(false);
 const finalizing = ref(false);
 const advancedOpen = ref(false);
-const historyOpen = ref(false);
 const historyLoading = ref(false);
 const finalizeOpen = ref(false);
 const indexInventoryOpen = ref(false);
+const recordsTab = ref("indexes");
 const allIndexes = ref<AnnIndex[]>([]);
 const inventoryFilter = ref("all");
 const workspaceLoading = ref(false);
@@ -292,7 +333,7 @@ let selectionExperimentId: number | undefined;
 let pageReady = false;
 
 const form = reactive({ metric: "l2", top_k: 10, sample_size: 100, seed: 42, repetitions: 3, warmup_count: 10 });
-const metricOptions = [{ label: "L2", value: "l2" }, { label: "Cosine", value: "cosine" }];
+const metricOptions = [{ label: "L2 欧氏距离", value: "l2" }, { label: "余弦距离", value: "cosine" }];
 const columns = [
   { title: "候选", key: "candidate", width: 180 },
   { title: "状态", key: "status", width: 90 },
@@ -310,7 +351,7 @@ const inventoryColumns = [
   { title: "来源", key: "source", width: 100 },
   { title: "体积", key: "size", width: 90 },
   { title: "创建时间", key: "created", width: 130 },
-  { title: "操作", key: "actions", width: 90 },
+  { title: "操作", key: "actions", width: 150 },
 ];
 const inventoryFilterOptions = [
   { label: "全部", value: "all" }, { label: "可检索", value: "active" },
@@ -385,8 +426,35 @@ function recommendationTags(value?: string | null) { return (value || "").split(
 function fixed(value?: number | null) { return typeof value === "number" ? value.toFixed(4) : "-"; }
 function percent(value?: number | null) { return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "-"; }
 function formatBytes(value?: number | null) { if (!value) return "-"; if (value < 1024) return `${value} B`; if (value < 1048576) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1048576).toFixed(1)} MB`; }
-function algorithmShort(value: string) { return value.replace("hnswlib_", "").replace("faiss_", "").replace(/_/g, " ").toUpperCase(); }
+function algorithmShort(value: string) { return algorithmText(value); }
 function paramsSummary(params?: Record<string, unknown>) { const entries = Object.entries(params || {}); return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(", ") : "默认参数"; }
+function friendlyParamsSummary(algorithm: string, params?: Record<string, unknown>) {
+  const values = params || {};
+  if (algorithm.includes("hnsw")) {
+    const parts = [
+      values.M !== undefined ? `图连接度 ${values.M}` : "",
+      values.ef_construction !== undefined ? `构建深度 ${values.ef_construction}` : "",
+      values.ef_search !== undefined ? `检索深度 ${values.ef_search}` : "",
+      values.projection_dim !== undefined ? `投影维度 ${values.projection_dim}` : "",
+    ].filter(Boolean);
+    return parts.join(" · ") || "采用平台推荐参数";
+  }
+  const parts = [
+    values.nlist !== undefined ? `聚类中心 ${values.nlist}` : "",
+    values.nprobe !== undefined ? `检索分区 ${values.nprobe}` : "",
+    values.pq_m !== undefined ? `量化分段 ${values.pq_m}` : "",
+    values.nbits !== undefined ? `量化位数 ${values.nbits}` : "",
+  ].filter(Boolean);
+  return parts.join(" · ") || "采用平台推荐参数";
+}
+function friendlyIndexSummary(index: AnnIndex) {
+  return friendlyParamsSummary(index.algorithm, {
+    M: index.M,
+    ef_construction: index.ef_construction,
+    ef_search: index.ef_search,
+    ...(index.params || {}),
+  });
+}
 function selectionText(labels?: string[]) { return labels?.length ? labels.map((label) => recommendationText(label)).join(" · ") : "手动保留"; }
 function lifecycleText(value: string) { return ({ active: "可检索", candidate: "候选", discarded: "已清理" } as Record<string, string>)[value] || value; }
 function lifecycleColor(value: string) { return ({ active: "green", candidate: "blue", discarded: "default" } as Record<string, string>)[value] || "default"; }
@@ -394,10 +462,10 @@ function defaultParams(algorithm: string, overrides: Record<string, number | str
 
 function resetCandidates() {
   const defaults: IndexCandidateConfig[] = [
-    { key: "hnsw_fast", name: "HNSW fast", algorithm: "hnswlib_hnsw", params: defaultParams("hnswlib_hnsw", { M: 8, ef_construction: 80, ef_search: 32 }) },
-    { key: "hnsw_balanced", name: "HNSW balanced", algorithm: "hnswlib_hnsw", params: defaultParams("hnswlib_hnsw", { M: 16, ef_construction: 200, ef_search: 100 }) },
-    { key: "hnsw_high_recall", name: "HNSW high recall", algorithm: "hnswlib_hnsw", params: defaultParams("hnswlib_hnsw", { M: 32, ef_construction: 300, ef_search: 220 }) },
-    { key: "rp_hnsw", name: "RP-HNSW", algorithm: "hnswlib_rp_hnsw", params: defaultParams("hnswlib_rp_hnsw", { projection_dim: 16, random_state: 42, M: 12, ef_construction: 120, ef_search: 64 }) },
+    { key: "hnsw_fast", name: "HNSW 快速", algorithm: "hnswlib_hnsw", params: defaultParams("hnswlib_hnsw", { M: 8, ef_construction: 80, ef_search: 32 }) },
+    { key: "hnsw_balanced", name: "HNSW 均衡", algorithm: "hnswlib_hnsw", params: defaultParams("hnswlib_hnsw", { M: 16, ef_construction: 200, ef_search: 100 }) },
+    { key: "hnsw_high_recall", name: "HNSW 高召回", algorithm: "hnswlib_hnsw", params: defaultParams("hnswlib_hnsw", { M: 32, ef_construction: 300, ef_search: 220 }) },
+    { key: "rp_hnsw", name: "RP-HNSW 随机投影", algorithm: "hnswlib_rp_hnsw", params: defaultParams("hnswlib_rp_hnsw", { projection_dim: 16, random_state: 42, M: 12, ef_construction: 120, ef_search: 64 }) },
     { key: "faiss_ivf_flat", name: "FAISS IVF-Flat", algorithm: "faiss_ivf_flat", params: defaultParams("faiss_ivf_flat") },
     { key: "faiss_ivf_pq_compact", name: "FAISS IVF-PQ compact", algorithm: "faiss_ivf_pq", params: defaultParams("faiss_ivf_pq", { nbits: 4 }) },
   ];
@@ -444,6 +512,11 @@ async function loadExperiments() {
   historyLoading.value = true;
   try { experiments.value = (await api.indexExperiments(selectedDatasetId.value)).experiments; } finally { historyLoading.value = false; }
 }
+async function loadEvaluations() {
+  if (!selectedDatasetId.value) { evaluations.value = []; return; }
+  historyLoading.value = true;
+  try { evaluations.value = (await api.indexEvaluations(selectedDatasetId.value)).evaluations; } finally { historyLoading.value = false; }
+}
 async function loadIndexInventory() {
   if (!selectedDatasetId.value) { allIndexes.value = []; return; }
   allIndexes.value = (await api.datasetStatus(selectedDatasetId.value)).indexes;
@@ -466,7 +539,7 @@ async function loadDatasetWorkspace(preferredExperimentId?: number) {
   selectionExperimentId = undefined;
   try {
     if (!selectedDatasetId.value) return;
-    await Promise.all([store.loadDetail(selectedDatasetId.value), loadAlgorithms(), loadExperiments(), loadIndexInventory()]);
+    await Promise.all([store.loadDetail(selectedDatasetId.value), loadAlgorithms(), loadExperiments(), loadEvaluations(), loadIndexInventory()]);
     if (preferredExperimentId) {
       await loadExperimentDetail(preferredExperimentId, true);
       return;
@@ -534,7 +607,7 @@ async function finalizeSelection() {
 function confirmDiscard() {
   if (!experimentResult.value) return;
   Modal.confirm({
-    title: `放弃实验 #${experimentResult.value.id}？`,
+    title: "放弃当前实验？",
     content: "候选物理文件将立即清理，实验配置和指标仍会保留。",
     okText: "放弃并清理",
     okType: "danger",
@@ -556,7 +629,7 @@ async function retryCleanup() {
   } catch (error) { message.error((error as Error).message); }
 }
 async function openHistoryExperiment(id: number) {
-  historyOpen.value = false;
+  indexInventoryOpen.value = false;
   await router.push({ path: "/index-lab", query: { dataset: String(selectedDatasetId.value), experiment: String(id) } });
 }
 async function openInventoryExperiment(id: number) {
@@ -564,9 +637,59 @@ async function openInventoryExperiment(id: number) {
   await router.push({ path: "/index-lab", query: { dataset: String(selectedDatasetId.value), experiment: String(id) } });
 }
 function openIndexInQuery(indexId: number) {
-  if (selectedDatasetId.value) void router.push({ path: "/query-lab", query: { dataset: String(selectedDatasetId.value), index: String(indexId) } });
+  if (selectedDatasetId.value) void router.push({ path: "/query-lab", query: { dataset: String(selectedDatasetId.value), index_id: String(indexId) } });
 }
-function goToQuery() { if (selectedDatasetId.value) router.push(`/query-lab?dataset=${selectedDatasetId.value}`); }
+function goToQuery() {
+  if (!selectedDatasetId.value) return;
+  void router.push({ path: "/query-lab", query: { dataset: String(selectedDatasetId.value), index_id: activeIndexes.value[0]?.id ? String(activeIndexes.value[0].id) : undefined } });
+}
+
+function openRecords(tab: "indexes" | "experiments" | "evaluations") {
+  recordsTab.value = tab;
+  indexInventoryOpen.value = true;
+}
+
+function confirmDeleteIndex(index: AnnIndex) {
+  if (!selectedDatasetId.value) return;
+  Modal.confirm({
+    title: `永久删除 ${algorithmShort(index.algorithm)} 索引？`,
+    content: "索引文件和相关检索历史将被移除，此操作不可撤销。数据集本身不会受到影响。",
+    okText: "永久删除",
+    okType: "danger",
+    cancelText: "取消",
+    async onOk() {
+      try {
+        if (!selectedDatasetId.value) return;
+        await api.deleteIndex(selectedDatasetId.value, index.id);
+        await Promise.all([loadIndexInventory(), store.loadDetail(selectedDatasetId.value)]);
+        message.success("索引已删除");
+      } catch (error) {
+        message.error((error as Error).message);
+        throw error;
+      }
+    },
+  });
+}
+
+async function removeExperiment(id: number) {
+  try {
+    await api.removeIndexExperiment(id);
+    if (experimentResult.value?.id === id) {
+      experimentResult.value = null;
+      await router.replace({ path: "/index-lab", query: { dataset: String(selectedDatasetId.value) } });
+    }
+    await loadExperiments();
+    message.success("实验已从历史移除");
+  } catch (error) { message.error((error as Error).message); }
+}
+
+async function removeEvaluation(id: number) {
+  try {
+    await api.removeIndexEvaluation(id);
+    await loadEvaluations();
+    message.success("评估已从历史移除");
+  } catch (error) { message.error((error as Error).message); }
+}
 
 onMounted(async () => {
   await store.loadAll();
@@ -656,6 +779,11 @@ onBeforeUnmount(() => { if (pollingTimer) window.clearInterval(pollingTimer); })
 .inventory-summary span, .muted { color: #64748b; font-size: 12px; }
 .inventory-summary strong { color: #172033; font-size: 20px; }
 .inventory-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.records-tabs :deep(.ant-tabs-content-holder) { min-height: 420px; }
+.record-list-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+.technical-collapse { border-top: 1px solid #edf0f4; }
+.technical-collapse :deep(.ant-collapse-header) { padding: 8px 0 !important; color: #64748b !important; font-size: 12px; }
+.technical-collapse :deep(.ant-collapse-content-box) { padding: 0 !important; }
+.technical-collapse :deep(.ant-alert) { margin-bottom: 8px; }
 @media (max-width: 1120px) { .config-grid { grid-template-columns: repeat(2, 1fr); } .config-actions { grid-column: 1 / -1; justify-content: flex-end; } .comparison-layout { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .retained-strip, .section-head, .finalize-bar, .completed-panel { align-items: flex-start; flex-direction: column; } .retained-list { justify-content: flex-start; } .config-grid, .baseline-bar, .advanced-grid, .inventory-summary { grid-template-columns: 1fr; } .candidate-editor-row { grid-template-columns: 1fr; } }
 </style>

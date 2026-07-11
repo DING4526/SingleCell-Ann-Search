@@ -133,7 +133,13 @@ def _resource_context(user: User, page_context: dict) -> dict:
                 distributions[field] = {str(value or "N/A"): int(count) for value, count in rows}
             row_data["distributions"] = distributions
         dataset_rows.append(row_data)
-    tasks = accessible_tasks_query(user=user).order_by(Task.updated_at.desc()).limit(20).all()
+    tasks = (
+        accessible_tasks_query(user=user)
+        .filter(Task.history_hidden.is_(False))
+        .order_by(Task.updated_at.desc())
+        .limit(20)
+        .all()
+    )
     task_rows = [{
         "id": row.id, "type": row.type, "status": row.status, "progress": row.progress,
         "dataset_id": row.dataset_id, "message": (row.message or "")[:160],

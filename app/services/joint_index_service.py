@@ -13,7 +13,13 @@ from flask import current_app
 
 from app.extensions import db
 from app.models import Cell, Dataset, JointIndex, JointIndexDataset, JointQueryLog
-from app.services.plot_service import _apply_dark_layout, _build_color_map, _fig_to_plotly_json, _muted_color
+from app.services.plot_service import (
+    _apply_dark_layout,
+    _build_color_map,
+    _fig_to_plotly_json,
+    _legend_dimension,
+    _muted_color,
+)
 
 
 def _cb(progress_cb, progress: int, message: str):
@@ -453,14 +459,6 @@ def joint_search_plot(
     background_labels = [dataset_names.get(int(dataset_ids[idx]), f"Dataset {int(dataset_ids[idx])}") for idx in background_positions]
     color_map = _build_color_map(background_labels, use_dark_cycle=True)
     muted_map = {label: _muted_color(color) for label, color in color_map.items()}
-    color_labels = list(color_map.keys())
-    code_by_label = {label: i for i, label in enumerate(color_labels)}
-    if len(color_labels) <= 1:
-        only_color = muted_map[color_labels[0]] if color_labels else "#95b1b0"
-        colorscale = [[0, only_color], [1, only_color]]
-    else:
-        colorscale = [[i / (len(color_labels) - 1), muted_map[label]] for i, label in enumerate(color_labels)]
-
     fig = go.Figure()
     fig.add_trace(go.Scattergl(
         x=coords[background_positions, 0].astype(float).tolist(),
@@ -469,31 +467,17 @@ def joint_search_plot(
         marker=dict(
             size=3,
             opacity=0.84,
-            color=[code_by_label[label] for label in background_labels],
-            colorscale=colorscale,
-            cmin=0,
-            cmax=max(len(color_labels) - 1, 1),
+            color=[muted_map[label] for label in background_labels],
             showscale=False,
         ),
         customdata=[
             [int(dataset_ids[idx]), dataset_names.get(int(dataset_ids[idx]), f"Dataset {int(dataset_ids[idx])}"), int(cell_indices[idx])]
             for idx in background_positions
         ],
-        hovertemplate="dataset: %{customdata[1]}<br>cell_index: %{customdata[2]}<extra></extra>",
-        name="Background cells",
+        hovertemplate="数据集：%{customdata[1]}<br>细胞编号：%{customdata[2]:,}<extra></extra>",
+        name="背景细胞",
         showlegend=False,
     ))
-
-    for label, color in color_map.items():
-        fig.add_trace(go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            marker=dict(size=7, color=muted_map.get(label, _muted_color(color))),
-            name=label,
-            showlegend=True,
-            hoverinfo="skip",
-        ))
 
     highlight_labels = [label for label in result_global_labels if label in result_set and label != query_global_label]
     if highlight_labels:
@@ -517,9 +501,10 @@ def joint_search_plot(
             y=coords[highlight_labels, 1].astype(float).tolist(),
             mode="markers",
             marker=dict(size=8, color="#0891b2", opacity=0.98, line=dict(width=1.4, color="#ffffff")),
-            name="Similar cells",
+            name="相似细胞",
             customdata=customdata,
-            hovertemplate="dataset: %{customdata[1]}<br>cell_index: %{customdata[2]}<br>cell_name: %{customdata[3]}<br>cell_type: %{customdata[4]}<extra>global %{customdata[0]}</extra>",
+            hovertemplate="数据集：%{customdata[1]}<br>细胞编号：%{customdata[2]:,}<br>细胞名称：%{customdata[3]}<br>细胞类型：%{customdata[4]}<extra></extra>",
+            showlegend=False,
         ))
 
     query_dataset_id = int(dataset_ids[query_global_label])
@@ -530,7 +515,7 @@ def joint_search_plot(
         y=[float(coords[query_global_label, 1])],
         mode="markers",
         marker=dict(size=16, color="#d97706", symbol="star", line=dict(width=2.4, color="#ffffff"), opacity=1.0),
-        name="Query cell",
+        name="查询细胞",
         customdata=[[
             query_global_label,
             dataset_names.get(query_dataset_id, f"Dataset {query_dataset_id}"),
@@ -538,8 +523,24 @@ def joint_search_plot(
             query_cell.cell_name if query_cell else "N/A",
             query_cell.cell_type if query_cell else "N/A",
         ]],
-        hovertemplate="query<br>dataset: %{customdata[1]}<br>cell_index: %{customdata[2]}<br>cell_name: %{customdata[3]}<br>cell_type: %{customdata[4]}<extra>global %{customdata[0]}</extra>",
+        hovertemplate="查询细胞<br>数据集：%{customdata[1]}<br>细胞编号：%{customdata[2]:,}<br>细胞名称：%{customdata[3]}<br>细胞类型：%{customdata[4]}<extra></extra>",
+        showlegend=False,
     ))
 
     _apply_dark_layout(fig, title=f"{joint_index.name} · Harmony UMAP", xaxis_title="UMAP1", yaxis_title="UMAP2", height=640)
-    return {"scatter_plot": _fig_to_plotly_json(fig)}
+    plot_json = _fig_to_plotly_json(fig)
+    plot_json["metadata"] = {
+        "legend": {
+            "target_trace_index": 0,
+            "default_dimension": "dataset",
+            "dimensions": {
+                "dataset": _legend_dimension("数据集", 1, background_labels, muted_map),
+            },
+            "role_items": [
+                {"label": "相似细胞", "color": "#0891b2"},
+                {"label": "查询细胞", "color": "#d97706"},
+            ],
+        },
+        "point_action": {"kind": "joint_cell", "customdata_index": 2},
+    }
+    return {"scatter_plot": plot_json}

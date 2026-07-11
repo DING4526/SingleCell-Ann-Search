@@ -633,6 +633,16 @@ def discard_experiment(experiment_id: int) -> dict:
     reclaimed = 0
     errors: list[dict] = []
     indexes = AnnIndex.query.filter_by(source_experiment_id=experiment.id).all()
+    # Persist the scientific/lifecycle decision before touching any physical
+    # artifact.  A failed database commit must never leave a live row pointing
+    # at a file that was already removed.
+    for index in indexes:
+        if index.lifecycle != "active":
+            index.lifecycle = "discarded"
+            index.discarded_at = index.discarded_at or datetime.utcnow()
+    experiment.status = "discarded"
+    db.session.commit()
+
     for index in indexes:
         if index.lifecycle == "active":
             continue
@@ -640,7 +650,6 @@ def discard_experiment(experiment_id: int) -> dict:
         reclaimed += removed
         if next_errors:
             errors.append({"index_id": index.id, "errors": next_errors})
-    experiment.status = "discarded"
     experiment.reclaimed_bytes = int(experiment.reclaimed_bytes or 0) + reclaimed
     db.session.commit()
     return {"discarded_index_ids": [index.id for index in indexes], "reclaimed_bytes": reclaimed, "cleanup_errors": errors}

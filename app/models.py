@@ -52,15 +52,15 @@ class Dataset(db.Model):
     status = db.Column(db.String(20), default="uploaded")    # uploaded / processed / indexed / error
     error_message = db.Column(db.Text)
     scatter_cache_path = db.Column(db.String(256))            # 散点图 Plotly JSON 缓存文件名
-    owner_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     visibility = db.Column(db.String(20), default="private")   # private / shared
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     owner = db.relationship("User", backref="datasets")
-    cells = db.relationship("Cell", backref="dataset", cascade="all, delete-orphan")
-    indexes = db.relationship("AnnIndex", backref="dataset", cascade="all, delete-orphan")
-    query_logs = db.relationship("QueryLog", backref="dataset", cascade="all, delete-orphan")
-    permissions = db.relationship("DatasetPermission", backref="dataset", cascade="all, delete-orphan")
+    cells = db.relationship("Cell", backref="dataset", cascade="all, delete-orphan", passive_deletes=True)
+    indexes = db.relationship("AnnIndex", backref="dataset", cascade="all, delete-orphan", passive_deletes=True)
+    query_logs = db.relationship("QueryLog", backref="dataset", cascade="all, delete-orphan", passive_deletes=True)
+    permissions = db.relationship("DatasetPermission", backref="dataset", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class DatasetPermission(db.Model):
@@ -89,7 +89,7 @@ class Cell(db.Model):
     __tablename__ = "cells"
 
     id = db.Column(db.Integer, primary_key=True)
-    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id"), nullable=False)
+    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
     cell_index = db.Column(db.Integer, nullable=False)       # AnnData 中的行号
     cell_name = db.Column(db.String(200))                    # 来自 adata.obs_names
     cell_type = db.Column(db.String(200))                    # 细胞类型
@@ -108,7 +108,7 @@ class AnnIndex(db.Model):
     __tablename__ = "ann_indexes"
 
     id = db.Column(db.Integer, primary_key=True)
-    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id"), nullable=False)
+    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
     algorithm = db.Column(db.String(60), default="hnswlib_hnsw")
     preprocess_path = db.Column(db.String(500))
     params_json = db.Column(db.Text)
@@ -160,6 +160,7 @@ class IndexExperiment(db.Model):
     reclaimed_bytes = db.Column(db.Integer, default=0)
     result_json = db.Column(db.Text)
     error_message = db.Column(db.Text)
+    history_hidden = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     dataset = db.relationship("Dataset", backref="index_experiments")
@@ -199,7 +200,7 @@ class IndexEvaluation(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
-    index_id = db.Column(db.Integer, db.ForeignKey("ann_indexes.id", ondelete="CASCADE"), nullable=False)
+    index_id = db.Column(db.Integer, db.ForeignKey("ann_indexes.id", ondelete="SET NULL"), nullable=True)
     metric = db.Column(db.String(20), default="l2")
     algorithm = db.Column(db.String(60), default="hnswlib_hnsw")
     sample_size = db.Column(db.Integer, default=100)
@@ -215,6 +216,7 @@ class IndexEvaluation(db.Model):
     recommendation = db.Column(db.String(200))
     status = db.Column(db.String(20), default="running")
     error_message = db.Column(db.Text)
+    history_hidden = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     dataset = db.relationship("Dataset", backref="index_evaluations")
@@ -243,12 +245,16 @@ class JointIndex(db.Model):
     build_time_ms = db.Column(db.Float)
     status = db.Column(db.String(20), default="building")
     error_message = db.Column(db.Text)
-    owner_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     owner = db.relationship("User", backref="joint_indexes")
-    datasets = db.relationship("JointIndexDataset", backref="joint_index", cascade="all, delete-orphan")
-    query_logs = db.relationship("JointQueryLog", backref="joint_index", cascade="all, delete-orphan")
+    datasets = db.relationship(
+        "JointIndexDataset", backref="joint_index", cascade="all, delete-orphan", passive_deletes=True
+    )
+    query_logs = db.relationship(
+        "JointQueryLog", backref="joint_index", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class JointIndexDataset(db.Model):
@@ -275,9 +281,9 @@ class JointQueryLog(db.Model):
     __tablename__ = "joint_query_logs"
 
     id = db.Column(db.Integer, primary_key=True)
-    joint_index_id = db.Column(db.Integer, db.ForeignKey("joint_indexes.id"), nullable=False)
+    joint_index_id = db.Column(db.Integer, db.ForeignKey("joint_indexes.id", ondelete="CASCADE"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
-    query_dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id"), nullable=False)
+    query_dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
     query_cell_index = db.Column(db.Integer, nullable=False)
     top_k = db.Column(db.Integer, nullable=False)
     query_time_ms = db.Column(db.Float)
@@ -292,8 +298,8 @@ class QueryLog(db.Model):
     __tablename__ = "query_logs"
 
     id = db.Column(db.Integer, primary_key=True)
-    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id"), nullable=False)
-    index_id = db.Column(db.Integer, db.ForeignKey("ann_indexes.id"), nullable=False)
+    dataset_id = db.Column(db.Integer, db.ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
+    index_id = db.Column(db.Integer, db.ForeignKey("ann_indexes.id", ondelete="CASCADE"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"))
     query_cell_index = db.Column(db.Integer, nullable=False) # 查询细胞索引
     top_k = db.Column(db.Integer, nullable=False)            # 返回结果数

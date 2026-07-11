@@ -1,11 +1,10 @@
-import os
-import pathlib
-from flask import Blueprint, render_template, redirect, url_for, flash, current_app, abort
-from flask_login import login_required
+from flask import Blueprint, redirect, url_for, flash, abort
+from flask_login import current_user, login_required
 from app.extensions import db
-from app.models import Dataset, AnnIndex, Cell, KnowledgeDocument, Task
-from app.services.access_service import accessible_datasets_query, can_manage_dataset, can_view_dataset
+from app.models import Dataset
+from app.services.access_service import can_manage_dataset, can_view_dataset
 from app.spa import render_spa
+from app.services.deletion_service import DeletionConflict, delete_dataset
 
 datasets_bp = Blueprint("datasets", __name__)
 
@@ -41,41 +40,12 @@ def delete(dataset_id):
     if not can_manage_dataset(dataset):
         abort(403)
 
-    # 删除物理文件（仅在该文件不被其他数据集引用时才删除）
-    if dataset.file_path:
-        other_refs = Dataset.query.filter(
-            Dataset.id != dataset_id,
-            Dataset.file_path == dataset.file_path,
-        ).count()
-        if other_refs == 0 and os.path.exists(dataset.file_path):
-            os.remove(dataset.file_path)
-
-    if dataset.vector_path:
-        vec_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.vector_path
-        if vec_path.exists():
-            os.remove(str(vec_path))
-
-    if dataset.scatter_cache_path:
-        scatter_path = pathlib.Path(current_app.config["CACHE_DIR"]) / dataset.scatter_cache_path
-        if scatter_path.exists():
-            os.remove(str(scatter_path))
-
-    for idx in AnnIndex.query.filter_by(dataset_id=dataset_id).all():
-        idx_path = pathlib.Path(current_app.config["INDEX_DIR"]) / idx.index_path
-        if idx_path.exists():
-            os.remove(str(idx_path))
-
-    for document in KnowledgeDocument.query.filter_by(dataset_id=dataset_id).all():
-        if document.stored_path:
-            path = pathlib.Path(document.stored_path)
-            if path.is_file():
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-
-    db.session.delete(dataset)
-    db.session.commit()
-
-    flash("数据集已删除。", "info")
+    try:
+        delete_dataset(dataset, actor=current_user)
+        flash("数据集已删除。", "info")
+    except DeletionConflict as exc:
+        flash(exc.message, "warning")
+    except Exception:
+        db.session.rollback()
+        flash("数据集删除失败，请稍后重试。", "danger")
     return redirect(url_for("datasets.list_datasets"))

@@ -178,6 +178,7 @@ def execute_action(action: str, args: dict, user, app) -> dict:
 
     if action == "submit_dataset_processing":
         task = Task(type="process", status="pending", progress=0, message="任务已提交，等待执行...",
+                    request_json=json.dumps(canonical, ensure_ascii=False),
                     dataset_id=canonical["dataset_id"], created_by_id=user.id, updated_at=now)
         db.session.add(task)
         record_audit("dataset.process_submitted", actor=user, resource_type="dataset",
@@ -192,6 +193,7 @@ def execute_action(action: str, args: dict, user, app) -> dict:
 
     if action == "submit_index_build":
         task = Task(type="build_index", status="pending", progress=0, message="任务已提交，等待执行...",
+                    request_json=json.dumps(canonical, ensure_ascii=False),
                     dataset_id=canonical["dataset_id"], created_by_id=user.id, updated_at=now)
         db.session.add(task)
         record_audit("index.build_submitted", actor=user, resource_type="dataset",
@@ -209,15 +211,16 @@ def execute_action(action: str, args: dict, user, app) -> dict:
         from app.services.index_experiment_service import create_index_experiment
         experiment = create_index_experiment(**canonical)
         experiment.created_by_id = user.id
+        experiment_request = {"dataset_id": canonical["dataset_id"], "experiment_id": experiment.id}
         task = Task(type="index_experiment", status="pending", progress=0,
                     message="候选索引实验已提交，等待执行...", dataset_id=canonical["dataset_id"],
+                    request_json=json.dumps(experiment_request, ensure_ascii=False),
                     created_by_id=user.id, updated_at=now)
         db.session.add(task)
         record_audit("index_experiment.created", actor=user, resource_type="index_experiment",
                      resource_id=experiment.id, dataset_id=canonical["dataset_id"], details={"source": "ai_assistant"})
         db.session.commit()
-        executor.submit(run_index_experiment_task, task.id,
-                        {"dataset_id": canonical["dataset_id"], "experiment_id": experiment.id}, app)
+        executor.submit(run_index_experiment_task, task.id, experiment_request, app)
         return _task_result(
             task,
             experiment_id=experiment.id,
@@ -236,6 +239,7 @@ def execute_action(action: str, args: dict, user, app) -> dict:
     if action == "submit_index_evaluation":
         task = Task(type="index_evaluation", status="pending", progress=0,
                     message="索引评估任务已提交。", dataset_id=canonical["dataset_id"],
+                    request_json=json.dumps(canonical, ensure_ascii=False),
                     created_by_id=user.id, updated_at=now)
         db.session.add(task)
         record_audit("index.evaluation_submitted", actor=user, resource_type="ann_index",
@@ -250,7 +254,9 @@ def execute_action(action: str, args: dict, user, app) -> dict:
 
     if action == "submit_joint_index_build":
         task = Task(type="build_joint_index", status="pending", progress=0,
-                    message="联合索引构建任务已提交。", created_by_id=user.id, updated_at=now)
+                    message="联合索引构建任务已提交。",
+                    request_json=json.dumps(canonical, ensure_ascii=False),
+                    created_by_id=user.id, updated_at=now)
         db.session.add(task)
         record_audit("joint_index.build_submitted", actor=user, resource_type="joint_index",
                      details={"source": "ai_assistant", "dataset_ids": canonical["dataset_ids"]})

@@ -13,7 +13,6 @@ from app.ai.knowledge import (
     can_manage_document,
     can_view_document,
     create_uploaded_document,
-    delete_document,
     document_to_dict,
     ensure_builtin_knowledge,
     retrieve_knowledge,
@@ -55,21 +54,42 @@ from app.models import (
     AiMessage,
     AiModelConfig,
     AiProviderConfig,
+    AiProviderCall,
     AiRun,
     AiToolCall,
     Dataset,
     KnowledgeDocument,
+    KnowledgeChunk,
     Task,
 )
 from app.services.access_service import is_admin
 from app.services.audit_service import record_audit
+from app.services.deletion_service import (
+    DeletionConflict,
+    conflict_payload,
+    conversation_delete_blockers,
+    delete_ai_conversation,
+    delete_knowledge_document,
+    document_delete_blockers,
+)
 
 
 ai_bp = Blueprint("ai_api", __name__, url_prefix="/api/ai")
 
 
-def _error(message: str, status: int = 400, code: str = "AI_BAD_REQUEST"):
-    return jsonify(ok=False, message=message, error_code=code), status
+def _error(
+    message: str,
+    status: int = 400,
+    code: str = "AI_BAD_REQUEST",
+    blockers: list[dict] | None = None,
+):
+    return jsonify(
+        ok=False,
+        message=message,
+        code=code,
+        error_code=code,
+        blockers=blockers or [],
+    ), status
 
 
 def _json() -> dict:
@@ -89,6 +109,61 @@ def _owned_conversation(conversation_id: int):
 
 def _owned_run(run_id: int):
     return AiRun.query.filter_by(id=run_id, user_id=current_user.id).first()
+
+
+def _document_payload(document: KnowledgeDocument) -> dict:
+    payload = document_to_dict(document, current_user)
+    blockers = document_delete_blockers(document)
+    payload.update({
+        "is_builtin": document.source_type == "builtin",
+        "can_delete": bool(can_manage_document(document, current_user) and not blockers),
+        "delete_blockers": blockers,
+    })
+    return payload
+
+
+def _model_delete_blockers(model: AiModelConfig) -> list[dict]:
+    blockers = []
+    run_count = AiRun.query.filter_by(model_config_id=model.id).count()
+    chunk_count = KnowledgeChunk.query.filter_by(embedding_model_config_id=model.id).count()
+    call_count = AiProviderCall.query.filter_by(model_config_id=model.id).count()
+    if run_count:
+        blockers.append({"type": "ai_run", "id": None, "label": "历史 AI 运行", "count": run_count})
+    if chunk_count:
+        blockers.append({"type": "knowledge_chunk", "id": None, "label": "知识向量", "count": chunk_count})
+    if call_count:
+        blockers.append({"type": "provider_call", "id": None, "label": "供应商调用账本", "count": call_count})
+    return blockers
+
+
+def _model_payload(model: AiModelConfig, *, public: bool = False) -> dict:
+    payload = model_to_dict(model, public=public)
+    if not public:
+        blockers = _model_delete_blockers(model)
+        payload.update({"can_delete": not blockers, "delete_blockers": blockers})
+    return payload
+
+
+def _provider_delete_blockers(provider: AiProviderConfig) -> list[dict]:
+    blockers = []
+    for model in provider.model_configs:
+        for item in _model_delete_blockers(model):
+            blockers.append({**item, "model_config_id": model.id, "model_name": model.display_name})
+    return blockers
+
+
+def _provider_payload(provider: AiProviderConfig) -> dict:
+    payload = provider_to_dict(provider)
+    blockers = _provider_delete_blockers(provider)
+    payload.update({"can_delete": not blockers, "delete_blockers": blockers})
+    return payload
+
+
+def _conversation_payload(conversation: AiConversation, *, detail: bool = False) -> dict:
+    payload = conversation_to_dict(conversation, detail=detail)
+    blockers = conversation_delete_blockers(conversation)
+    payload.update({"can_delete": not blockers, "delete_blockers": blockers})
+    return payload
 
 
 @ai_bp.route("/catalog", methods=["GET"])
@@ -129,7 +204,7 @@ def knowledge_documents():
             rows = [row for row in rows if row.scope == scope]
         if dataset_id:
             rows = [row for row in rows if row.dataset_id == dataset_id]
-        return jsonify(ok=True, documents=[document_to_dict(row, current_user) for row in rows])
+        return jsonify(ok=True, documents=[_document_payload(row) for row in rows])
 
     file_storage = request.files.get("file")
     if not file_storage:
@@ -154,7 +229,7 @@ def knowledge_documents():
         )
         db.session.commit()
         submit_document_processing(current_app._get_current_object(), document.id)
-        return jsonify(ok=True, document=document_to_dict(document, current_user)), 202
+        return jsonify(ok=True, document=_document_payload(document)), 202
     except PermissionError as exc:
         return _error(str(exc), 403, "AI_KNOWLEDGE_FORBIDDEN")
     except Exception as exc:
@@ -169,19 +244,20 @@ def knowledge_document_detail(document_id: int):
     if not document or not can_view_document(document, current_user):
         return _error("知识文档不存在。", 404, "AI_KNOWLEDGE_NOT_FOUND")
     if request.method == "GET":
-        return jsonify(ok=True, document=document_to_dict(document, current_user))
+        return jsonify(ok=True, document=_document_payload(document))
+    if request.method == "DELETE" and document.source_type == "builtin":
+        try:
+            delete_knowledge_document(document, actor=current_user)
+        except DeletionConflict as exc:
+            return jsonify(**conflict_payload(exc)), 409
     if not can_manage_document(document, current_user):
         return _error("没有权限维护该知识文档。", 403, "AI_KNOWLEDGE_FORBIDDEN")
     if request.method == "DELETE":
-        dataset_id = document.dataset_id
-        scope = document.scope
-        delete_document(document)
-        record_audit(
-            "ai.knowledge_deleted", resource_type="knowledge_document", resource_id=document_id,
-            dataset_id=dataset_id, details={"scope": scope},
-        )
-        db.session.commit()
-        return jsonify(ok=True)
+        try:
+            result = delete_knowledge_document(document, actor=current_user)
+            return jsonify(ok=True, message="知识资料已删除。", **result)
+        except DeletionConflict as exc:
+            return jsonify(**conflict_payload(exc)), 409
     payload = _json()
     if "title" in payload:
         title = str(payload["title"] or "").strip()
@@ -191,7 +267,7 @@ def knowledge_document_detail(document_id: int):
     if "description" in payload:
         document.description = str(payload["description"] or "")[:2000]
     db.session.commit()
-    return jsonify(ok=True, document=document_to_dict(document, current_user))
+    return jsonify(ok=True, document=_document_payload(document))
 
 
 @ai_bp.route("/knowledge/documents/<int:document_id>/file", methods=["GET"])
@@ -217,7 +293,7 @@ def knowledge_document_reindex(document_id: int):
     document.error_message = None
     db.session.commit()
     submit_document_processing(current_app._get_current_object(), document.id)
-    return jsonify(ok=True, document=document_to_dict(document, current_user)), 202
+    return jsonify(ok=True, document=_document_payload(document)), 202
 
 
 @ai_bp.route("/knowledge/search/preview", methods=["GET"])
@@ -243,7 +319,7 @@ def knowledge_builtin_sync():
     rows = KnowledgeDocument.query.filter_by(source_type="builtin").order_by(KnowledgeDocument.title.asc()).all()
     record_audit("ai.knowledge_builtin_synced", resource_type="knowledge_document")
     db.session.commit()
-    return jsonify(ok=True, documents=[document_to_dict(row, current_user) for row in rows])
+    return jsonify(ok=True, documents=[_document_payload(row) for row in rows])
 
 
 @ai_bp.route("/conversations", methods=["GET", "POST"])
@@ -262,7 +338,7 @@ def conversations():
         row = AiConversation(user_id=current_user.id, title=title, kind=kind)
         db.session.add(row)
         db.session.commit()
-        return jsonify(ok=True, conversation=conversation_to_dict(row)), 201
+        return jsonify(ok=True, conversation=_conversation_payload(row)), 201
     query = AiConversation.query.filter_by(user_id=current_user.id)
     if requested_kind == "assistant":
         # The unified assistant also exposes legacy analysis conversations so
@@ -271,7 +347,7 @@ def conversations():
     elif requested_kind:
         query = query.filter_by(kind=requested_kind)
     rows = query.order_by(AiConversation.updated_at.desc()).all()
-    return jsonify(ok=True, conversations=[conversation_to_dict(row) for row in rows])
+    return jsonify(ok=True, conversations=[_conversation_payload(row) for row in rows])
 
 
 @ai_bp.route("/conversations/<int:conversation_id>", methods=["GET", "DELETE"])
@@ -281,18 +357,12 @@ def conversation_detail(conversation_id: int):
     if not row:
         return _error("AI 会话不存在。", 404, "AI_CONVERSATION_NOT_FOUND")
     if request.method == "DELETE":
-        linked_task_ids = [run.search_task_id for run in row.runs if run.search_task_id]
-        linked_task_ids.extend(
-            tool.task_id for run in row.runs for tool in run.tool_calls if tool.task_id
-        )
-        db.session.delete(row)
-        for task_id in set(linked_task_ids):
-            task = db.session.get(Task, task_id)
-            if task and task.source == "ai" and task.created_by_id == current_user.id:
-                db.session.delete(task)
-        db.session.commit()
-        return jsonify(ok=True)
-    return jsonify(ok=True, conversation=conversation_to_dict(row, detail=True))
+        try:
+            delete_ai_conversation(row, actor=current_user)
+            return jsonify(ok=True, message="AI 会话已删除。")
+        except DeletionConflict as exc:
+            return jsonify(**conflict_payload(exc)), 409
+    return jsonify(ok=True, conversation=_conversation_payload(row, detail=True))
 
 
 @ai_bp.route("/conversations/<int:conversation_id>/messages", methods=["POST"])
@@ -735,7 +805,7 @@ def admin_providers():
         return denied
     if request.method == "GET":
         rows = AiProviderConfig.query.order_by(AiProviderConfig.created_at.desc()).all()
-        return jsonify(ok=True, providers=[provider_to_dict(row) for row in rows])
+        return jsonify(ok=True, providers=[_provider_payload(row) for row in rows])
     payload = _json()
     try:
         provider_key = str(payload.get("provider") or "").strip().lower()
@@ -762,7 +832,7 @@ def admin_providers():
             details={"provider": provider_key},
         )
         db.session.commit()
-        return jsonify(ok=True, provider=provider_to_dict(row)), 201
+        return jsonify(ok=True, provider=_provider_payload(row)), 201
     except Exception as exc:
         db.session.rollback()
         return _error(sanitize_provider_error(exc), 400, "AI_PROVIDER_INVALID")
@@ -778,9 +848,12 @@ def admin_provider_detail(provider_id: int):
     if not row:
         return _error("供应商配置不存在。", 404, "AI_PROVIDER_NOT_FOUND")
     if request.method == "DELETE":
-        model_ids = [item.id for item in row.model_configs]
-        if model_ids and AiRun.query.filter(AiRun.model_config_id.in_(model_ids)).count():
-            return _error("该配置已有历史 Run 引用，请禁用而不是删除。", 409, "AI_PROVIDER_IN_USE")
+        blockers = _provider_delete_blockers(row)
+        if blockers:
+            return _error(
+                "该配置已有历史引用，请禁用而不是删除。", 409,
+                "AI_PROVIDER_IN_USE", blockers,
+            )
         db.session.delete(row)
         record_audit(
             "ai.provider_deleted", resource_type="ai_provider", resource_id=provider_id,
@@ -825,7 +898,7 @@ def admin_provider_detail(provider_id: int):
         )
         ensure_one_default_model()
         db.session.commit()
-        return jsonify(ok=True, provider=provider_to_dict(row))
+        return jsonify(ok=True, provider=_provider_payload(row))
     except Exception as exc:
         db.session.rollback()
         return _error(sanitize_provider_error(exc), 400, "AI_PROVIDER_INVALID")
@@ -839,7 +912,7 @@ def admin_models():
         return denied
     if request.method == "GET":
         rows = AiModelConfig.query.order_by(AiModelConfig.created_at.desc()).all()
-        return jsonify(ok=True, models=[model_to_dict(row) for row in rows])
+        return jsonify(ok=True, models=[_model_payload(row) for row in rows])
     payload = _json()
     provider = db.session.get(AiProviderConfig, int(payload.get("provider_config_id") or 0))
     if not provider:
@@ -864,7 +937,7 @@ def admin_models():
             details={"provider_config_id": provider.id, "model_id": model_id},
         )
         db.session.commit()
-        return jsonify(ok=True, model=model_to_dict(row)), 201
+        return jsonify(ok=True, model=_model_payload(row)), 201
     except Exception:
         db.session.rollback()
         return _error("同一供应商下不能重复添加相同模型 ID。", 409, "AI_MODEL_DUPLICATE")
@@ -880,8 +953,12 @@ def admin_model_detail(model_id: int):
     if not row:
         return _error("模型配置不存在。", 404, "AI_MODEL_NOT_FOUND")
     if request.method == "DELETE":
-        if AiRun.query.filter_by(model_config_id=row.id).count():
-            return _error("该模型已有历史 Run 引用，请禁用而不是删除。", 409, "AI_MODEL_IN_USE")
+        blockers = _model_delete_blockers(row)
+        if blockers:
+            return _error(
+                "该模型已有历史引用，请禁用而不是删除。", 409,
+                "AI_MODEL_IN_USE", blockers,
+            )
         db.session.delete(row)
         record_audit("ai.model_deleted", resource_type="ai_model", resource_id=row.id)
         ensure_one_default_model()
@@ -928,7 +1005,7 @@ def admin_model_detail(model_id: int):
     db.session.commit()
     for document_id in reindex_ids:
         submit_document_processing(current_app._get_current_object(), document_id)
-    return jsonify(ok=True, model=model_to_dict(row))
+    return jsonify(ok=True, model=_model_payload(row))
 
 
 @ai_bp.route("/admin/models/<int:model_id>/test", methods=["POST"])
@@ -953,7 +1030,7 @@ def admin_test_model(model_id: int):
             details={"success": True, "latency_ms": round(usage.latency_ms, 2)},
         )
         db.session.commit()
-        return jsonify(ok=True, model=model_to_dict(row), latency_ms=usage.latency_ms)
+        return jsonify(ok=True, model=_model_payload(row), latency_ms=usage.latency_ms)
     except Exception as exc:
         message = sanitize_provider_error(exc)
         row.enabled = False

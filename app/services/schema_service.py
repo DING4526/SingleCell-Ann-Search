@@ -5,6 +5,152 @@ from sqlalchemy import inspect, text
 from app.extensions import db
 
 
+def _rebuild_index_evaluations_if_needed(engine) -> None:
+    """Upgrade the evaluation/index FK to nullable ``ON DELETE SET NULL``.
+
+    SQLite cannot alter a foreign key or a column's nullability in place, so
+    this one compatibility table is rebuilt only when its legacy definition is
+    detected.  The operation is idempotent and preserves all evaluation rows.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("index_evaluations"):
+        return
+    columns = {column["name"]: column for column in inspector.get_columns("index_evaluations")}
+    index_column = columns.get("index_id")
+    index_fks = [
+        fk for fk in inspector.get_foreign_keys("index_evaluations")
+        if fk.get("constrained_columns") == ["index_id"]
+    ]
+    ondelete = ""
+    if index_fks:
+        ondelete = str((index_fks[0].get("options") or {}).get("ondelete") or "").upper()
+    if index_column and index_column.get("nullable", True) and ondelete == "SET NULL":
+        return
+
+    has_history = "history_hidden" in columns
+    history_expr = "history_hidden" if has_history else "0"
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        conn.commit()
+        try:
+            with conn.begin():
+                conn.exec_driver_sql("DROP TABLE IF EXISTS index_evaluations__upgrade")
+                conn.exec_driver_sql("""
+                    CREATE TABLE index_evaluations__upgrade (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        dataset_id INTEGER NOT NULL,
+                        index_id INTEGER,
+                        metric VARCHAR(20),
+                        algorithm VARCHAR(60),
+                        sample_size INTEGER,
+                        top_k INTEGER,
+                        seed INTEGER,
+                        recall_at_k FLOAT,
+                        avg_query_time_ms FLOAT,
+                        p95_query_time_ms FLOAT,
+                        avg_exact_time_ms FLOAT,
+                        speedup FLOAT,
+                        index_size_bytes INTEGER,
+                        quality VARCHAR(40),
+                        recommendation VARCHAR(200),
+                        status VARCHAR(20),
+                        error_message TEXT,
+                        history_hidden BOOLEAN DEFAULT 0 NOT NULL,
+                        created_at DATETIME,
+                        FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE,
+                        FOREIGN KEY(index_id) REFERENCES ann_indexes (id) ON DELETE SET NULL
+                    )
+                """)
+                conn.exec_driver_sql(f"""
+                    INSERT INTO index_evaluations__upgrade (
+                        id, dataset_id, index_id, metric, algorithm, sample_size, top_k, seed,
+                        recall_at_k, avg_query_time_ms, p95_query_time_ms, avg_exact_time_ms,
+                        speedup, index_size_bytes, quality, recommendation, status,
+                        error_message, history_hidden, created_at
+                    )
+                    SELECT id, dataset_id, index_id, metric, algorithm, sample_size, top_k, seed,
+                        recall_at_k, avg_query_time_ms, p95_query_time_ms, avg_exact_time_ms,
+                        speedup, index_size_bytes, quality, recommendation, status,
+                        error_message, {history_expr}, created_at
+                    FROM index_evaluations
+                """)
+                conn.exec_driver_sql("DROP TABLE index_evaluations")
+                conn.exec_driver_sql(
+                    "ALTER TABLE index_evaluations__upgrade RENAME TO index_evaluations"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_index_evaluations_dataset_created "
+                    "ON index_evaluations (dataset_id, created_at)"
+                )
+        finally:
+            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            conn.commit()
+
+
+def _repair_known_orphans(engine) -> None:
+    """Repair legacy rows created while SQLite FK checks were disabled."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    statements = []
+    if {"ai_stream_events", "ai_runs"} <= tables:
+        statements.append(
+            "DELETE FROM ai_stream_events WHERE NOT EXISTS "
+            "(SELECT 1 FROM ai_runs WHERE ai_runs.id = ai_stream_events.run_id)"
+        )
+    if {"ai_citations", "ai_messages"} <= tables:
+        statements.append(
+            "DELETE FROM ai_citations WHERE NOT EXISTS "
+            "(SELECT 1 FROM ai_messages WHERE ai_messages.id = ai_citations.message_id)"
+        )
+    if {"ai_citations", "knowledge_chunks"} <= tables:
+        statements.append(
+            "UPDATE ai_citations SET chunk_id = NULL WHERE chunk_id IS NOT NULL AND NOT EXISTS "
+            "(SELECT 1 FROM knowledge_chunks WHERE knowledge_chunks.id = ai_citations.chunk_id)"
+        )
+    if "ai_provider_calls" in tables:
+        for column, target in [
+            ("run_id", "ai_runs"),
+            ("document_id", "knowledge_documents"),
+            ("model_config_id", "ai_model_configs"),
+            ("user_id", "users"),
+        ]:
+            if target in tables:
+                statements.append(
+                    f"UPDATE ai_provider_calls SET {column} = NULL "
+                    f"WHERE {column} IS NOT NULL AND NOT EXISTS "
+                    f"(SELECT 1 FROM {target} WHERE {target}.id = ai_provider_calls.{column})"
+                )
+    if {"ai_tool_calls", "ai_runs"} <= tables:
+        statements.append(
+            "DELETE FROM ai_tool_calls WHERE NOT EXISTS "
+            "(SELECT 1 FROM ai_runs WHERE ai_runs.id = ai_tool_calls.run_id)"
+        )
+    if {"index_evaluations", "ann_indexes"} <= tables:
+        statements.append(
+            "UPDATE index_evaluations SET index_id = NULL WHERE index_id IS NOT NULL AND NOT EXISTS "
+            "(SELECT 1 FROM ann_indexes WHERE ann_indexes.id = index_evaluations.index_id)"
+        )
+    if {"query_logs", "ann_indexes"} <= tables:
+        statements.append(
+            "DELETE FROM query_logs WHERE NOT EXISTS "
+            "(SELECT 1 FROM ann_indexes WHERE ann_indexes.id = query_logs.index_id)"
+        )
+    if {"joint_query_logs", "joint_indexes"} <= tables:
+        statements.append(
+            "DELETE FROM joint_query_logs WHERE NOT EXISTS "
+            "(SELECT 1 FROM joint_indexes WHERE joint_indexes.id = joint_query_logs.joint_index_id)"
+        )
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
+
+    with engine.connect() as conn:
+        violations = conn.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        preview = ", ".join(f"{row[0]}:{row[1]}" for row in violations[:8])
+        raise RuntimeError(f"SQLite 外键完整性修复未完成：{preview}")
+
+
 def ensure_sqlite_schema():
     from app import models as _models  # noqa: F401 - ensure model metadata is registered
 
@@ -189,6 +335,7 @@ def ensure_sqlite_schema():
         ("selected_run_ids_json", "TEXT"),
         ("finalized_at", "DATETIME"),
         ("reclaimed_bytes", "INTEGER DEFAULT 0"),
+        ("history_hidden", "BOOLEAN DEFAULT 0 NOT NULL"),
     ]:
         if column_name not in experiment_existing:
             statements.append(f"ALTER TABLE index_experiments ADD COLUMN {column_name} {definition}")
@@ -201,6 +348,16 @@ def ensure_sqlite_schema():
     if "quality" not in experiment_run_existing:
         statements.append("ALTER TABLE index_experiment_runs ADD COLUMN quality VARCHAR(40)")
 
+    evaluation_existing = (
+        {col["name"] for col in inspector.get_columns("index_evaluations")}
+        if inspector.has_table("index_evaluations")
+        else set()
+    )
+    if "history_hidden" not in evaluation_existing:
+        statements.append(
+            "ALTER TABLE index_evaluations ADD COLUMN history_hidden BOOLEAN DEFAULT 0 NOT NULL"
+        )
+
     with engine.begin() as conn:
         for statement in statements:
             conn.execute(text(statement))
@@ -208,6 +365,14 @@ def ensure_sqlite_schema():
         conn.execute(text("UPDATE users SET ai_enabled = 1 WHERE ai_enabled IS NULL"))
         conn.execute(text("UPDATE tasks SET source = 'query_lab' WHERE source IS NULL OR source = ''"))
         conn.execute(text("UPDATE tasks SET history_hidden = 0 WHERE history_hidden IS NULL"))
+        if inspect(engine).has_table("index_experiments"):
+            conn.execute(text(
+                "UPDATE index_experiments SET history_hidden = 0 WHERE history_hidden IS NULL"
+            ))
+        if inspect(engine).has_table("index_evaluations"):
+            conn.execute(text(
+                "UPDATE index_evaluations SET history_hidden = 0 WHERE history_hidden IS NULL"
+            ))
         if inspect(engine).has_table("ai_runs"):
             conn.execute(text(
                 "UPDATE ai_runs SET intent = 'single_cell_search' WHERE intent IS NULL OR intent = ''"
@@ -255,6 +420,9 @@ def ensure_sqlite_schema():
                 text("UPDATE datasets SET owner_id = :admin_id WHERE owner_id IS NULL"),
                 {"admin_id": admin_id},
             )
+
+    _rebuild_index_evaluations_if_needed(engine)
+    _repair_known_orphans(engine)
 
     # Keep the singleton settings row available without requiring a separate
     # migration command. This is safe for both fresh and upgraded SQLite DBs.
@@ -318,3 +486,8 @@ def ensure_sqlite_schema():
             changed = True
         if changed:
             db.session.commit()
+
+    if inspect(engine).has_table("tasks"):
+        from app.services.deletion_service import resume_cleanup_tasks
+
+        resume_cleanup_tasks()

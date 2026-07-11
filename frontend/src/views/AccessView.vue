@@ -9,16 +9,16 @@
             <a-input-search v-model:value="datasetKeyword" allow-clear placeholder="搜索数据集" style="width: 240px" />
             <a-select v-model:value="roleFilter" style="width: 150px">
               <a-select-option value="">全部权限</a-select-option>
-              <a-select-option value="owner">Owner</a-select-option>
-              <a-select-option value="editor">Editor</a-select-option>
-              <a-select-option value="viewer">Viewer</a-select-option>
-              <a-select-option value="admin">Admin</a-select-option>
+              <a-select-option value="owner">所有者</a-select-option>
+              <a-select-option value="editor">编辑者</a-select-option>
+              <a-select-option value="viewer">查看者</a-select-option>
+              <a-select-option value="admin">平台管理员</a-select-option>
             </a-select>
           </a-space>
           <a-button :loading="datasetsLoading" @click="loadDatasets">刷新</a-button>
         </div>
 
-        <a-table :data-source="filteredDatasets" :columns="datasetColumns" row-key="id" :loading="datasetsLoading" :pagination="{ pageSize: 12 }">
+        <a-table class="compact-table" size="small" :data-source="filteredDatasets" :columns="datasetColumns" row-key="id" :loading="datasetsLoading" :pagination="{ pageSize: 12 }" :locale="{ emptyText: '暂无可访问的数据集' }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'name'">
               <a @click="$router.push(`/datasets/${record.id}`)">{{ record.name }}</a>
@@ -43,13 +43,14 @@
       </a-tab-pane>
 
       <a-tab-pane v-if="auth.isAdmin" key="users" tab="用户管理">
+        <a-alert class="account-policy" type="info" show-icon message="账号采用停用策略" description="停用后账号将无法登录，但用户归属与审计记录会继续保留。" />
         <div class="tab-toolbar">
           <a-space wrap>
             <a-input-search v-model:value="userKeyword" allow-clear placeholder="搜索用户名" style="width: 220px" @search="loadUsers" />
             <a-select v-model:value="userRoleFilter" style="width: 130px" @change="loadUsers">
               <a-select-option value="">全部角色</a-select-option>
-              <a-select-option value="admin">Admin</a-select-option>
-              <a-select-option value="user">User</a-select-option>
+              <a-select-option value="admin">管理员</a-select-option>
+              <a-select-option value="user">普通用户</a-select-option>
             </a-select>
             <a-select v-model:value="userStatusFilter" style="width: 130px" @change="loadUsers">
               <a-select-option value="">全部状态</a-select-option>
@@ -60,7 +61,7 @@
           <a-button type="primary" @click="createOpen = true">创建用户</a-button>
         </div>
 
-        <a-table :data-source="users" :columns="userColumns" row-key="id" :loading="usersLoading" :pagination="{ pageSize: 12 }">
+        <a-table class="compact-table" size="small" :data-source="users" :columns="userColumns" row-key="id" :loading="usersLoading" :pagination="{ pageSize: 12 }" :locale="{ emptyText: '暂无用户记录' }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'username'">
               <span>{{ record.username }}</span>
@@ -68,18 +69,18 @@
             </template>
             <template v-else-if="column.key === 'role'">
               <a-select :value="record.role" size="small" style="width: 105px" @change="changeUserRole(record, $event)">
-                <a-select-option value="user">User</a-select-option>
-                <a-select-option value="admin">Admin</a-select-option>
+                <a-select-option value="user">普通用户</a-select-option>
+                <a-select-option value="admin">管理员</a-select-option>
               </a-select>
             </template>
             <template v-else-if="column.key === 'enabled'">
               <a-switch :checked="record.is_enabled" :disabled="record.id === auth.user?.id" @change="changeUserEnabled(record, $event)" />
-              <span class="switch-label">{{ record.is_enabled ? "启用" : "停用" }}</span>
+              <span class="switch-label">{{ record.is_enabled ? "已启用" : "已停用" }}</span>
             </template>
             <template v-else-if="column.key === 'owned'">{{ record.owned_dataset_count || 0 }}</template>
             <template v-else-if="column.key === 'ai'">
               <a-switch :checked="record.ai_enabled" @change="changeUserAiEnabled(record, $event)" />
-              <span class="switch-label">{{ record.ai_enabled ? "可用" : "停用" }}</span>
+              <span class="switch-label">{{ record.ai_enabled ? "已启用" : "已停用" }}</span>
             </template>
             <template v-else-if="column.key === 'aiLimit'">
               <a-input-number
@@ -131,10 +132,15 @@
             <div class="audit-meta">
               操作者：{{ item.actor_name || "未知/匿名" }}
               <span v-if="item.target_user_name"> · 目标用户：{{ item.target_user_name }}</span>
-              <span v-if="item.dataset_id"> · 数据集 #{{ item.dataset_id }}</span>
+              <span v-if="item.dataset_id"> · 数据集：{{ auditDatasetName(item.dataset_id) }}</span>
               <span v-if="auth.isAdmin && item.ip_address"> · IP {{ item.ip_address }}</span>
             </div>
-            <code v-if="Object.keys(item.details || {}).length" class="audit-details">{{ JSON.stringify(item.details) }}</code>
+            <div v-if="auditSummary(item)" class="audit-summary">{{ auditSummary(item) }}</div>
+            <a-collapse v-if="Object.keys(item.details || {}).length" ghost class="audit-technical">
+              <a-collapse-panel key="details" header="技术详情">
+                <pre>{{ JSON.stringify(item.details, null, 2) }}</pre>
+              </a-collapse-panel>
+            </a-collapse>
           </a-timeline-item>
         </a-timeline>
       </a-tab-pane>
@@ -146,7 +152,7 @@
       <a-form-item label="用户名"><a-input v-model:value="createForm.username" autocomplete="off" /></a-form-item>
       <a-form-item label="初始密码"><a-input-password v-model:value="createForm.password" autocomplete="new-password" /></a-form-item>
       <a-form-item label="系统角色">
-        <a-select v-model:value="createForm.role"><a-select-option value="user">User</a-select-option><a-select-option value="admin">Admin</a-select-option></a-select>
+        <a-select v-model:value="createForm.role"><a-select-option value="user">普通用户</a-select-option><a-select-option value="admin">管理员</a-select-option></a-select>
       </a-form-item>
     </a-form>
   </a-modal>
@@ -164,7 +170,7 @@ import PageHeader from "@/components/PageHeader.vue";
 import AiAdminSettings from "@/components/ai/AiAdminSettings.vue";
 import { api } from "@/services/api";
 import { useAuthStore } from "@/stores/auth";
-import { formatDate } from "@/utils/format";
+import { formatDate, roleText, statusText, taskTypeText, visibilityText } from "@/utils/format";
 import type { AuditEvent, Dataset, EffectiveRole, ManagedUser, PermissionSource } from "@/types";
 
 const auth = useAuthStore();
@@ -201,21 +207,23 @@ const datasetColumns = [
 ];
 const userColumns = [
   { title: "用户名", key: "username" },
-  { title: "角色", key: "role", width: 130 },
-  { title: "状态", key: "enabled", width: 150 },
-  { title: "拥有数据集", key: "owned", width: 120 },
-  { title: "AI 权限", key: "ai", width: 130 },
-  { title: "AI 每日限额", key: "aiLimit", width: 140 },
-  { title: "创建时间", key: "created", width: 190 },
-  { title: "操作", key: "actions", width: 120 },
+  { title: "角色", key: "role", width: 116 },
+  { title: "状态", key: "enabled", width: 128 },
+  { title: "拥有数据集", key: "owned", width: 100 },
+  { title: "AI 权限", key: "ai", width: 112 },
+  { title: "AI 每日限额", key: "aiLimit", width: 124 },
+  { title: "创建时间", key: "created", width: 150 },
+  { title: "操作", key: "actions", width: 102 },
 ];
 const auditEventOptions = [
   "auth.login_failed", "user.created", "user.updated", "user.password_reset",
   "dataset.uploaded", "dataset.visibility_changed", "dataset.permission_added",
   "dataset.permission_updated", "dataset.permission_removed", "dataset.owner_transferred",
   "dataset.deleted", "dataset.process_submitted", "index.build_submitted",
-    "index_experiment.created", "index_experiment.finalized", "joint_index.build_submitted",
-    "ai.provider_created", "ai.provider_key_rotated", "ai.model_tested", "ai.run_created", "ai.run_completed", "ai.run_failed",
+  "index.deleted", "index_experiment.created", "index_experiment.finalized", "index_experiment.history_hidden",
+  "index_evaluation.history_hidden", "joint_index.build_submitted", "joint_index.deleted",
+  "task.history_hidden", "task.history_cleared", "ai.knowledge_deleted", "ai.conversation_deleted",
+  "ai.provider_created", "ai.provider_key_rotated", "ai.model_tested", "ai.run_created", "ai.run_completed", "ai.run_failed",
 ];
 
 const filteredDatasets = computed(() => datasets.value.filter((dataset) => {
@@ -225,7 +233,7 @@ const filteredDatasets = computed(() => datasets.value.filter((dataset) => {
 const manageableDatasets = computed(() => datasets.value.filter((dataset) => dataset.can_manage));
 
 function roleLabel(role: EffectiveRole | null) {
-  return ({ admin: "Admin", owner: "Owner", editor: "Editor", viewer: "Viewer" } as Record<string, string>)[role || ""] || "无权限";
+  return ({ admin: "平台管理员", owner: "所有者", editor: "编辑者", viewer: "查看者" } as Record<string, string>)[role || ""] || "无权限";
 }
 function roleColor(role: EffectiveRole | null) {
   return ({ admin: "red", owner: "purple", editor: "green", viewer: "blue" } as Record<string, string>)[role || ""] || "default";
@@ -241,14 +249,64 @@ function eventLabel(event: string) {
     "dataset.permission_added": "新增成员权限", "dataset.permission_updated": "调整成员权限", "dataset.permission_removed": "移除成员权限",
     "dataset.owner_transferred": "转移所有权", "dataset.deleted": "删除数据集", "dataset.process_submitted": "提交数据处理",
     "index.build_submitted": "提交索引构建", "index.evaluation_submitted": "提交索引评估", "index.evaluated": "完成同步评估",
+    "index.deleted": "删除索引", "index_experiment.history_hidden": "从历史移除索引实验", "index_evaluation.history_hidden": "从历史移除索引评估",
     "index_experiment.created": "创建索引实验", "index_experiment.finalized": "完成索引选优", "index_experiment.discarded": "放弃索引实验",
-    "index_experiment.cleanup_retried": "重试实验清理", "joint_index.build_submitted": "提交联合索引构建",
+    "index_experiment.cleanup_retried": "重试实验清理", "joint_index.build_submitted": "提交联合索引构建", "joint_index.deleted": "删除联合索引",
+    "task.history_hidden": "从历史移除任务", "task.history_cleared": "批量移除任务历史",
+    "ai.knowledge_deleted": "删除知识资料", "ai.conversation_deleted": "删除 AI 会话",
     "ai.provider_created": "创建 AI 供应商", "ai.provider_updated": "更新 AI 供应商", "ai.provider_key_rotated": "替换 AI 密钥",
     "ai.provider_deleted": "删除 AI 供应商", "ai.model_created": "创建 AI 模型", "ai.model_updated": "更新 AI 模型",
     "ai.model_tested": "测试 AI 模型", "ai.run_created": "创建 AI 分析", "ai.run_approved": "确认 AI 检索",
     "ai.run_rejected": "拒绝 AI 检索", "ai.run_completed": "完成 AI 分析", "ai.run_failed": "AI 分析失败",
   };
-  return labels[event] || event;
+  return labels[event] || "其他平台操作";
+}
+
+function auditDatasetName(datasetId: number) {
+  return datasets.value.find((dataset) => dataset.id === datasetId)?.name || "受控数据集";
+}
+
+function auditSummary(item: AuditEvent) {
+  const fieldLabels: Record<string, string> = {
+    username: "用户名",
+    name: "名称",
+    role: "角色",
+    old_role: "原角色",
+    new_role: "新角色",
+    visibility: "可见性",
+    old_visibility: "原可见性",
+    level: "权限级别",
+    old_level: "原权限级别",
+    is_enabled: "账号状态",
+    ai_enabled: "AI 权限",
+    enabled: "启用状态",
+    is_default: "默认模型",
+    provider: "供应商",
+    status: "状态",
+    type: "任务类型",
+    scope: "知识空间",
+    count: "记录数量",
+    success: "测试结果",
+    latency_ms: "响应耗时",
+  };
+  const roleFields = new Set(["role", "old_role", "new_role"]);
+  const visibilityFields = new Set(["visibility", "old_visibility"]);
+  const entries = Object.entries(item.details || {})
+    .filter(([key, value]) => fieldLabels[key] && value !== null && value !== undefined)
+    .slice(0, 4)
+    .map(([key, value]) => {
+      let display = String(value);
+      if (typeof value === "boolean") display = value ? "是" : "否";
+      if (roleFields.has(key)) display = ({ admin: "管理员", user: "普通用户", owner: "所有者", editor: "编辑者", viewer: "查看者" } as Record<string, string>)[String(value)] || roleText(String(value));
+      if (visibilityFields.has(key)) display = visibilityText(String(value));
+      if (key === "status") display = statusText(String(value));
+      if (key === "type") display = taskTypeText(String(value));
+      if (key === "scope") display = ({ platform: "平台知识", dataset: "数据集知识", personal: "个人知识" } as Record<string, string>)[String(value)] || "知识资料";
+      if (key === "is_enabled" || key === "enabled") display = Boolean(value) ? "已启用" : "已停用";
+      if (key === "latency_ms") display = `${value} ms`;
+      return `${fieldLabels[key]}：${display}`;
+    });
+  return entries.join(" · ");
 }
 
 async function loadDatasets() {
@@ -329,12 +387,16 @@ onMounted(async () => { await loadDatasets(); if (auth.isAdmin || manageableData
 
 <style scoped>
 .access-workbench { padding: 0 20px 20px; }
+.account-policy { margin: 4px 0 10px; }
 .tab-toolbar { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .compact-note { margin-top: 3px; max-width: 420px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .switch-label { margin-left: 8px; color: #64748b; }
 .audit-timeline { margin-top: 20px; padding: 4px 10px; }
 .audit-head { display: flex; justify-content: space-between; gap: 16px; }
 .audit-meta { color: #64748b; font-size: 13px; margin-top: 4px; }
-.audit-details { display: block; width: fit-content; max-width: 100%; margin-top: 7px; padding: 5px 8px; color: #475569; background: #f8fafc; border-radius: 6px; overflow-wrap: anywhere; }
-@media (max-width: 720px) { .tab-toolbar { align-items: flex-start; flex-direction: column; padding: 10px 0; } }
+.audit-summary { margin-top: 7px; color: #536278; font-size: 12px; }
+.audit-technical { width: fit-content; max-width: 100%; margin-top: 3px; }
+.audit-technical :deep(.ant-collapse-header) { padding: 4px 0 !important; color: #7d899a !important; font-size: 11px; }
+.audit-technical :deep(.ant-collapse-content-box) { padding: 0 !important; }
+.audit-technical pre { max-width: 760px; max-height: 220px; margin: 0; padding: 10px 12px; overflow: auto; border: 1px solid #e4e9ef; border-radius: 7px; background: #f8fafc; color: #4c5b70; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 </style>

@@ -10,18 +10,20 @@
             { label: 'Fan-out', value: 'multi' },
             { label: '联合索引', value: 'joint' },
           ]"
+          @change="onModeChange"
         />
       </a-space>
     </template>
   </PageHeader>
 
-  <div class="split-workbench">
-    <div class="surface surface-pad">
-      <div class="panel-title">检索上下文</div>
+  <div class="query-workbench">
+    <div class="surface surface-pad query-panel">
+      <div class="panel-title">检索条件</div>
+      <p class="panel-help">选择检索空间和查询细胞，结果会保留在检索历史中。</p>
       <a-form layout="vertical">
         <template v-if="mode === 'joint'">
           <a-form-item label="联合索引">
-            <a-select v-model:value="jointIndexId" :options="jointIndexOptions" placeholder="选择 ready 联合索引" @change="onJointIndexChange" />
+            <a-select v-model:value="jointIndexId" :options="jointIndexOptions" placeholder="选择可用联合索引" @change="onJointIndexChange" />
           </a-form-item>
           <a-form-item label="查询数据集">
             <a-select v-model:value="datasetId" :options="jointDatasetOptions" placeholder="选择已纳入的数据集" />
@@ -38,7 +40,7 @@
 
         <a-form-item label="查询细胞编号">
           <a-input-number v-model:value="queryCellIndex" :min="0" :max="selectedDataset?.n_cells ? selectedDataset.n_cells - 1 : undefined" style="width: 100%" />
-          <div class="muted" style="font-size:12px;margin-top:4px">范围 0 ~ {{ selectedDataset?.n_cells ? selectedDataset.n_cells - 1 : "?" }}</div>
+          <div class="field-help">可输入范围：0–{{ selectedDataset?.n_cells ? (selectedDataset.n_cells - 1).toLocaleString('zh-CN') : "待选择数据集" }}</div>
         </a-form-item>
         <a-form-item label="Top-K">
           <a-input-number v-model:value="topK" :min="1" :max="100" style="width: 100%" />
@@ -47,7 +49,7 @@
           <a-select v-model:value="cellType" allow-clear placeholder="全部细胞类型" :options="cellTypeOptions" />
         </a-form-item>
         <a-form-item v-if="mode === 'multi'" label="目标数据集">
-          <a-checkbox-group v-model:value="targetDatasetIds" style="display:flex;flex-direction:column;gap:6px">
+          <a-checkbox-group v-model:value="targetDatasetIds" class="dataset-check-list">
             <a-checkbox v-for="dataset in store.indexedDatasets" :key="dataset.id" :value="dataset.id">{{ dataset.name }}</a-checkbox>
           </a-checkbox-group>
         </a-form-item>
@@ -72,9 +74,9 @@
         <div class="toolbar">
           <span class="toolbar-title">检索结果</span>
           <a-space>
-            <a-tag v-if="queryStore.queryTimeMs !== null">耗时 {{ queryStore.queryTimeMs }} ms</a-tag>
+            <a-tag v-if="queryStore.queryTimeMs !== null">耗时 {{ formatMilliseconds(queryStore.queryTimeMs) }}</a-tag>
             <a-tag v-if="mode === 'multi' && queryStore.multiMeta">检索 {{ queryStore.multiMeta.searched_dataset_count }} 个数据集</a-tag>
-            <a-tag v-if="mode === 'joint' && queryStore.jointMeta">联合索引 · {{ queryStore.jointMeta.metric }}</a-tag>
+            <a-tag v-if="mode === 'joint' && queryStore.jointMeta">联合索引 · {{ metricText(queryStore.jointMeta.metric) }}</a-tag>
             <a-tag>{{ activeResults.length }} 个细胞</a-tag>
           </a-space>
         </div>
@@ -82,16 +84,36 @@
           <a-alert type="error" show-icon :message="queryError" />
         </div>
         <div class="table-shell">
-          <a-table class="result-table compact-table" :data-source="activeResults" :columns="resultColumns" row-key="rank" size="small" :scroll="resultTableScroll" :pagination="false">
+          <a-table
+            class="result-table compact-table"
+            :data-source="activeResults"
+            :columns="resultColumns"
+            row-key="rank"
+            size="small"
+            :scroll="resultTableScroll"
+            :pagination="false"
+            :locale="{ emptyText: '运行检索后将在这里显示相似细胞' }"
+          >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'cell'">
-              <a-space direction="vertical" size="small">
-                <span>#{{ record.cell_index }} · {{ record.cell_name }}</span>
-                <span class="muted">{{ record.cell_type }}</span>
-              </a-space>
+            <template v-if="column.key === 'rank'">
+              <span class="rank-cell">{{ record.rank }}</span>
             </template>
-            <template v-if="column.key === 'dataset'">
-              {{ record.dataset_name || selectedDataset?.name || "-" }}
+            <template v-if="column.key === 'cell'">
+              <div class="cell-primary" :title="record.cell_name">{{ record.cell_name || '未命名细胞' }}</div>
+              <div class="cell-secondary">
+                <span>{{ record.dataset_name || selectedDataset?.name || '未知数据集' }}</span>
+                <span>细胞编号 {{ Number(record.cell_index).toLocaleString('zh-CN') }}</span>
+                <span>{{ record.cell_type || '类型未知' }}</span>
+              </div>
+            </template>
+            <template v-if="column.key === 'distance'">
+              <span class="numeric-cell">{{ formatDistance(record.distance) }}</span>
+            </template>
+            <template v-if="column.key === 'metadata'">
+              <div class="metadata-cell">
+                <span>{{ record.disease || '疾病未知' }}</span>
+                <span>{{ record.age_group || '年龄组未知' }}</span>
+              </div>
             </template>
             <template v-if="column.key === 'actions'">
               <a-button size="small" @click="openCellDetail(record)">详情</a-button>
@@ -103,8 +125,8 @@
 
       <div class="surface">
         <div class="toolbar"><span class="toolbar-title">嵌入空间高亮</span></div>
-        <div class="surface-pad">
-          <PlotlyPanel v-if="queryStore.scatter && mode !== 'multi'" :payload="queryStore.scatter" :interactive="true" :height="560" />
+        <div class="plot-surface">
+          <PlotlyPanel v-if="queryStore.scatter && mode !== 'multi'" :payload="queryStore.scatter" :interactive="true" :height="470" aria-label="检索结果在嵌入空间中的分布" />
           <div v-else-if="mode !== 'multi' && queryStore.plotLoading" class="placeholder-panel">
             <a-space direction="vertical" style="width: min(520px, 100%)">
               <a-alert
@@ -129,8 +151,8 @@
     </div>
   </div>
 
-  <a-drawer v-model:open="historyOpen" title="检索历史" width="620">
-    <a-space wrap style="margin-bottom:14px">
+  <a-drawer v-model:open="historyOpen" title="检索历史" width="min(680px, 96vw)">
+    <a-space wrap class="history-filters">
       <a-select v-model:value="historyFilters.mode" style="width:130px" :options="historyModeOptions" @change="loadHistory" />
       <a-select v-model:value="historyFilters.source" style="width:130px" :options="historySourceOptions" @change="loadHistory" />
       <a-select v-model:value="historyFilters.status" style="width:130px" :options="historyStatusOptions" @change="loadHistory" />
@@ -144,14 +166,14 @@
         <a-list-item>
           <div class="history-record">
             <div class="history-title">
-              <strong>{{ item.dataset_name || '联合/未知数据集' }} · 细胞 #{{ item.query_cell_index ?? '-' }}</strong>
+              <strong>{{ item.dataset_name || '跨数据集检索' }} · 细胞编号 {{ formatCellIndex(item.query_cell_index) }}</strong>
               <a-space wrap>
                 <a-tag>{{ historyModeLabel(item.mode) }}</a-tag>
                 <a-tag :color="item.source === 'ai' ? 'purple' : 'blue'">{{ item.source === 'ai' ? 'AI' : '人工' }}</a-tag>
-                <a-tag :color="item.status === 'success' ? 'green' : item.status === 'error' ? 'red' : 'blue'">{{ item.status }}</a-tag>
+                <a-tag :color="item.status === 'success' ? 'green' : item.status === 'error' ? 'red' : 'blue'">{{ statusText(item.status) }}</a-tag>
               </a-space>
             </div>
-            <div class="history-meta">Top-K {{ item.top_k ?? '-' }} · 返回 {{ item.result_count }} · {{ item.query_time_ms ?? '-' }} ms · {{ formatDate(item.updated_at) }}</div>
+            <div class="history-meta">Top-K {{ item.top_k ?? '-' }} · 返回 {{ item.result_count }} 个细胞 · {{ formatMilliseconds(item.query_time_ms) }} · {{ formatDate(item.updated_at) }}</div>
             <a-alert v-if="item.legacy" type="warning" show-icon message="旧记录缺少完整索引参数；可查看结果，重新运行前需选择有效索引。" />
             <a-space wrap style="margin-top:10px">
               <a-button type="primary" size="small" :disabled="item.status !== 'success'" @click="selectHistory(item.id)">载入结果</a-button>
@@ -166,17 +188,16 @@
     </a-list>
   </a-drawer>
 
-  <a-drawer v-model:open="detailOpen" title="细胞详情" width="420">
+  <a-drawer v-model:open="detailOpen" title="细胞详情" width="min(440px, 96vw)">
     <a-descriptions v-if="selectedResult" :column="1" bordered size="small">
       <a-descriptions-item label="数据集">{{ selectedResult.dataset_name || selectedDataset?.name || "-" }}</a-descriptions-item>
-      <a-descriptions-item label="Rank">{{ selectedResult.rank }}</a-descriptions-item>
-      <a-descriptions-item label="细胞编号">{{ selectedResult.cell_index }}</a-descriptions-item>
+      <a-descriptions-item label="排名">{{ selectedResult.rank }}</a-descriptions-item>
+      <a-descriptions-item label="细胞编号">{{ Number(selectedResult.cell_index).toLocaleString('zh-CN') }}</a-descriptions-item>
       <a-descriptions-item label="细胞名称">{{ selectedResult.cell_name }}</a-descriptions-item>
       <a-descriptions-item label="细胞类型">{{ selectedResult.cell_type }}</a-descriptions-item>
       <a-descriptions-item label="疾病">{{ selectedResult.disease }}</a-descriptions-item>
       <a-descriptions-item label="年龄组">{{ selectedResult.age_group }}</a-descriptions-item>
-      <a-descriptions-item label="距离">{{ selectedResult.distance }}</a-descriptions-item>
-      <a-descriptions-item v-if="selectedResult.global_label !== undefined" label="Global label">{{ selectedResult.global_label }}</a-descriptions-item>
+      <a-descriptions-item label="距离">{{ formatDistance(selectedResult.distance) }}</a-descriptions-item>
     </a-descriptions>
     <a-alert v-if="cellDetailError" style="margin-top: 12px" type="warning" show-icon :message="cellDetailError" />
   </a-drawer>
@@ -191,7 +212,8 @@ import PlotlyPanel from "@/components/PlotlyPanel.vue";
 import { api } from "@/services/api";
 import { useDatasetStore } from "@/stores/datasets";
 import { useQueryStore } from "@/stores/query";
-import { formatDate } from "@/utils/format";
+import { algorithmText, formatCellIndex, formatDate, formatDistance, formatMilliseconds, metricText, statusText } from "@/utils/format";
+import { readNonNegativeRouteNumber, readPositiveRouteNumber } from "@/utils/resource-actions";
 import type { JointIndex, JointSearchPayload, MultiSearchPayload, SearchHistoryItem, SearchResult, SingleSearchPayload, TaskRecord } from "@/types";
 
 const route = useRoute();
@@ -231,9 +253,12 @@ const historyStatusOptions = [
 
 const datasetOptions = computed(() => store.indexedDatasets.map((dataset) => ({ value: dataset.id, label: `${dataset.name}（${dataset.n_cells || "?"} 个细胞）` })));
 const selectedDataset = computed(() => store.datasets.find((dataset) => dataset.id === datasetId.value));
-const indexOptions = computed(() => (selectedDataset.value?.indexes || []).filter((idx) => idx.status === "ready").map((idx) => ({ value: idx.id, label: `${idx.algorithm} · ${idx.metric.toUpperCase()} · M=${idx.M} · ef=${idx.ef_search}` })));
+const indexOptions = computed(() => (selectedDataset.value?.indexes || []).filter((idx) => idx.status === "ready").map((idx) => ({
+  value: idx.id,
+  label: `${algorithmText(idx.algorithm)} · ${metricText(idx.metric)} · M ${idx.M} · 查询深度 ${idx.ef_search}`,
+})));
 const cellTypeOptions = computed(() => cellTypes.value.map((value) => ({ value, label: value })));
-const jointIndexOptions = computed(() => jointIndexes.value.filter((idx) => idx.status === "ready").map((idx) => ({ value: idx.id, label: `${idx.name}（${idx.n_cells || 0} cells）` })));
+const jointIndexOptions = computed(() => jointIndexes.value.filter((idx) => idx.status === "ready").map((idx) => ({ value: idx.id, label: `${idx.name}（${(idx.n_cells || 0).toLocaleString("zh-CN")} 个细胞）` })));
 const selectedJointIndex = computed(() => jointIndexes.value.find((idx) => idx.id === jointIndexId.value));
 const jointDatasetOptions = computed(() => (selectedJointIndex.value?.datasets || [])
   .filter((row) => row.status === "included")
@@ -242,20 +267,18 @@ const activeResults = computed(() => {
   if (mode.value === "joint") return queryStore.jointResults;
   return mode.value === "single" ? queryStore.results : queryStore.multiResults;
 });
-const resultTableScroll = computed(() => (activeResults.value.length ? { x: 900, y: 320 } : undefined));
+const resultTableScroll = computed(() => (activeResults.value.length ? { y: 326 } : undefined));
 const placeholderText = computed(() => {
   if (mode.value === "multi") return "Fan-out 跨数据集检索结果以合并表排序展示。";
   if (mode.value === "joint") return "运行联合索引检索后显示 Harmony UMAP 高亮。";
   return "运行单数据集检索后显示查询细胞和相似细胞。";
 });
 const resultColumns = [
-  { title: "#", dataIndex: "rank", width: 58 },
-  { title: "数据集", key: "dataset", width: 180 },
-  { title: "细胞", key: "cell", width: 260 },
-  { title: "距离", dataIndex: "distance", width: 120 },
-  { title: "疾病", dataIndex: "disease", width: 120 },
-  { title: "年龄组", dataIndex: "age_group", width: 120 },
-  { title: "操作", key: "actions", fixed: "right", width: 90 },
+  { title: "排名", key: "rank", dataIndex: "rank", width: 64, align: "right" },
+  { title: "细胞", key: "cell" },
+  { title: "距离", key: "distance", dataIndex: "distance", width: 104, align: "right" },
+  { title: "元数据", key: "metadata", width: 148 },
+  { title: "操作", key: "actions", width: 72, align: "center" },
 ];
 
 async function loadJointIndexes() {
@@ -277,6 +300,20 @@ async function onDatasetChange() {
 
 function onJointIndexChange() {
   datasetId.value = jointDatasetOptions.value[0]?.value;
+}
+
+function onModeChange() {
+  queryStore.resetSearchState();
+  currentTask.value = null;
+  queryError.value = "";
+  selectedResult.value = null;
+  if (mode.value === "joint") {
+    jointIndexId.value ||= jointIndexOptions.value[0]?.value;
+    onJointIndexChange();
+  } else {
+    datasetId.value ||= store.indexedDatasets[0]?.id;
+    void onDatasetChange();
+  }
 }
 
 async function run() {
@@ -391,7 +428,7 @@ function selectHistory(id: number) {
 }
 
 function openAiConversation(conversationId: number) {
-  router.push({ path: "/ai-analysis", query: { conversation_id: conversationId } });
+  router.push({ path: "/ai-assistant", query: { conversation_id: conversationId } });
 }
 
 async function loadHistoryResult(id: number) {
@@ -455,29 +492,132 @@ async function loadHistoryResult(id: number) {
 onMounted(async () => {
   await store.loadAll();
   await loadJointIndexes();
-  datasetId.value = Number(route.query.dataset) || store.indexedDatasets[0]?.id;
-  queryCellIndex.value = Number(route.query.cell_index) || 0;
-  topK.value = Number(route.query.top_k) || 10;
+  if (["single", "multi", "joint"].includes(String(route.query.mode))) {
+    mode.value = String(route.query.mode) as "single" | "multi" | "joint";
+  }
+  datasetId.value = readPositiveRouteNumber(route.query.dataset) || store.indexedDatasets[0]?.id;
+  queryCellIndex.value = readNonNegativeRouteNumber(route.query.cell_index) ?? 0;
+  topK.value = readPositiveRouteNumber(route.query.top_k) || 10;
   await onDatasetChange();
-  indexId.value = Number(route.query.index_id) || indexOptions.value[0]?.value;
+  indexId.value = readPositiveRouteNumber(route.query.index_id) || indexOptions.value[0]?.value;
   if (typeof route.query.filter_cell_type === "string" && route.query.filter_cell_type) {
     cellType.value = route.query.filter_cell_type;
   }
   jointIndexId.value = jointIndexOptions.value[0]?.value;
   historyReady.value = true;
-  const historyId = Number(route.query.history_id);
+  const historyId = readPositiveRouteNumber(route.query.history_id);
   if (historyId) await loadHistoryResult(historyId);
 });
 
 watch(() => route.query.history_id, (value) => {
-  const id = Number(value);
+  const id = readPositiveRouteNumber(value);
   if (historyReady.value && id) void loadHistoryResult(id);
 });
 </script>
 
 <style scoped>
+.query-workbench {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.query-panel {
+  position: sticky;
+  top: 76px;
+}
+
+.panel-help {
+  margin: -4px 0 16px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-help {
+  margin-top: 5px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.dataset-check-list {
+  width: 100%;
+  max-height: 160px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #dfe5ed;
+  border-radius: 8px;
+}
+
+.result-table {
+  margin-top: 0;
+}
+
+.rank-cell,
+.numeric-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.rank-cell {
+  color: #64748b;
+}
+
+.cell-primary {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #172033;
+  font-weight: 600;
+}
+
+.cell-secondary {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #64748b;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.cell-secondary span + span::before {
+  content: "·";
+  margin-right: 7px;
+  color: #cbd5e1;
+}
+
+.metadata-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.plot-surface {
+  min-width: 0;
+}
+
+.plot-surface .placeholder-panel {
+  margin: 14px;
+}
+
+.history-filters {
+  margin-bottom: 14px;
+}
+
 .history-record { width: 100%; }
 .history-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .history-meta { margin-bottom: 9px; color: #64748b; font-size: 13px; }
-@media (max-width: 640px) { .history-title { flex-direction: column; } }
+
+@media (max-width: 1240px) {
+  .query-workbench {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+}
 </style>

@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, redirect, url_for, flash, request
+from flask import Blueprint, redirect, url_for, flash, request
 from flask_login import login_user, logout_user, login_required, current_user
 from app.extensions import db
 from app.models import User
@@ -12,7 +12,7 @@ auth_bp = Blueprint("auth", __name__)
 def register():
     """用户注册。"""
     if request.method == "GET":
-        return render_spa()
+        return redirect("/login?mode=register")
 
     if current_user.is_authenticated:
         return redirect(url_for("main.index"))
@@ -24,19 +24,19 @@ def register():
 
         if not username or not password:
             flash("用户名和密码不能为空。", "danger")
-            return render_template("register.html")
+            return redirect("/login?mode=register")
 
         if len(password) < 4:
             flash("密码长度至少为 4 位。", "danger")
-            return render_template("register.html")
+            return redirect("/login?mode=register")
 
         if password != confirm:
             flash("两次输入的密码不一致。", "danger")
-            return render_template("register.html")
+            return redirect("/login?mode=register")
 
         if User.query.filter_by(username=username).first():
             flash("用户名已存在。", "danger")
-            return render_template("register.html")
+            return redirect("/login?mode=register")
 
         user = User(username=username, role="user", is_enabled=True)
         user.set_password(password)
@@ -48,7 +48,7 @@ def register():
         flash("注册成功，请登录。", "success")
         return redirect(url_for("auth.login"))
 
-    return render_template("register.html")
+    return redirect("/login?mode=register")
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
@@ -69,19 +69,19 @@ def login():
             record_audit("auth.login_failed", details={"username": username})
             db.session.commit()
             flash("用户名或密码错误。", "danger")
-            return render_template("login.html")
+            return render_spa()
         if not user.is_enabled:
             record_audit("auth.login_blocked", actor=user, target_user_id=user.id)
             db.session.commit()
             flash("账号已停用，请联系管理员。", "danger")
-            return render_template("login.html")
+            return render_spa()
 
         login_user(user, remember=True)
         next_page = request.args.get("next")
         flash(f"欢迎回来，{username}！", "success")
         return redirect(next_page or url_for("main.index"))
 
-    return render_template("login.html")
+    return render_spa()
 
 
 @auth_bp.route("/logout")

@@ -1,4 +1,4 @@
-import type { AiAssistantBootstrap, AiConversation, AiModelConfig, AiProviderCatalogItem, AiProviderConfig, AiRun, AiSettings, AiToolCall, AiUsage, AnnAlgorithm, AnnIndex, AuditEvent, Dataset, DatasetAccess, DatasetPermission, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, KnowledgeDocument, KnowledgeHit, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchHistoryItem, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
+import type { AiAssistantBootstrap, AiConversation, AiModelConfig, AiProviderCatalogItem, AiProviderConfig, AiRun, AiSettings, AiToolCall, AiUsage, AnnAlgorithm, AnnIndex, AuditEvent, Dataset, DatasetAccess, DatasetPermission, DeleteBlocker, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, KnowledgeDocument, KnowledgeHit, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchHistoryItem, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
 
 type ApiResponse<T> = T & { ok: boolean; message?: string };
 type ApiRequestInit = RequestInit & { timeoutMs?: number };
@@ -21,9 +21,19 @@ async function request<T>(url: string, options: ApiRequestInit = {}): Promise<T>
 
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+    if (response.status === 401 && !url.startsWith("/api/auth/")) {
+      const next = `${window.location.pathname}${window.location.search}`;
+      window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+    }
     if (!response.ok || (typeof payload === "object" && payload && payload.ok === false)) {
       const message = typeof payload === "object" && payload?.message ? payload.message : `请求失败 (${response.status})`;
-      throw new Error(message);
+      const error = new Error(message) as Error & { status?: number; code?: string; blockers?: DeleteBlocker[] };
+      error.status = response.status;
+      if (typeof payload === "object" && payload) {
+        error.code = payload.code;
+        error.blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
+      }
+      throw error;
     }
     return payload as T;
   } catch (error) {
@@ -180,6 +190,8 @@ export const api = {
   dataset: (id: number) =>
     request<ApiResponse<{ dataset: Dataset; stats: Record<string, { name: string; count: number }[]>; recent_tasks: TaskRecord[] }>>(`/api/datasets/${id}`),
   deleteDataset: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/datasets/${id}`, { method: "DELETE" }),
+  deleteIndex: (datasetId: number, indexId: number) =>
+    request<ApiResponse<{ cleanup_task_id?: number }>>(`/api/datasets/${datasetId}/indexes/${indexId}`, { method: "DELETE" }),
   uploadDataset: (form: FormData) => request<ApiResponse<{ dataset_id: number; redirect_url: string }>>("/api/datasets/upload", { method: "POST", body: form }),
   processDataset: (id: number) => request<ApiResponse<{ task_id: number }>>(`/api/datasets/${id}/process`, { method: "POST", body: toForm({}) }),
   annAlgorithms: (datasetId?: number) => request<ApiResponse<{ algorithms: AnnAlgorithm[] }>>(`/api/ann/algorithms${datasetId ? `?dataset_id=${datasetId}` : ""}`),
@@ -187,6 +199,8 @@ export const api = {
     request<ApiResponse<{ task_id: number }>>(`/api/datasets/${id}/build-index`, { method: "POST", body: toBuildIndexForm(params) }),
   jointIndexes: () => request<ApiResponse<{ joint_indexes: JointIndex[] }>>("/api/joint-indexes"),
   jointIndex: (id: number) => request<ApiResponse<{ joint_index: JointIndex }>>(`/api/joint-indexes/${id}`),
+  deleteJointIndex: (id: number) =>
+    request<ApiResponse<{ cleanup_task_id?: number }>>(`/api/joint-indexes/${id}`, { method: "DELETE" }),
   buildJointIndexTask: (params: { name: string; dataset_ids: number[]; metric: string; M: number; ef_construction: number; ef_search: number; n_pcs: number; n_top_genes: number; min_common_genes: number }) =>
     request<ApiResponse<{ task_id: number }>>("/api/joint-indexes/build/task", { method: "POST", body: toJointBuildForm(params), timeoutMs: 15000 }),
   datasetStatus: (id: number) => request<ApiResponse<{ status: string; indexes: AnnIndex[] }>>(`/api/datasets/${id}/status`),
@@ -198,6 +212,9 @@ export const api = {
     ),
   tasks: (status = "all", limit = 20) => request<ApiResponse<{ tasks: TaskRecord[] }>>(`/api/tasks?status=${status}&limit=${limit}`, { timeoutMs: 5000 }),
   task: (id: number) => request<ApiResponse<TaskRecord>>(`/api/tasks/${id}`, { timeoutMs: 15000 }),
+  removeTask: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/tasks/${id}`, { method: "DELETE" }),
+  clearTerminalTasks: () => request<ApiResponse<{ hidden_count: number }>>("/api/tasks?scope=terminal", { method: "DELETE" }),
+  retryCleanupTask: (id: number) => request<ApiResponse<{ cleanup: Record<string, unknown> }>>(`/api/tasks/${id}/retry-cleanup`, { method: "POST", body: toForm({}) }),
   activeTasks: () => request<ApiResponse<{ tasks: TaskRecord[] }>>("/api/tasks/active", { timeoutMs: 5000 }),
   search: (params: { dataset_id: number; index_id: number; query_cell_index: number; top_k: number; filter_cell_type?: string }) =>
     request<ApiResponse<SingleSearchPayload>>(
@@ -239,6 +256,7 @@ export const api = {
     request<ApiResponse<{ task_id: number; experiment_id: number }>>("/api/index-experiments/task", { method: "POST", body: toIndexExperimentForm(params), timeoutMs: 15000 }),
   indexExperiments: (datasetId?: number) => request<ApiResponse<{ experiments: IndexExperiment[] }>>(`/api/index-experiments${datasetId ? `?dataset_id=${datasetId}` : ""}`),
   indexExperiment: (id: number) => request<ApiResponse<{ experiment: IndexExperiment }>>(`/api/index-experiments/${id}`),
+  removeIndexExperiment: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/index-experiments/${id}`, { method: "DELETE" }),
   finalizeIndexExperiment: (id: number, selectedRunIds: number[]) =>
     request<ApiResponse<{ finalization: NonNullable<IndexExperiment["finalization"]> }>>(`/api/index-experiments/${id}/finalize`, { method: "POST", body: toSelectedRunsForm(selectedRunIds), timeoutMs: 30000 }),
   discardIndexExperiment: (id: number) =>
@@ -255,6 +273,7 @@ export const api = {
     return request<ApiResponse<{ evaluations: IndexEvaluation[] }>>(`/api/index-evaluations${suffix}`);
   },
   indexEvaluation: (id: number) => request<ApiResponse<{ evaluation: IndexEvaluation }>>(`/api/index-evaluations/${id}`),
+  removeIndexEvaluation: (id: number) => request<ApiResponse<Record<string, never>>>(`/api/index-evaluations/${id}`, { method: "DELETE" }),
   evaluate: (params: { dataset_id: number; index_id: number; sample_size: number; eval_top_k: number }) =>
     request<ApiResponse<{ metrics: EvalMetrics; bar_plot: PlotlyPayload }>>("/api/evaluate", { method: "POST", body: toForm(params) }),
 
