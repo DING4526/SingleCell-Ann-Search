@@ -49,7 +49,7 @@
               <strong>{{ analysisSummary(item)?.headline || '分析结果' }}</strong>
               <a-tag color="green">分析完成</a-tag>
             </div>
-            <div class="message-content">{{ analysisDisplayText(item) }}</div>
+            <div class="message-content markdown-body" v-html="renderAssistantMarkdown(analysisDisplayText(item))" />
             <a-button v-if="analysisFullText(item).length > 900" type="link" size="small" @click="toggleExpanded(item.id)">
               {{ expandedMessages.has(item.id) ? '收起完整分析' : '展开完整分析' }}
             </a-button>
@@ -71,7 +71,8 @@
               </a-collapse-panel>
             </a-collapse>
           </template>
-          <div v-else class="message-content">{{ cleanAnswerText(item.content) }}</div>
+          <div v-else-if="item.role === 'assistant'" class="message-content markdown-body" v-html="renderAssistantMarkdown(item.content)" />
+          <div v-else class="message-content plain-message">{{ cleanAnswerText(item.content) }}</div>
           <template v-if="assistantAction(item)">
             <a-card size="small" class="action-card" title="待确认的平台操作">
               <p><strong>{{ actionName(assistantAction(item)?.name) }}</strong></p>
@@ -113,7 +114,7 @@
         </article>
         <article v-if="streamingText" class="assistant-message assistant streaming">
           <small>AI 助手 <a-tag color="processing">正在生成</a-tag></small>
-          <div class="message-content">{{ cleanStreamingText(streamingText) }}<span class="stream-cursor">▍</span></div>
+          <div class="message-content streaming-markdown"><div class="markdown-body" v-html="renderAssistantMarkdown(cleanStreamingText(streamingText))" /><span class="stream-cursor">▍</span></div>
         </article>
         <a-card v-if="currentRun && !terminal(currentRun)" size="small" class="run-card">
           <a-spin v-if="['queued', 'planning', 'executing'].includes(currentRun.status)" size="small" />
@@ -171,6 +172,7 @@ import { useRoute, useRouter } from "vue-router";
 import { message } from "ant-design-vue";
 import { api } from "@/services/api";
 import { analysisModeForTool, toolForAnalysisMode } from "@/services/ai-stream";
+import { renderAssistantMarkdown, stripAssistantInternalMarkers } from "@/services/assistant-markdown";
 import { useDatasetStore } from "@/stores/datasets";
 import type {
   AiAnalysisPlan, AiAnalysisStep, AiAnalysisSummary, AiAssistantClientAction,
@@ -320,15 +322,10 @@ function analysisSummary(item: AiMessage): AiAnalysisSummary | null {
   return (item.structured?.summary as AiAnalysisSummary | undefined) || messageRun(item)?.result?.summary || null;
 }
 function cleanAnswerText(value: unknown) {
-  return String(value || "")
-    .replace(/\[(?:E|K):[^\]]+\]/g, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return stripAssistantInternalMarkers(value);
 }
 function cleanStreamingText(value: unknown) {
-  return String(value || "")
-    .replace(/\[(?:E|K):[^\]]*(?:\]|$)/g, "")
-    .replace(/\n{3,}/g, "\n\n");
+  return stripAssistantInternalMarkers(value);
 }
 function analysisFullText(item: AiMessage) {
   const summary = analysisSummary(item);
@@ -697,13 +694,42 @@ onBeforeUnmount(() => {
 .head-actions { display: flex; gap: 8px; }
 .context-strip { justify-content: flex-start; padding: 8px 14px; background: #f1f5f9; font-size: 12px; color: #475569; }
 .assistant-messages { flex: 1; overflow: auto; padding: 16px; min-height: 280px; }
-.assistant-message { max-width: 88%; padding: 11px 13px; border-radius: 10px; margin-bottom: 12px; white-space: pre-wrap; }
+.assistant-message { max-width: 88%; padding: 11px 13px; border-radius: 10px; margin-bottom: 12px; }
 .assistant-message.user { margin-left: auto; background: #dbeafe; }
 .assistant-message.assistant { background: white; border: 1px solid #e2e8f0; }
 .assistant-message.result { width: min(680px, 96%); max-width: 96%; }
 .assistant-message.streaming { border-color: #93c5fd; box-shadow: 0 0 0 2px rgba(59, 130, 246, .06); }
 .assistant-message small { color: #64748b; display: block; margin-bottom: 4px; }
-.message-content { line-height: 1.65; }
+.message-content { min-width: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.plain-message { white-space: pre-wrap; }
+.markdown-body { color: #243044; font-size: 14px; }
+.markdown-body :deep(p) { margin: 0 0 9px; }
+.markdown-body :deep(p:last-child) { margin-bottom: 0; }
+.markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3), .markdown-body :deep(h4) { margin: 16px 0 8px; color: #172033; font-weight: 750; line-height: 1.35; }
+.markdown-body :deep(h1:first-child), .markdown-body :deep(h2:first-child), .markdown-body :deep(h3:first-child), .markdown-body :deep(h4:first-child) { margin-top: 0; }
+.markdown-body :deep(h1) { font-size: 20px; }
+.markdown-body :deep(h2) { padding-bottom: 5px; border-bottom: 1px solid #e5eaf2; font-size: 17px; }
+.markdown-body :deep(h3) { font-size: 15px; }
+.markdown-body :deep(h4) { font-size: 14px; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 7px 0 10px; padding-left: 22px; }
+.markdown-body :deep(li) { margin: 4px 0; padding-left: 2px; }
+.markdown-body :deep(li::marker) { color: #3b82f6; font-weight: 700; }
+.markdown-body :deep(strong) { color: #172033; font-weight: 700; }
+.markdown-body :deep(a) { color: #2563eb; font-weight: 600; text-decoration: none; }
+.markdown-body :deep(a:hover) { text-decoration: underline; }
+.markdown-body :deep(code) { padding: 2px 5px; border: 1px solid #dbe5f0; border-radius: 5px; background: #f1f5f9; color: #be123c; font: 12px/1.5 Consolas, "SFMono-Regular", monospace; }
+.markdown-body :deep(pre) { margin: 10px 0; padding: 12px 14px; overflow-x: auto; border-radius: 8px; background: #172033; color: #e2e8f0; white-space: pre; }
+.markdown-body :deep(pre code) { padding: 0; border: 0; background: transparent; color: inherit; font-size: 12px; }
+.markdown-body :deep(blockquote) { margin: 10px 0; padding: 8px 12px; border-left: 3px solid #60a5fa; border-radius: 0 6px 6px 0; background: #eff6ff; color: #475569; }
+.markdown-body :deep(blockquote p) { margin: 0; }
+.markdown-body :deep(hr) { margin: 14px 0; border: 0; border-top: 1px solid #e5eaf2; }
+.markdown-body :deep(table) { display: block; width: max-content; max-width: 100%; margin: 10px 0; overflow-x: auto; border-spacing: 0; border-collapse: collapse; font-size: 12px; }
+.markdown-body :deep(th), .markdown-body :deep(td) { min-width: 88px; padding: 7px 9px; border: 1px solid #dbe5f0; text-align: left; vertical-align: top; }
+.markdown-body :deep(th) { background: #f1f5f9; color: #172033; font-weight: 700; }
+.markdown-body :deep(tr:nth-child(even) td) { background: #f8fafc; }
+.streaming-markdown { display: block; }
+.streaming-markdown > .markdown-body { display: inline; }
+.streaming-markdown > .markdown-body :deep(p:last-child) { display: inline; }
 .result-head, .plan-head, .plan-actions, .result-actions { display: flex; align-items: center; gap: 8px; }
 .result-head, .plan-head { justify-content: space-between; margin-bottom: 8px; }
 .result-actions, .plan-actions { margin-top: 12px; flex-wrap: wrap; }
