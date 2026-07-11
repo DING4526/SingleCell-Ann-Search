@@ -1,0 +1,987 @@
+<template>
+  <div :class="['global-assistant', { workspace: embedded }]">
+    <aside v-if="embedded || historyOpen" :class="['assistant-history', { floating: !embedded }]">
+      <div class="history-head">
+        <strong>助手会话</strong>
+        <div class="history-actions">
+          <a-button size="small" :loading="creating" @click="newConversation">新建</a-button>
+          <a-button v-if="!embedded" size="small" type="text" @click="historyOpen = false">收起</a-button>
+        </div>
+      </div>
+      <a-empty v-if="!loading && !conversations.length" description="还没有会话，点击“新建”开始" />
+      <a-list size="small" :data-source="conversations" :loading="loading">
+        <template #renderItem="{ item }">
+          <a-list-item :class="{ active: item.id === conversationId }" @click="openConversation(item.id)">
+            <a-list-item-meta :title="item.title" />
+            <template #actions>
+              <a-popconfirm v-if="canDeleteConversation(item)" title="永久删除这个会话及其消息？" ok-text="删除" cancel-text="取消" @confirm="deleteConversation(item.id)">
+                <a-button type="text" size="small" danger :loading="deletingId === item.id" @click.stop>删除</a-button>
+              </a-popconfirm>
+              <a-tooltip v-else :title="conversationDeleteHint(item)">
+                <a-button type="text" size="small" danger disabled @click.stop>删除</a-button>
+              </a-tooltip>
+            </template>
+          </a-list-item>
+        </template>
+      </a-list>
+    </aside>
+
+    <section class="assistant-main">
+      <header class="assistant-head">
+        <div><strong>AI 助手</strong><small>平台问答、自然语言操作与科学分析</small></div>
+        <div class="head-actions">
+          <a-select v-model:value="modelId" size="small" style="min-width:168px" :options="modelOptions" placeholder="选择对话模型" />
+          <a-button v-if="!embedded" size="small" @click="historyOpen = true">会话</a-button>
+          <a-button v-if="!embedded" size="small" @click="$router.push('/ai-assistant')">完整工作台</a-button>
+          <a-button v-else size="small" :loading="creating" @click="newConversation">新建会话</a-button>
+        </div>
+      </header>
+
+      <div class="context-strip">
+        <a-switch v-model:checked="contextEnabled" size="small" />
+        <span>使用页面上下文</span>
+        <a-tag v-if="contextEnabled" closable @close.prevent="contextEnabled = false">{{ contextLabel }}</a-tag>
+      </div>
+
+      <div ref="messagePane" class="assistant-messages">
+        <a-skeleton v-if="loading && !messages.length" class="assistant-loading" active :paragraph="{ rows: 5 }" />
+        <section v-if="!messages.length && !loading" class="assistant-empty">
+          <div class="empty-mark">AI</div>
+          <h3>{{ modelOptions.length ? '从一个研究问题开始' : 'AI 助手暂未就绪' }}</h3>
+          <p>{{ modelOptions.length ? '我可以解释平台功能、规划单细胞检索，并在你确认后执行分析或平台操作。' : '当前没有可用的对话模型，请联系管理员完成模型测试并启用。' }}</p>
+          <div v-if="modelOptions.length" class="starter-grid">
+            <button v-for="starter in promptStarters" :key="starter.title" type="button" @click="usePromptStarter(starter.prompt)">
+              <strong>{{ starter.title }}</strong>
+              <span>{{ starter.description }}</span>
+            </button>
+          </div>
+          <div class="empty-safety">涉及检索、索引构建或写入的操作，都会先展示计划供你确认。</div>
+        </section>
+        <article v-for="item in messages" v-show="!isPlanMessage(item)" :key="item.id" :class="['assistant-message', item.role, { result: isAnalysisResult(item) }]">
+          <small>{{ item.role === 'user' ? '你' : 'AI 助手' }}</small>
+          <template v-if="isAnalysisResult(item)">
+            <div class="result-head">
+              <strong>{{ analysisSummary(item)?.headline || '分析结果' }}</strong>
+              <a-tag color="green">分析完成</a-tag>
+            </div>
+            <div class="message-content markdown-body" v-html="renderAssistantMarkdown(analysisDisplayText(item))" />
+            <a-button v-if="analysisFullText(item).length > 900" type="link" size="small" @click="toggleExpanded(item.id)">
+              {{ expandedMessages.has(item.id) ? '收起完整分析' : '展开完整分析' }}
+            </a-button>
+            <div v-if="analysisTaskIds(item).length" class="result-actions">
+              <a-button v-for="taskId in analysisTaskIds(item)" :key="taskId" size="small" type="primary" ghost @click="openQueryLab(taskId)">
+                在 Query Lab 查看结果
+              </a-button>
+            </div>
+            <a-collapse v-if="analysisEvidenceEntries(item).length || item.citations?.length" ghost class="evidence-collapse">
+              <a-collapse-panel key="evidence" header="分析详情（可选）">
+                <div v-if="analysisEvidenceEntries(item).length" class="evidence-grid">
+                  <div v-for="entry in analysisEvidenceEntries(item)" :key="entry.key">
+                    <span>{{ entry.label }}</span><strong>{{ entry.value }}</strong>
+                  </div>
+                </div>
+                <div v-if="item.citations?.length" class="assistant-citations">
+                  <a-tag v-for="citation in item.citations" :key="citation.key">{{ citation.source_title }}</a-tag>
+                </div>
+              </a-collapse-panel>
+            </a-collapse>
+          </template>
+          <div v-else-if="item.role === 'assistant'" class="message-content markdown-body" v-html="renderAssistantMarkdown(cleanAssistantText(item.content))" />
+          <div v-else class="message-content plain-message">{{ cleanAnswerText(item.content) }}</div>
+          <template v-if="assistantAction(item)">
+            <a-card size="small" class="action-card">
+              <div class="card-status-head">
+                <div><span class="card-eyebrow">平台操作</span><strong>{{ actionName(assistantAction(item)?.name) }}</strong></div>
+                <a-tag :color="toolStatusColor(toolStatus(Number(assistantAction(item)?.tool_call_id)))">
+                  {{ toolStatusText(toolStatus(Number(assistantAction(item)?.tool_call_id))) }}
+                </a-tag>
+              </div>
+              <p class="action-impact">{{ cleanAssistantText(assistantAction(item)?.impact || '确认后将提交这项平台操作。') }}</p>
+              <a-descriptions v-if="actionArgumentEntries(assistantAction(item)).length" size="small" :column="1" bordered>
+                <a-descriptions-item v-for="entry in actionArgumentEntries(assistantAction(item))" :key="entry.key" :label="entry.label">{{ entry.value }}</a-descriptions-item>
+              </a-descriptions>
+              <a-collapse ghost class="technical-collapse">
+                <a-collapse-panel key="technical" header="技术详情">
+                  <pre>{{ actionTechnicalDetails(assistantAction(item)) }}</pre>
+                </a-collapse-panel>
+              </a-collapse>
+              <div class="action-buttons">
+                <template v-if="toolStatus(Number(assistantAction(item)?.tool_call_id)) === 'proposed'">
+                  <a-button type="primary" size="small" :loading="actionLoading" @click="approveAction(Number(assistantAction(item)?.tool_call_id))">确认执行</a-button>
+                  <a-button size="small" danger :loading="actionLoading" @click="rejectAction(Number(assistantAction(item)?.tool_call_id))">拒绝</a-button>
+                </template>
+                <span v-else class="muted">该操作无需再次确认</span>
+              </div>
+            </a-card>
+          </template>
+          <a-card v-if="actionResult(item)" size="small" class="action-result-card">
+            <div class="card-status-head task-result-head">
+              <div><span class="card-eyebrow">后台任务</span><strong>{{ actionTaskTitle(item) }}</strong></div>
+              <a-tag :color="actionTaskColor(actionTask(item)?.status)">{{ actionTaskStatusText(actionTask(item)?.status) }}</a-tag>
+            </div>
+            <a-progress v-if="actionTask(item) && ['pending', 'running'].includes(actionTask(item)!.status)" class="action-task-progress" :percent="actionTask(item)?.progress || 0" size="small" />
+            <p v-if="actionTask(item)?.message" class="action-task-message">{{ cleanAssistantText(actionTask(item)?.message) }}</p>
+            <p v-else-if="actionTask(item)?.error" class="action-task-error">{{ cleanAssistantText(actionTask(item)?.error) }}</p>
+            <ul v-if="actionNextSteps(item).length" class="next-step-list">
+              <li v-for="step in actionNextSteps(item)" :key="step">{{ step }}</li>
+            </ul>
+            <a-button v-if="actionResultNavigation(item)" type="primary" size="small" @click="navigate(actionResultNavigation(item)!)">
+              {{ navigationLabel(actionResultNavigation(item)!) }}
+            </a-button>
+          </a-card>
+          <a-button v-if="clientAction(item)" size="small" type="link" @click="navigate(clientAction(item)!)">
+            {{ clientAction(item)?.target === 'ai_analysis' ? '继续科学分析' : '打开相关页面' }}
+          </a-button>
+          <a-collapse v-if="!isAnalysisResult(item) && item.citations?.length" ghost class="evidence-collapse">
+            <a-collapse-panel key="citations" header="参考资料（可选）">
+              <div class="assistant-citations">
+                <a-tag v-for="citation in item.citations" :key="citation.key">{{ citation.source_title }}</a-tag>
+              </div>
+            </a-collapse-panel>
+          </a-collapse>
+        </article>
+        <article v-if="streamingText" class="assistant-message assistant streaming">
+          <small>AI 助手 <a-tag color="processing">正在生成</a-tag></small>
+          <div class="message-content streaming-markdown"><div class="markdown-body" v-html="renderAssistantMarkdown(cleanStreamingText(streamingText))" /><span class="stream-cursor">▍</span></div>
+        </article>
+        <a-card v-if="currentRun && !terminal(currentRun)" size="small" class="run-card">
+          <div class="run-card-head">
+            <div>
+              <span class="card-eyebrow">当前进度</span>
+              <strong>{{ currentRun.surface === 'analysis' ? '正在准备科学分析' : '正在整理回答' }}</strong>
+            </div>
+            <a-tag :color="runStatusColor(currentRun)">{{ runStatusText(currentRun) }}</a-tag>
+          </div>
+          <p>{{ runActivityText(currentRun) }}</p>
+          <a-progress v-if="currentRun.progress > 0" :percent="Math.min(100, currentRun.progress)" size="small" :show-info="false" />
+          <a-button v-if="currentRun.can_cancel" size="small" type="link" danger @click="cancelRun">
+            {{ ['pending', 'running'].includes(currentRun.summary_status) && currentRun.status === 'success' ? '停止优化' : '取消当前处理' }}
+          </a-button>
+        </a-card>
+        <section v-if="showAnalysisPlan" class="analysis-plan-card">
+          <div class="plan-head"><strong>准备开始分析</strong><a-tag color="orange">确认后开始检索</a-tag></div>
+          <p>{{ cleanAssistantText(activePlan?.goal || '单细胞相似性检索与证据分析') }}</p>
+          <div class="plan-facts">
+            <a-tag>{{ planModeLabel }}</a-tag>
+            <a-tag>{{ primaryPlanStep?.dataset_name || '待选择数据集' }}</a-tag>
+            <a-tag>查询细胞 · {{ primaryPlanStep?.query_cell_index ?? '待填写' }}</a-tag>
+            <a-tag>返回前 {{ primaryPlanStep?.top_k || 10 }} 项</a-tag>
+            <a-tag v-if="primaryPlanStep?.filter_cell_type">{{ primaryPlanStep.filter_cell_type }}</a-tag>
+          </div>
+          <a-alert v-if="activePlan?.validation_errors?.length" type="warning" show-icon
+            message="计划还需要补充参数" :description="activePlan.validation_errors.map(cleanAssistantText).join('；')" />
+          <div class="plan-actions">
+            <a-button @click="openPlanEditor">调整参数</a-button>
+            <a-button type="primary" :loading="planApproving" :disabled="currentRun?.status !== 'awaiting_confirmation'" @click="approveAnalysisPlan">确认并执行</a-button>
+            <a-button danger @click="rejectAnalysisPlan">取消计划</a-button>
+          </div>
+        </section>
+      </div>
+
+      <footer class="assistant-composer">
+        <a-textarea v-model:value="prompt" :rows="embedded ? 3 : 2" :maxlength="4000" :disabled="conversationBusy"
+          placeholder="提问平台功能，或描述单细胞检索、跨数据集分析和结果追问" @keydown.ctrl.enter.prevent="send" />
+        <div><span class="muted">{{ conversationBusy ? '请先完成或取消当前计划' : 'Ctrl + Enter 发送 · 检索和写操作执行前都会确认' }}</span><a-button type="primary" :loading="sending" :disabled="conversationBusy || !prompt.trim() || !modelId" @click="send">发送</a-button></div>
+      </footer>
+    </section>
+
+    <a-modal v-model:open="planEditorOpen" title="调整科学分析参数" ok-text="保存并校验" :confirm-loading="planSaving" @ok="saveAnalysisPlan">
+      <a-form layout="vertical">
+        <a-form-item label="检索模式"><a-select v-model:value="planForm.mode" :options="modeOptions" /></a-form-item>
+        <a-form-item label="查询数据集"><a-select v-model:value="planForm.dataset_id" :options="datasetOptions" @change="onPlanDatasetChange" /></a-form-item>
+        <a-form-item v-if="planForm.mode !== 'joint'" label="源索引"><a-select v-model:value="planForm.index_id" :options="planIndexOptions" /></a-form-item>
+        <a-form-item v-else label="联合索引"><a-select v-model:value="planForm.joint_index_id" :options="jointIndexOptions" /></a-form-item>
+        <a-form-item v-if="planForm.mode !== 'single'" label="目标数据集"><a-select v-model:value="planForm.target_dataset_ids" mode="multiple" :options="datasetOptions" /></a-form-item>
+        <a-form-item label="查询细胞编号"><a-input-number v-model:value="planForm.query_cell_index" :min="0" style="width:100%" /></a-form-item>
+        <a-form-item label="返回结果数"><a-input-number v-model:value="planForm.top_k" :min="1" :max="100" style="width:100%" /></a-form-item>
+        <a-form-item label="细胞类型过滤"><a-select v-model:value="planForm.filter_cell_type" allow-clear :options="cellTypeOptions" placeholder="不限制" /></a-form-item>
+      </a-form>
+    </a-modal>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { message } from "ant-design-vue";
+import { api } from "@/services/api";
+import { analysisModeForTool, toolForAnalysisMode } from "@/services/ai-stream";
+import { renderAssistantMarkdown, stripAssistantInternalMarkers } from "@/services/assistant-markdown";
+import { useDatasetStore } from "@/stores/datasets";
+import { algorithmText, metricText, taskTypeText } from "@/utils/format";
+import type {
+  AiAnalysisPlan, AiAnalysisStep, AiAnalysisSummary, AiAssistantClientAction,
+  AiConversation, AiMessage, AiModelConfig, AiRun, JointIndex, KnowledgeDocument, TaskRecord,
+} from "@/types";
+
+const props = defineProps<{ embedded?: boolean }>();
+
+const route = useRoute();
+const router = useRouter();
+const datasetsStore = useDatasetStore();
+const conversations = ref<AiConversation[]>([]);
+const messages = ref<AiMessage[]>([]);
+const runs = ref<AiRun[]>([]);
+const models = ref<AiModelConfig[]>([]);
+const conversationId = ref<number>();
+const modelId = ref<number>();
+const prompt = ref("");
+const contextEnabled = ref(true);
+const loading = ref(false);
+const sending = ref(false);
+const actionLoading = ref(false);
+const creating = ref(false);
+const deletingId = ref<number>();
+const historyOpen = ref(false);
+const currentRun = ref<AiRun | null>(null);
+const streamingText = ref("");
+const streamStage = ref("");
+const expandedMessages = ref(new Set<number>());
+const actionTasks = ref<Record<number, TaskRecord>>({});
+const jointIndexes = ref<JointIndex[]>([]);
+const knowledgeDocuments = ref<KnowledgeDocument[]>([]);
+const cellTypes = ref<string[]>([]);
+const planEditorOpen = ref(false);
+const planSaving = ref(false);
+const planApproving = ref(false);
+const messagePane = ref<HTMLElement>();
+let source: EventSource | null = null;
+let pollTimer: number | null = null;
+let reconnectTimer: number | null = null;
+let realtimeRunId: number | null = null;
+let lastEventId = 0;
+let reconnectAttempts = 0;
+let actionTaskTimer: number | null = null;
+
+const promptStarters = [
+  { title: "了解当前页面", description: "说明这里可以完成什么，以及推荐的下一步。", prompt: "请介绍当前页面的用途，并告诉我接下来可以做什么。" },
+  { title: "设计相似细胞检索", description: "根据研究目标整理数据集、索引与筛选条件。", prompt: "帮我规划一次相似细胞检索，并先列出需要确认的参数。" },
+  { title: "比较多个数据集", description: "规划跨数据集检索并说明结果该如何解读。", prompt: "我想比较多个数据集中的相似细胞，请帮我设计分析步骤。" },
+];
+
+const modelOptions = computed(() => models.value.map((item) => ({ value: item.id, label: item.display_name })));
+const conversationBusy = computed(() => Boolean(currentRun.value && !terminal(currentRun.value)));
+
+function canDeleteConversation(item: AiConversation) {
+  return item.can_delete !== false && !(item.id === conversationId.value && conversationBusy.value);
+}
+
+function conversationDeleteHint(item: AiConversation) {
+  if (item.id === conversationId.value && conversationBusy.value) return "当前会话仍在处理，完成或取消后才能删除";
+  return item.delete_blockers?.map((blocker) => blocker.label).join("；") || "当前会话暂时不能删除";
+}
+const activePlan = computed<AiAnalysisPlan | null>(() => {
+  const plan = currentRun.value?.plan;
+  return plan && Array.isArray((plan as AiAnalysisPlan).steps) ? plan as AiAnalysisPlan : null;
+});
+const primaryPlanStep = computed<AiAnalysisStep | null>(() => {
+  if (activePlan.value) return activePlan.value.steps.find((step) => step.tool.startsWith("run_")) || null;
+  const plan = currentRun.value?.plan;
+  return plan ? ({ ...plan, tool: "run_single_cell_search" } as unknown as AiAnalysisStep) : null;
+});
+const showAnalysisPlan = computed(() => Boolean(
+  currentRun.value?.surface === "analysis"
+  && currentRun.value.plan
+  && ["needs_input", "awaiting_confirmation"].includes(currentRun.value.status),
+));
+const planModeLabel = computed(() => ({ single: "单数据集", fanout: "跨数据集并行检索", joint: "联合索引" } as Record<string, string>)[
+  analysisModeForTool(primaryPlanStep.value?.tool)
+] || "单数据集");
+const datasetOptions = computed(() => datasetsStore.indexedDatasets.map((item) => ({ value: item.id, label: item.name })));
+const selectedPlanDataset = computed(() => datasetsStore.datasets.find((item) => item.id === planForm.dataset_id));
+const planIndexOptions = computed(() => (selectedPlanDataset.value?.indexes || [])
+  .filter((item) => item.status === "ready" && item.lifecycle === "active")
+  .map((item) => ({ value: item.id, label: `${item.algorithm} · ${item.metric.toUpperCase()}` })));
+const jointIndexOptions = computed(() => jointIndexes.value.filter((item) => item.status === "ready")
+  .map((item) => ({ value: item.id, label: item.name })));
+const cellTypeOptions = computed(() => cellTypes.value.map((value) => ({ value, label: value })));
+const modeOptions = [
+  { value: "single", label: "单数据集" },
+  { value: "fanout", label: "跨数据集并行检索" },
+  { value: "joint", label: "联合索引" },
+];
+const planForm = reactive<{
+  mode: "single" | "fanout" | "joint";
+  dataset_id?: number;
+  index_id?: number;
+  joint_index_id?: number;
+  target_dataset_ids: number[];
+  query_cell_index?: number;
+  top_k: number;
+  filter_cell_type?: string;
+}>({ mode: "single", target_dataset_ids: [], top_k: 10 });
+const pageTitle = computed(() => typeof route.meta?.title === "string" ? route.meta.title : "当前工作区");
+const pageContext = computed<Record<string, unknown>>(() => {
+  const resources: Record<string, number> = {};
+  const datasetValue = route.params.id || route.query.dataset;
+  if (datasetValue && Number.isFinite(Number(datasetValue))) resources.dataset_id = Number(datasetValue);
+  if (route.query.index && Number.isFinite(Number(route.query.index))) resources.index_id = Number(route.query.index);
+  if (route.query.history_id && Number.isFinite(Number(route.query.history_id))) resources.history_id = Number(route.query.history_id);
+  return { resources, label: pageTitle.value };
+});
+const contextDatasetName = computed(() => {
+  const value = route.params.id || route.query.dataset;
+  if (!value || !Number.isFinite(Number(value))) return "";
+  return datasetsStore.datasets.find((item) => item.id === Number(value))?.name || "";
+});
+const contextLabel = computed(() => `当前页面：${pageTitle.value}${contextDatasetName.value ? ` · ${contextDatasetName.value}` : ""}`);
+
+function usePromptStarter(value: string) {
+  prompt.value = value;
+}
+function terminal(run: AiRun) { return ["success", "error", "rejected", "cancelled"].includes(run.status) && !["pending", "running"].includes(run.summary_status); }
+function runStatusText(run: AiRun) {
+  if (run.status === "success" && ["pending", "running"].includes(run.summary_status)) return "回答已就绪";
+  return ({
+    queued: "等待处理", planning: "正在规划", executing: "正在执行", needs_input: "需要补充参数",
+    awaiting_confirmation: "等待确认", success: "已完成", error: "处理失败", rejected: "已拒绝", cancelled: "已取消",
+  } as Record<string, string>)[run.status] || "处理中";
+}
+function runStatusColor(run: AiRun) {
+  if (run.status === "success") return "green";
+  return ({ error: "red", cancelled: "default", rejected: "default", needs_input: "orange", awaiting_confirmation: "orange" } as Record<string, string>)[run.status] || "processing";
+}
+function runActivityText(run: AiRun) {
+  if (run.status === "success" && ["pending", "running"].includes(run.summary_status)) return "正在优化简短解读，当前答案已经可以使用。";
+  return cleanAssistantText(streamStage.value || run.stage?.message || "AI 正在处理…");
+}
+function assistantAction(item: AiMessage) { return item.structured?.action as Record<string, unknown> | undefined; }
+function actionResult(item: AiMessage) { return item.structured?.action_result as Record<string, unknown> | undefined; }
+function actionResultNavigation(item: AiMessage) { return actionResult(item)?.navigation as AiAssistantClientAction | undefined; }
+function actionTask(item: AiMessage) {
+  const id = Number(actionResult(item)?.task_id);
+  return Number.isFinite(id) ? actionTasks.value[id] : undefined;
+}
+function actionTaskStatusText(status?: string) {
+  if (!status) return "已提交";
+  return ({ pending: "等待执行", running: "正在执行", success: "已完成", error: "执行失败", cancelled: "已取消" } as Record<string, string>)[status] || "状态更新中";
+}
+function actionTaskColor(status?: string) {
+  return ({ pending: "orange", running: "blue", success: "green", error: "red", cancelled: "default" } as Record<string, string>)[String(status)] || "blue";
+}
+function actionNextSteps(item: AiMessage) {
+  const value = actionResult(item)?.next_steps;
+  return Array.isArray(value) ? value.map(cleanAssistantText).filter(Boolean) : [];
+}
+function actionTaskTitle(item: AiMessage) {
+  const task = actionTask(item);
+  const rawType = String(task?.type || actionResult(item)?.task_type || "");
+  const translatedType = taskTypeText(rawType);
+  const type = !rawType || translatedType === rawType ? "平台后台任务" : translatedType;
+  return task?.dataset_name ? `${type} · ${task.dataset_name}` : type;
+}
+function clientAction(item: AiMessage) { return item.structured?.client_action as AiAssistantClientAction | undefined; }
+function navigationLabel(action: AiAssistantClientAction) {
+  const labels: Record<string, string> = {
+    query_lab: "打开检索实验室", index_lab: "打开索引实验室", dataset_detail: "打开数据集详情",
+    joint_indexes: "打开联合索引", ai_knowledge: "打开知识库", ai_analysis: "继续科学分析",
+  };
+  if (labels[action.target]) return labels[action.target];
+  if (action.path.startsWith("/query-lab")) return "打开检索实验室";
+  if (action.path.startsWith("/index-lab")) return "打开索引实验室";
+  if (action.path.startsWith("/datasets/")) return "打开数据集详情";
+  if (action.path.startsWith("/joint-indexes")) return "打开联合索引";
+  if (action.path.startsWith("/ai-knowledge")) return "打开知识库";
+  return "打开相关工作区";
+}
+function toolStatus(id: number) { return runs.value.flatMap((run) => run.tool_calls || []).find((tool) => tool.id === id)?.status || "proposed"; }
+function toolStatusText(status: string) {
+  return ({
+    proposed: "等待确认", approved: "已确认", queued: "等待提交", pending: "等待提交", running: "正在提交",
+    success: "提交成功", error: "提交失败", rejected: "已拒绝", expired: "确认已过期", cancelled: "已取消",
+  } as Record<string, string>)[status] || "状态更新中";
+}
+function toolStatusColor(status: string) {
+  return ({ proposed: "orange", approved: "blue", queued: "blue", pending: "blue", running: "processing", success: "green", error: "red" } as Record<string, string>)[status] || "default";
+}
+function datasetResourceName(value: unknown) {
+  const id = Number(value);
+  if (!Number.isFinite(id)) return "已选择的数据集";
+  return datasetsStore.datasets.find((item) => item.id === id)?.name || "已选择的数据集";
+}
+function datasetResourceNames(value: unknown) {
+  if (!Array.isArray(value) || !value.length) return "尚未选择数据集";
+  return [...new Set(value.map(datasetResourceName))].join("、");
+}
+function indexResourceName(value: unknown) {
+  const id = Number(value);
+  if (!Number.isFinite(id)) return "已选择的索引";
+  for (const dataset of datasetsStore.datasets) {
+    const index = (dataset.indexes || []).find((item) => item.id === id);
+    if (index) return `${dataset.name} · ${algorithmDisplayName(index.algorithm)} 索引`;
+  }
+  return "已选择的索引";
+}
+function jointIndexResourceName(value: unknown) {
+  const id = Number(value);
+  return jointIndexes.value.find((item) => item.id === id)?.name || "已选择的联合索引";
+}
+function documentResourceName(value: unknown) {
+  const id = Number(value);
+  return knowledgeDocuments.value.find((item) => item.id === id)?.title || "已选择的知识文档";
+}
+function resourceDisplayValue(key: string, value: unknown): string | null {
+  if (["dataset_id", "dataset_reference"].includes(key)) return datasetResourceName(value);
+  if (["dataset_ids", "target_dataset_ids"].includes(key)) return datasetResourceNames(value);
+  if (["index_id", "index_reference"].includes(key)) return indexResourceName(value);
+  if (["joint_index_id", "joint_index_reference"].includes(key)) return jointIndexResourceName(value);
+  if (key === "document_id") return documentResourceName(value);
+  if (key === "owner_id") return "当前用户";
+  if (key.endsWith("_ids")) return Array.isArray(value) ? `${value.length} 项资源` : "已选择的资源";
+  if (key.endsWith("_id")) return "已选择的资源";
+  return null;
+}
+function algorithmDisplayName(value: unknown) {
+  const raw = String(value || "");
+  const translated = algorithmText(raw);
+  return translated === raw && /[_-]/.test(raw) ? "自定义算法" : translated;
+}
+function displayValue(value: unknown, key = "") {
+  const resource = resourceDisplayValue(key, value);
+  if (resource) return resource;
+  if (key === "candidate_keys" && Array.isArray(value) && !value.length) return "使用系统推荐候选";
+  if (key === "candidate_keys" && Array.isArray(value)) return `${value.length} 个候选配置`;
+  if (key === "metric") return metricText(String(value || ""));
+  if (key === "algorithm") return algorithmDisplayName(value);
+  if (key === "content") return `笔记正文（${String(value || "").length.toLocaleString("zh-CN")} 字）`;
+  if (Array.isArray(value)) return value.length ? `${value.length} 项` : "无";
+  if (value && typeof value === "object") return `已配置 ${Object.keys(value as Record<string, unknown>).length} 项`;
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "number") return value.toLocaleString("zh-CN");
+  return String(value ?? "-");
+}
+function actionArgumentLabel(key: string) {
+  const labels: Record<string, string> = {
+    dataset_id: "数据集", dataset_reference: "数据集", metric: "距离度量", sample_size: "评估样本数", top_k: "返回结果数",
+    seed: "随机种子", repetitions: "重复轮数", warmup_count: "预热次数", candidate_keys: "候选配置",
+    algorithm: "索引算法", index_id: "索引", index_reference: "索引", dataset_ids: "数据集集合", target_dataset_ids: "目标数据集",
+    joint_index_id: "联合索引", joint_index_reference: "联合索引", document_id: "知识文档", name: "名称", title: "标题", content: "内容",
+    M: "图连接数 M", ef_construction: "构建搜索宽度", ef_search: "检索搜索宽度", params: "高级索引参数",
+    n_pcs: "主成分数", n_top_genes: "高变基因数", min_common_genes: "最少共有基因数",
+  };
+  return labels[key] || "其他参数";
+}
+function actionArgumentEntries(action?: Record<string, unknown>) {
+  return Object.entries((action?.args as Record<string, unknown>) || {}).map(([key, value]) => ({
+    key, label: actionArgumentLabel(key), value: displayValue(value, key),
+  }));
+}
+function sanitizeTechnicalValue(key: string, value: unknown): unknown {
+  const resource = resourceDisplayValue(key, value);
+  if (resource) return resource;
+  if (Array.isArray(value)) return value.map((item) => typeof item === "object" && item ? sanitizeTechnicalValue("item", item) : item);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [actionArgumentLabel(childKey), sanitizeTechnicalValue(childKey, childValue)]));
+  }
+  return value;
+}
+function actionTechnicalDetails(action?: Record<string, unknown>) {
+  const args = (action?.args as Record<string, unknown>) || {};
+  const parameters = Object.fromEntries(Object.entries(args).map(([key, value]) => [actionArgumentLabel(key), sanitizeTechnicalValue(key, value)]));
+  return JSON.stringify({ 操作: actionName(action?.name), 参数: parameters }, null, 2);
+}
+function actionName(value: unknown) { return ({ submit_dataset_processing: "处理数据集", submit_index_build: "构建索引", submit_index_experiment: "运行索引实验", submit_index_evaluation: "评估索引", submit_joint_index_build: "构建联合索引", reindex_knowledge_document: "重建知识索引", create_personal_knowledge_note: "创建个人知识笔记" } as Record<string, string>)[String(value)] || "平台操作"; }
+function isPlanMessage(item: AiMessage) { return ["analysis_plan", "search_plan"].includes(String(item.structured?.type || "")); }
+function isAnalysisResult(item: AiMessage) { return ["analysis_result", "result_follow_up", "knowledge_answer"].includes(String(item.structured?.type || "")); }
+function messageRun(item: AiMessage) { const id = Number(item.structured?.run_id); return runs.value.find((run) => run.id === id); }
+function analysisSummary(item: AiMessage): AiAnalysisSummary | null {
+  return (item.structured?.summary as AiAnalysisSummary | undefined) || messageRun(item)?.result?.summary || null;
+}
+function cleanAnswerText(value: unknown) {
+  return stripAssistantInternalMarkers(value);
+}
+function cleanAssistantText(value: unknown) {
+  const fieldLabels: Record<string, string> = {
+    dataset: "数据集", index: "索引", task: "后台任务", document: "知识文档", run: "处理记录", conversation: "会话",
+  };
+  const routeLabels: Record<string, string> = {
+    "dataset-detail": "数据集详情", "index-lab": "索引实验室", "joint-indexes": "联合索引",
+    "query-lab": "检索实验室", "ai-knowledge": "AI 知识库", "ai-assistant": "AI 助手",
+  };
+  return cleanAnswerText(value)
+    .replace(/后台\s*Task\s*#?\s*\d+\s*可在任务中心查看。?/gi, "后台任务可在相关工作区查看进度。")
+    .replace(/\bTask\s*#?\s*\d+\b/gi, "后台任务")
+    .replace(/\b(dataset|index|task|document|run|conversation)_id\s*[:：=#]?\s*\d+\b/gi, (_match, key: string) => fieldLabels[key.toLowerCase()] || "内部资源")
+    .replace(/数据集\s*(?:ID|编号)\s*[:：#]?\s*\d+/gi, "数据集")
+    .replace(/索引\s*#\s*\d+/gi, "所选索引")
+    .replace(/(?:数据库|记录)\s*(?:ID|编号)\s*[:：#]?\s*\d+/gi, "内部记录")
+    .replace(/(^|[^/A-Za-z0-9_-])(dataset-detail|index-lab|joint-indexes|query-lab|ai-knowledge|ai-assistant)(?=$|[^A-Za-z0-9_-])/g, (_match, prefix: string, key: string) => `${prefix}${routeLabels[key] || "相关页面"}`);
+}
+function cleanStreamingText(value: unknown) {
+  return cleanAssistantText(value);
+}
+function analysisFullText(item: AiMessage) {
+  const summary = analysisSummary(item);
+  if (!summary) return cleanAssistantText(item.content);
+  const [baseSummary, modelText] = String(summary.summary || "").split(/\n\n模型补充解读：\n?/);
+  return cleanAssistantText([
+    baseSummary,
+    ...(summary.findings || []).slice(0, 4).map((finding) => finding.statement),
+    modelText ? `简要解读：${modelText}` : "",
+    ...(summary.caveats || []).slice(0, 1),
+  ].filter(Boolean).join("\n"));
+}
+function analysisDisplayText(item: AiMessage) {
+  const text = analysisFullText(item);
+  return expandedMessages.value.has(item.id) || text.length <= 900 ? text : `${text.slice(0, 900).trim()}…`;
+}
+function toggleExpanded(id: number) {
+  const next = new Set(expandedMessages.value);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  expandedMessages.value = next;
+}
+function evidenceLabel(key: string) { return ({ result_count: "结果数", distance_range: "距离范围", same_type_count: "同类型数", same_type_fraction: "同类型比例", query_cell_type: "查询类型", disease_distribution: "疾病分布", age_group_distribution: "年龄分布", cell_type_distribution: "细胞类型分布", dataset_distribution: "数据集分布", query_time_ms: "检索耗时" } as Record<string, string>)[key] || "分析指标"; }
+function formatEvidence(value: unknown, key = "") {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "number") {
+    if (key === "same_type_fraction") return `${(value * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}%`;
+    if (key === "query_time_ms") return `${value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 毫秒`;
+    return Number.isInteger(value) ? value.toLocaleString("zh-CN") : value.toLocaleString("zh-CN", { maximumFractionDigits: 4 });
+  }
+  if (typeof value === "object") {
+    const nestedLabels: Record<string, string> = { min: "最小", max: "最大", mean: "平均", median: "中位数", p95: "第 95 百分位" };
+    return Object.entries(value as Record<string, unknown>).slice(0, 4).map(([itemKey, item]) => {
+      const label = nestedLabels[itemKey] || itemKey;
+      const formatted = typeof item === "number" ? item.toLocaleString("zh-CN", { maximumFractionDigits: 4 }) : String(item);
+      return `${label}：${formatted}`;
+    }).join("；");
+  }
+  return String(value);
+}
+function analysisEvidenceEntries(item: AiMessage) {
+  const evidence = messageRun(item)?.result?.evidence || {};
+  const preferred = ["result_count", "distance_range", "same_type_fraction", "cell_type_distribution", "disease_distribution", "age_group_distribution", "dataset_distribution"];
+  return preferred.filter((key) => evidence[key] !== undefined).slice(0, 6).map((key) => ({ key, label: evidenceLabel(key), value: formatEvidence(evidence[key], key) }));
+}
+function analysisTaskIds(item: AiMessage) {
+  const raw = item.structured?.search_task_ids;
+  const values = Array.isArray(raw) ? raw : [item.structured?.search_task_id, messageRun(item)?.search_task_id];
+  return [...new Set(values.map(Number).filter((value) => Number.isFinite(value) && value > 0))];
+}
+
+async function loadBase() {
+  loading.value = true;
+  try {
+    const [modelData, conversationData, , jointData, documentData] = await Promise.all([
+      api.aiModels(),
+      api.aiConversations("assistant"),
+      datasetsStore.loadAll().catch(() => undefined),
+      api.jointIndexes().catch(() => ({ joint_indexes: [] as JointIndex[] })),
+      api.knowledgeDocuments().catch(() => ({ documents: [] as KnowledgeDocument[] })),
+    ]);
+    models.value = modelData.models;
+    jointIndexes.value = jointData.joint_indexes;
+    knowledgeDocuments.value = documentData.documents;
+    const savedModel = Number(localStorage.getItem("ai-model-config"));
+    modelId.value ||= models.value.find((item) => item.id === savedModel)?.id || models.value.find((item) => item.is_default)?.id || models.value[0]?.id;
+    conversations.value = conversationData.conversations;
+    const requested = Number(route.query.conversation_id);
+    const initial = conversations.value.find((item) => item.id === requested) || conversations.value[0];
+    if (initial && initial.id !== conversationId.value) await openConversation(initial.id);
+    if (typeof route.query.prompt === "string" && route.query.prompt.trim()) prompt.value = route.query.prompt.slice(0, 4000);
+  } catch (error) { message.error((error as Error).message); }
+  finally { loading.value = false; }
+}
+
+async function ensureConversation() {
+  if (conversationId.value) return conversationId.value;
+  const row = (await api.createAiConversation("新建全局助手会话", "assistant")).conversation;
+  conversationId.value = row.id;
+  conversations.value.unshift(row);
+  return row.id;
+}
+
+async function openConversation(id: number) {
+  stopRealtime();
+  const detail = (await api.aiConversation(id)).conversation;
+  conversationId.value = id;
+  streamingText.value = "";
+  streamStage.value = "";
+  messages.value = detail.messages || [];
+  runs.value = detail.runs || [];
+  currentRun.value = [...runs.value].reverse().find((item) => !terminal(item)) || runs.value[runs.value.length - 1] || null;
+  syncPlanForm(currentRun.value);
+  if (currentRun.value && !terminal(currentRun.value)) startRealtime(currentRun.value);
+  if (!props.embedded) historyOpen.value = false;
+  if (props.embedded && Number(route.query.conversation_id) !== id) {
+    await router.replace({ query: { ...route.query, conversation_id: String(id) } });
+  }
+  void syncActionTasks();
+  await scrollEnd();
+}
+
+async function newConversation() {
+  if (creating.value) return;
+  creating.value = true;
+  try {
+    stopRealtime();
+    const row = (await api.createAiConversation("新建全局助手会话", "assistant")).conversation;
+    conversations.value = [row, ...conversations.value.filter((item) => item.id !== row.id)];
+    await openConversation(row.id);
+    prompt.value = "";
+  } catch (error) { message.error((error as Error).message); }
+  finally { creating.value = false; }
+}
+
+async function deleteConversation(id: number) {
+  if (deletingId.value) return;
+  deletingId.value = id;
+  try {
+    await api.deleteAiConversation(id);
+    conversations.value = conversations.value.filter((item) => item.id !== id);
+    if (conversationId.value === id) {
+      stopRealtime();
+      conversationId.value = undefined;
+      messages.value = [];
+      runs.value = [];
+      currentRun.value = null;
+      streamingText.value = "";
+      const next = conversations.value[0];
+      if (next) await openConversation(next.id);
+      else if (props.embedded) await router.replace({ query: { ...route.query, conversation_id: undefined } });
+    }
+    message.success("会话已删除");
+  } catch (error) { message.error((error as Error).message); }
+  finally { deletingId.value = undefined; }
+}
+
+async function refreshConversation() {
+  if (!conversationId.value) return;
+  const detail = (await api.aiConversation(conversationId.value)).conversation;
+  messages.value = detail.messages || [];
+  runs.value = detail.runs || [];
+  const latest = runs.value[runs.value.length - 1];
+  if (latest) { currentRun.value = latest; syncPlanForm(latest); }
+  void syncActionTasks();
+  await scrollEnd();
+}
+
+async function syncActionTasks() {
+  if (actionTaskTimer !== null) window.clearTimeout(actionTaskTimer);
+  actionTaskTimer = null;
+  const ids = [...new Set(messages.value.map((item) => Number(actionResult(item)?.task_id)).filter((id) => Number.isFinite(id) && id > 0))];
+  if (!ids.length) { actionTasks.value = {}; return; }
+  const rows = await Promise.all(ids.map(async (id) => {
+    try { return [id, await api.task(id)] as const; } catch { return [id, null] as const; }
+  }));
+  const nextTasks: Record<number, TaskRecord> = {};
+  rows.forEach(([id, task]) => { if (task) nextTasks[id] = task; });
+  actionTasks.value = nextTasks;
+  if (Object.values(actionTasks.value).some((task) => ["pending", "running"].includes(task.status))) {
+    actionTaskTimer = window.setTimeout(() => { void syncActionTasks(); }, 2000);
+  }
+}
+
+async function send() {
+  if (!prompt.value.trim() || !modelId.value) return;
+  sending.value = true;
+  try {
+    const id = await ensureConversation();
+    const content = prompt.value.trim();
+    const data = await api.sendAssistantMessage(id, content, modelId.value, pageContext.value, contextEnabled.value);
+    prompt.value = ""; currentRun.value = data.run; runs.value.push(data.run);
+    await refreshConversation(); startRealtime(data.run);
+    conversations.value = (await api.aiConversations("assistant")).conversations;
+  } catch (error) { message.error((error as Error).message); }
+  finally { sending.value = false; }
+}
+
+function syncPlanForm(run: AiRun | null) {
+  if (!run?.plan) return;
+  const analysis = Array.isArray((run.plan as AiAnalysisPlan).steps) ? run.plan as AiAnalysisPlan : null;
+  const primary = analysis?.steps.find((step) => step.tool.startsWith("run_"));
+  const source = primary || run.plan as unknown as AiAnalysisStep;
+  Object.assign(planForm, {
+    mode: analysisModeForTool(primary?.tool),
+    dataset_id: source.dataset_id || (typeof source.dataset_reference === "number" ? source.dataset_reference : undefined),
+    index_id: source.index_id || (typeof source.index_reference === "number" ? source.index_reference : undefined),
+    joint_index_id: primary?.joint_index_id || undefined,
+    target_dataset_ids: primary?.target_dataset_ids || [],
+    query_cell_index: source.query_cell_index ?? undefined,
+    top_k: source.top_k || 10,
+    filter_cell_type: source.filter_cell_type || undefined,
+  });
+}
+
+async function openPlanEditor() {
+  try {
+    const [, jointData] = await Promise.all([datasetsStore.loadAll(), api.jointIndexes()]);
+    jointIndexes.value = jointData.joint_indexes;
+    syncPlanForm(currentRun.value);
+    if (planForm.dataset_id) cellTypes.value = (await api.cellTypes(planForm.dataset_id)).cell_types;
+    planEditorOpen.value = true;
+  } catch (error) { message.error((error as Error).message); }
+}
+
+async function onPlanDatasetChange() {
+  planForm.index_id = planIndexOptions.value[0]?.value;
+  cellTypes.value = planForm.dataset_id ? (await api.cellTypes(planForm.dataset_id)).cell_types : [];
+  planForm.filter_cell_type = undefined;
+}
+
+async function saveAnalysisPlan() {
+  if (!currentRun.value?.plan) return null;
+  planSaving.value = true;
+  try {
+    let payload: Record<string, unknown>;
+    if (activePlan.value) {
+      const plan = activePlan.value;
+      const steps = plan.steps.map((step) => step.tool.startsWith("run_") ? {
+        ...step,
+        tool: toolForAnalysisMode(planForm.mode),
+        selection_mode: "explicit",
+        dataset_reference: planForm.dataset_id,
+        dataset_id: planForm.dataset_id,
+        index_reference: planForm.index_id,
+        index_id: planForm.index_id,
+        joint_index_reference: planForm.joint_index_id,
+        joint_index_id: planForm.joint_index_id,
+        target_dataset_ids: planForm.target_dataset_ids,
+        query_cell_index: planForm.query_cell_index,
+        top_k: planForm.top_k,
+        filter_cell_type: planForm.filter_cell_type || null,
+      } : step);
+      payload = { goal: plan.goal, response_language: plan.response_language, knowledge_scopes: plan.knowledge_scopes, expected_outputs: plan.expected_outputs, steps };
+    } else {
+      payload = { dataset_id: planForm.dataset_id, index_id: planForm.index_id, query_cell_index: planForm.query_cell_index, top_k: planForm.top_k, filter_cell_type: planForm.filter_cell_type || null };
+    }
+    const data = await api.updateAiRunPlan(currentRun.value.id, payload);
+    currentRun.value = data.run;
+    syncPlanForm(data.run);
+    if (!data.valid) { message.warning("计划仍有需要修正的参数"); return data.run; }
+    planEditorOpen.value = false;
+    message.success("分析参数已校验");
+    return data.run;
+  } catch (error) { message.error((error as Error).message); return null; }
+  finally { planSaving.value = false; }
+}
+
+async function approveAnalysisPlan() {
+  if (!currentRun.value) return;
+  planApproving.value = true;
+  try {
+    const saved = await saveAnalysisPlan();
+    if (!saved || saved.status !== "awaiting_confirmation") return;
+    const data = await api.approveAiRun(saved.id);
+    currentRun.value = data.run;
+    startRealtime(data.run);
+  } catch (error) { message.error((error as Error).message); }
+  finally { planApproving.value = false; }
+}
+
+async function rejectAnalysisPlan() {
+  if (!currentRun.value) return;
+  currentRun.value = (await api.rejectAiRun(currentRun.value.id)).run;
+  await refreshConversation();
+}
+
+function openQueryLab(taskId: number) { void router.push({ path: "/query-lab", query: { history_id: String(taskId) } }); }
+
+function startRealtime(run: AiRun) {
+  stopRealtime();
+  realtimeRunId = run.id;
+  lastEventId = 0;
+  reconnectAttempts = 0;
+  streamingText.value = "";
+  streamStage.value = run.stage?.message || "";
+  if (typeof EventSource !== "undefined") connectRealtime(run);
+  else startPolling(run.id);
+}
+
+function connectRealtime(run: AiRun) {
+  if (realtimeRunId !== run.id) return;
+  const separator = run.stream_url.includes("?") ? "&" : "?";
+  source = new EventSource(lastEventId ? `${run.stream_url}${separator}after=${lastEventId}` : run.stream_url);
+  const eventNames = [
+    "run.stage", "plan.ready", "answer.started", "answer.delta", "answer.replace", "answer.completed",
+    "action.proposed", "action.status", "ui.navigate", "assistant.handoff", "run.completed", "error",
+  ];
+  eventNames.forEach((name) => source?.addEventListener(name, async (event) => {
+    if (realtimeRunId !== run.id) return;
+    const messageEvent = event as MessageEvent;
+    const sequence = Number(messageEvent.lastEventId);
+    if (Number.isFinite(sequence) && sequence > lastEventId) lastEventId = sequence;
+    const payload = JSON.parse(messageEvent.data || "{}");
+    if (name === "run.stage") streamStage.value = String(payload.message || payload.label || "");
+    if (name === "answer.started") streamingText.value = "";
+    if (name === "answer.delta") {
+      streamingText.value += String(payload.delta || "");
+      await scrollEnd();
+    }
+    if (name === "ui.navigate" || name === "assistant.handoff") {
+      if (payload.auto) await navigate(payload as AiAssistantClientAction);
+    }
+    if (["plan.ready", "answer.replace", "answer.completed", "action.proposed", "action.status", "run.completed", "error"].includes(name)) {
+      await refreshConversation();
+    }
+    if (name === "answer.replace" || name === "answer.completed") streamingText.value = "";
+    if (name === "run.completed" || name === "error") stopRealtime();
+  }));
+  source.onopen = () => { reconnectAttempts = 0; };
+  source.onerror = () => {
+    source?.close();
+    source = null;
+    if (realtimeRunId !== run.id) return;
+    reconnectAttempts += 1;
+    if (reconnectAttempts <= 2) {
+      reconnectTimer = window.setTimeout(() => connectRealtime(run), 600);
+    } else startPolling(run.id);
+  };
+}
+
+function startPolling(runId: number) {
+  if (pollTimer !== null) window.clearInterval(pollTimer);
+  pollTimer = window.setInterval(async () => {
+    const run = (await api.aiRun(runId)).run; currentRun.value = run; await refreshConversation();
+    if (terminal(run)) stopRealtime();
+  }, 1200);
+}
+function stopRealtime() {
+  source?.close(); source = null;
+  if (pollTimer !== null) window.clearInterval(pollTimer); pollTimer = null;
+  if (reconnectTimer !== null) window.clearTimeout(reconnectTimer); reconnectTimer = null;
+  realtimeRunId = null;
+}
+
+async function navigate(action: AiAssistantClientAction) {
+  if (!action.path.startsWith("/")) return message.error("助手返回了无效页面地址");
+  const resolved = router.resolve(action.path);
+  if (!resolved.matched.length) return message.error("助手返回的页面不在平台导航白名单中");
+  if (route.fullPath !== resolved.fullPath) await router.push(action.path);
+}
+async function approveAction(id: number) {
+  if (!id) return;
+  actionLoading.value = true;
+  try {
+    const data = await api.approveAiToolCall(id);
+    currentRun.value = data.run;
+    message.success("平台任务已提交，正在进入对应工作区");
+    await refreshConversation();
+    const navigation = data.tool_call.result?.navigation as AiAssistantClientAction | undefined;
+    if (navigation?.auto) await navigate(navigation);
+  } catch (error) { message.error((error as Error).message); }
+  finally { actionLoading.value = false; }
+}
+async function rejectAction(id: number) { if (!id) return; actionLoading.value = true; try { await api.rejectAiToolCall(id); message.info("操作已拒绝"); await refreshConversation(); } catch (error) { message.error((error as Error).message); } finally { actionLoading.value = false; } }
+async function cancelRun() { if (!currentRun.value) return; await api.cancelAiRun(currentRun.value.id); await refreshConversation(); }
+async function scrollEnd() { await nextTick(); if (messagePane.value) messagePane.value.scrollTop = messagePane.value.scrollHeight; }
+
+watch(modelId, (value) => { if (value) localStorage.setItem("ai-model-config", String(value)); });
+watch(() => route.query.conversation_id, (value) => {
+  const id = Number(value); if (id && id !== conversationId.value) void openConversation(id);
+});
+watch(() => route.query.prompt, (value) => {
+  if (typeof value === "string" && value.trim()) prompt.value = value.slice(0, 4000);
+});
+watch(() => route.fullPath, () => { /* computed context updates without retaining form secrets */ });
+onMounted(loadBase);
+onBeforeUnmount(() => {
+  stopRealtime();
+  if (actionTaskTimer !== null) window.clearTimeout(actionTaskTimer);
+});
+</script>
+
+<style scoped>
+.global-assistant { position: relative; height: 100%; display: flex; min-height: 0; background: #f8fafc; overflow: hidden; }
+.global-assistant.workspace { min-height: calc(100vh - 150px); border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
+.assistant-history { width: 250px; background: white; border-right: 1px solid #e2e8f0; overflow: auto; }
+.assistant-history.floating { position: absolute; inset: 0 auto 0 0; z-index: 20; width: min(310px, 82%); box-shadow: 8px 0 24px rgba(15, 23, 42, .16); }
+.history-head, .assistant-head, .context-strip, .assistant-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.history-actions { display: flex; align-items: center; gap: 4px; }
+.history-head { padding: 14px; border-bottom: 1px solid #e2e8f0; }
+.assistant-history :deep(.ant-list-item) { cursor: pointer; padding: 10px 14px; }
+.assistant-history :deep(.ant-list-item.active) { background: #eff6ff; }
+.assistant-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.assistant-head { background: white; padding: 13px 16px; border-bottom: 1px solid #e2e8f0; }
+.assistant-head small { display: block; color: #64748b; margin-top: 3px; }
+.head-actions { display: flex; gap: 8px; }
+.context-strip { justify-content: flex-start; padding: 8px 14px; background: #f1f5f9; font-size: 12px; color: #475569; }
+.assistant-messages { flex: 1; overflow: auto; padding: 16px; min-height: 280px; }
+.assistant-loading { width: min(680px, 90%); margin: 34px auto; padding: 22px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; }
+.assistant-empty { width: min(760px, 100%); margin: 42px auto 24px; padding: 28px; border: 1px solid #dbe5f0; border-radius: 16px; background: linear-gradient(145deg, #fff 0%, #f8fbff 100%); text-align: center; box-shadow: 0 10px 28px rgba(15, 23, 42, .05); }
+.empty-mark { display: grid; place-items: center; width: 46px; height: 46px; margin: 0 auto 12px; border-radius: 14px; background: #2563eb; color: white; font-size: 15px; font-weight: 800; letter-spacing: .04em; box-shadow: 0 8px 18px rgba(37, 99, 235, .24); }
+.assistant-empty h3 { margin: 0; color: #172033; font-size: 20px; }
+.assistant-empty > p { max-width: 590px; margin: 8px auto 20px; color: #64748b; line-height: 1.7; }
+.starter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; text-align: left; }
+.starter-grid button { min-height: 104px; padding: 13px; border: 1px solid #dbe5f0; border-radius: 10px; background: white; color: #243044; text-align: left; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.starter-grid button:hover { border-color: #93c5fd; box-shadow: 0 8px 18px rgba(37, 99, 235, .08); transform: translateY(-1px); }
+.starter-grid strong, .starter-grid span { display: block; }
+.starter-grid strong { margin-bottom: 6px; color: #172033; font-size: 14px; }
+.starter-grid span { color: #64748b; font-size: 12px; line-height: 1.55; }
+.empty-safety { margin-top: 16px; color: #7c8aa0; font-size: 12px; }
+.assistant-message { max-width: 88%; padding: 11px 13px; border-radius: 10px; margin-bottom: 12px; }
+.assistant-message.user { margin-left: auto; background: #dbeafe; }
+.assistant-message.assistant { background: white; border: 1px solid #e2e8f0; }
+.assistant-message.result { width: min(680px, 96%); max-width: 96%; }
+.assistant-message.streaming { border-color: #93c5fd; box-shadow: 0 0 0 2px rgba(59, 130, 246, .06); }
+.assistant-message small { color: #64748b; display: block; margin-bottom: 4px; }
+.message-content { min-width: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.plain-message { white-space: pre-wrap; }
+.markdown-body { color: #243044; font-size: 14px; }
+.markdown-body :deep(p) { margin: 0 0 9px; }
+.markdown-body :deep(p:last-child) { margin-bottom: 0; }
+.markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3), .markdown-body :deep(h4) { margin: 16px 0 8px; color: #172033; font-weight: 750; line-height: 1.35; }
+.markdown-body :deep(h1:first-child), .markdown-body :deep(h2:first-child), .markdown-body :deep(h3:first-child), .markdown-body :deep(h4:first-child) { margin-top: 0; }
+.markdown-body :deep(h1) { font-size: 20px; }
+.markdown-body :deep(h2) { padding-bottom: 5px; border-bottom: 1px solid #e5eaf2; font-size: 17px; }
+.markdown-body :deep(h3) { font-size: 15px; }
+.markdown-body :deep(h4) { font-size: 14px; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 7px 0 10px; padding-left: 22px; }
+.markdown-body :deep(li) { margin: 4px 0; padding-left: 2px; }
+.markdown-body :deep(li::marker) { color: #3b82f6; font-weight: 700; }
+.markdown-body :deep(strong) { color: #172033; font-weight: 700; }
+.markdown-body :deep(a) { color: #2563eb; font-weight: 600; text-decoration: none; }
+.markdown-body :deep(a:hover) { text-decoration: underline; }
+.markdown-body :deep(code) { padding: 2px 5px; border: 1px solid #dbe5f0; border-radius: 5px; background: #f1f5f9; color: #be123c; font: 12px/1.5 Consolas, "SFMono-Regular", monospace; }
+.markdown-body :deep(pre) { margin: 10px 0; padding: 12px 14px; overflow-x: auto; border-radius: 8px; background: #172033; color: #e2e8f0; white-space: pre; }
+.markdown-body :deep(pre code) { padding: 0; border: 0; background: transparent; color: inherit; font-size: 12px; }
+.markdown-body :deep(blockquote) { margin: 10px 0; padding: 8px 12px; border-left: 3px solid #60a5fa; border-radius: 0 6px 6px 0; background: #eff6ff; color: #475569; }
+.markdown-body :deep(blockquote p) { margin: 0; }
+.markdown-body :deep(hr) { margin: 14px 0; border: 0; border-top: 1px solid #e5eaf2; }
+.markdown-body :deep(table) { display: block; width: max-content; max-width: 100%; margin: 10px 0; overflow-x: auto; border-spacing: 0; border-collapse: collapse; font-size: 12px; }
+.markdown-body :deep(th), .markdown-body :deep(td) { min-width: 88px; padding: 7px 9px; border: 1px solid #dbe5f0; text-align: left; vertical-align: top; }
+.markdown-body :deep(th) { background: #f1f5f9; color: #172033; font-weight: 700; }
+.markdown-body :deep(tr:nth-child(even) td) { background: #f8fafc; }
+.streaming-markdown { display: block; }
+.streaming-markdown > .markdown-body { display: inline; }
+.streaming-markdown > .markdown-body :deep(p:last-child) { display: inline; }
+.result-head, .plan-head, .plan-actions, .result-actions { display: flex; align-items: center; gap: 8px; }
+.result-head, .plan-head { justify-content: space-between; margin-bottom: 8px; }
+.result-actions, .plan-actions { margin-top: 12px; flex-wrap: wrap; }
+.evidence-collapse { margin-top: 8px; border-top: 1px solid #f1f5f9; }
+.evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.evidence-grid > div { display: grid; gap: 2px; padding: 8px; border-radius: 8px; background: #f8fafc; }
+.evidence-grid span { color: #64748b; font-size: 12px; }
+.evidence-grid strong { font-size: 13px; overflow-wrap: anywhere; }
+.stream-cursor { color: #2563eb; animation: blink 1s steps(1) infinite; }
+.action-card { margin-top: 12px; border-color: #bfdbfe; white-space: normal; }
+.card-status-head, .run-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.card-status-head > div, .run-card-head > div { display: grid; gap: 3px; }
+.card-eyebrow { color: #64748b; font-size: 11px; font-weight: 600; letter-spacing: .05em; }
+.card-status-head strong, .run-card-head strong { color: #172033; font-size: 14px; }
+.action-impact { margin: 10px 0; color: #475569; line-height: 1.65; }
+.technical-collapse { margin-top: 8px; border-top: 1px solid #eff4f9; }
+.technical-collapse :deep(.ant-collapse-header) { padding: 8px 0 4px !important; color: #64748b !important; font-size: 12px; }
+.technical-collapse :deep(.ant-collapse-content-box) { padding: 6px 0 0 !important; }
+.technical-collapse pre { max-height: 220px; margin: 0; padding: 10px 12px; overflow: auto; border-radius: 8px; background: #172033; color: #dbeafe; font: 12px/1.6 Consolas, "SFMono-Regular", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.action-result-card { margin-top: 10px; white-space: normal; }
+.action-result-card :deep(.ant-card-body) { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.task-result-head, .action-task-progress, .action-task-message, .action-task-error { flex-basis: 100%; margin: 0; }
+.action-task-message { color: #475569; font-size: 12px; }
+.action-task-error { color: #b91c1c; font-size: 12px; }
+.next-step-list { flex-basis: 100%; margin: 4px 0 6px; padding-left: 20px; color: #475569; }
+.next-step-list li + li { margin-top: 3px; }
+.action-buttons { display: flex; gap: 8px; margin-top: 12px; }
+.assistant-citations { margin-top: 8px; }
+.run-card { margin: 10px 0; border-color: #bfdbfe; background: #f8fbff; }
+.run-card p { margin: 8px 0 6px; color: #475569; font-size: 13px; }
+.run-card :deep(.ant-card-body) > .ant-btn { margin-top: 4px; padding-left: 0; }
+.analysis-plan-card { margin: 10px 0; padding: 14px; border: 1px solid #fdba74; border-radius: 10px; background: #fffdf7; }
+.analysis-plan-card p { margin: 8px 0; color: #334155; }
+.plan-facts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.assistant-composer { padding: 12px 14px; background: white; border-top: 1px solid #e2e8f0; }
+.assistant-composer > div { margin-top: 8px; }
+.muted { color: #94a3b8; font-size: 12px; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (max-width: 800px) { .assistant-history:not(.floating) { display: none; } .head-actions :deep(.ant-select) { display: none; } }
+</style>

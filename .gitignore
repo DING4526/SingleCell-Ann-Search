@@ -5,6 +5,8 @@ __pycache__/
 dist/
 build/
 *.egg
+frontend/dist/
+frontend/node_modules/
 
 # Virtual environment
 venv/
@@ -37,3 +39,6 @@ Thumbs.db
 # Others
 codegen.py
 _codegen/
+.pytest_cache/
+logs/
+reports/ai-eval/raw/

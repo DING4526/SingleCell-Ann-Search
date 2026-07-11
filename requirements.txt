@@ -9,7 +9,13 @@ numpy
 pandas
 scikit-learn
 hnswlib
+harmonypy==0.0.10
+faiss-cpu==1.14.3
 plotly
 markdown
 pytest
 scanpy
+openai>=1.0
+pydantic>=2.0
+cryptography>=42.0
+pypdf>=5.0
