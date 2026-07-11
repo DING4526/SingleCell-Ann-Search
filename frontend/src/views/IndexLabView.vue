@@ -2,7 +2,8 @@
   <PageHeader title="索引实验室" description="一次完成候选构建、统一真实评估和最终索引选优。">
     <template #actions>
       <a-space class="page-actions" wrap>
-        <a-select v-model:value="selectedDatasetId" class="dataset-picker" placeholder="选择数据集" :options="datasetOptions" @change="onDatasetChange" />
+        <a-select v-model:value="selectedDatasetId" class="dataset-picker" placeholder="选择数据集" :options="datasetOptions" @change="selectDataset" />
+        <a-button @click="indexInventoryOpen = true">全部索引</a-button>
         <a-button @click="historyOpen = true">历史实验</a-button>
       </a-space>
     </template>
@@ -12,13 +13,14 @@
     <div class="retained-copy">
       <span class="eyebrow">当前保留集</span>
       <strong>{{ dataset?.name || "未选择数据集" }}</strong>
-      <span>{{ activeIndexes.length ? `${activeIndexes.length} 个 active 索引可用于检索` : "尚无可检索索引" }}</span>
+      <span>{{ workspaceLoading ? "正在读取索引和实验状态…" : activeIndexes.length ? `${activeIndexes.length} 个 active 索引可用于检索` : "尚无可检索索引" }}</span>
     </div>
     <div class="retained-list">
       <div v-for="index in activeIndexes" :key="index.id" class="retained-chip">
         <span>#{{ index.id }} {{ algorithmShort(index.algorithm) }}</span>
         <small>{{ selectionText(index.selection_labels) }}</small>
       </div>
+      <a-button type="link" :loading="workspaceLoading" @click="indexInventoryOpen = true">查看 {{ allIndexes.length }} 条索引记录</a-button>
       <a-button v-if="activeIndexes.length" type="link" @click="goToQuery">进入检索实验室</a-button>
     </div>
   </section>
@@ -51,7 +53,7 @@
       </div>
       <div class="config-summary">
         <span>候选预设</span>
-        <strong>平衡对比 · {{ candidates.length }} 个</strong>
+        <strong>平衡对比 · {{ workspaceLoading ? "-" : candidates.length }} 个</strong>
         <small>HNSW / RP-HNSW / IVF / PQ</small>
       </div>
       <div class="config-actions">
@@ -111,14 +113,14 @@
         </div>
         <aside class="shortlist-card">
           <div class="card-title">最终保留候选</div>
-          <p>系统已按质量、综合表现和速度预选，可调整为 2–3 个。</p>
+          <p>系统已按质量、综合表现和速度预选，可按使用需求调整为 1–3 个。</p>
           <div v-if="selectedRuns.length" class="shortlist-items">
             <div v-for="run in selectedRuns" :key="run.id" class="shortlist-item">
               <div><strong>{{ run.name }}</strong><small>{{ percent(run.recall_at_k) }} · {{ fixed(run.speedup) }}x</small></div>
               <div class="tag-row"><a-tag v-for="tag in recommendationTags(run.recommendation)" :key="tag" :color="recommendationColor(tag)">{{ recommendationText(tag) }}</a-tag></div>
             </div>
           </div>
-          <a-empty v-else :image="simpleImage" description="选择 2–3 个候选" />
+          <a-empty v-else :image="simpleImage" description="选择 1–3 个候选" />
           <a-alert v-if="hasLowRecallSelection" type="warning" show-icon message="选择中包含 Recall 低于 90% 的研究候选。" />
         </aside>
       </div>
@@ -155,7 +157,7 @@
         <span class="step-label">03</span>
         <div><strong>完成选优</strong><small>保留 {{ selectedRunIds.length }} 个 · 预计释放 {{ formatBytes(estimatedReclaimBytes) }}</small></div>
       </div>
-      <a-button type="primary" size="large" :disabled="selectedRunIds.length < 2 || selectedRunIds.length > 3" @click="finalizeOpen = true">确认保留并清理其它索引</a-button>
+      <a-button type="primary" size="large" :disabled="selectedRunIds.length < 1 || selectedRunIds.length > 3" @click="finalizeOpen = true">确认保留并清理其它索引</a-button>
     </div>
 
     <div v-if="experimentResult.status === 'finalized'" class="surface completed-panel">
@@ -166,6 +168,41 @@
       </a-space>
     </div>
   </section>
+
+  <a-drawer v-model:open="indexInventoryOpen" title="全部索引" width="860">
+    <a-alert type="info" show-icon message="这里展示当前数据集的全部索引记录；active 可用于检索，candidate 等待实验选优，discarded 仅保留审计记录且文件通常已清理。" />
+    <div class="inventory-summary">
+      <div><span>全部</span><strong>{{ allIndexes.length }}</strong></div>
+      <div><span>可检索</span><strong>{{ inventoryCounts.active }}</strong></div>
+      <div><span>候选</span><strong>{{ inventoryCounts.candidate }}</strong></div>
+      <div><span>已清理</span><strong>{{ inventoryCounts.discarded }}</strong></div>
+    </div>
+    <div class="inventory-toolbar">
+      <a-segmented v-model:value="inventoryFilter" :options="inventoryFilterOptions" />
+      <span class="muted">共 {{ filteredIndexes.length }} 条</span>
+    </div>
+    <a-table :data-source="filteredIndexes" :columns="inventoryColumns" row-key="id" size="small" :pagination="{ pageSize: 10 }" :scroll="{ x: 940 }">
+      <template #bodyCell="{ column, record }">
+        <template v-if="column.key === 'index'">
+          <div class="candidate-cell"><strong>#{{ record.id }} · {{ algorithmShort(record.algorithm) }}</strong><small>{{ record.metric.toUpperCase() }} · {{ paramsSummary(record.params) }}</small></div>
+        </template>
+        <template v-else-if="column.key === 'lifecycle'">
+          <a-tag :color="lifecycleColor(record.lifecycle)">{{ lifecycleText(record.lifecycle) }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'status'"><StatusTag :status="record.status" /></template>
+        <template v-else-if="column.key === 'source'">
+          <a-button v-if="record.source_experiment_id" type="link" size="small" @click="openInventoryExperiment(record.source_experiment_id)">实验 #{{ record.source_experiment_id }}</a-button>
+          <span v-else>人工构建</span>
+        </template>
+        <template v-else-if="column.key === 'size'">{{ formatBytes(record.index_size_bytes) }}</template>
+        <template v-else-if="column.key === 'created'">{{ formatDate(record.created_at) }}</template>
+        <template v-else-if="column.key === 'actions'">
+          <a-button v-if="record.lifecycle === 'active' && record.status === 'ready'" type="link" size="small" @click="openIndexInQuery(record.id)">用于检索</a-button>
+          <span v-else class="muted">仅查看</span>
+        </template>
+      </template>
+    </a-table>
+  </a-drawer>
 
   <a-drawer v-model:open="advancedOpen" title="高级实验配置" width="620">
     <a-alert message="FAISS Flat 精确基线固定启用；这里只配置可被最终保留的 ANN 候选。" type="info" show-icon />
@@ -214,7 +251,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { Empty, Modal, message } from "ant-design-vue";
 import { useRoute, useRouter } from "vue-router";
 import PageHeader from "@/components/PageHeader.vue";
@@ -246,8 +283,13 @@ const advancedOpen = ref(false);
 const historyOpen = ref(false);
 const historyLoading = ref(false);
 const finalizeOpen = ref(false);
+const indexInventoryOpen = ref(false);
+const allIndexes = ref<AnnIndex[]>([]);
+const inventoryFilter = ref("all");
+const workspaceLoading = ref(false);
 let pollingTimer: number | undefined;
 let selectionExperimentId: number | undefined;
+let pageReady = false;
 
 const form = reactive({ metric: "l2", top_k: 10, sample_size: 100, seed: 42, repetitions: 3, warmup_count: 10 });
 const metricOptions = [{ label: "L2", value: "l2" }, { label: "Cosine", value: "cosine" }];
@@ -261,10 +303,29 @@ const columns = [
   { title: "推荐", key: "recommendation", width: 190 },
   { title: "选择", key: "select", width: 100 },
 ];
+const inventoryColumns = [
+  { title: "索引", key: "index", width: 300 },
+  { title: "生命周期", key: "lifecycle", width: 100 },
+  { title: "状态", key: "status", width: 90 },
+  { title: "来源", key: "source", width: 100 },
+  { title: "体积", key: "size", width: 90 },
+  { title: "创建时间", key: "created", width: 130 },
+  { title: "操作", key: "actions", width: 90 },
+];
+const inventoryFilterOptions = [
+  { label: "全部", value: "all" }, { label: "可检索", value: "active" },
+  { label: "候选", value: "candidate" }, { label: "已清理", value: "discarded" },
+];
 
 const dataset = computed(() => store.current);
 const datasetOptions = computed(() => store.datasets.map((item) => ({ value: item.id, label: `${item.name}（${statusText(item.status)}）` })));
-const activeIndexes = computed(() => (dataset.value?.indexes || []).filter((index) => index.status === "ready" && index.lifecycle === "active"));
+const activeIndexes = computed(() => allIndexes.value.filter((index) => index.status === "ready" && index.lifecycle === "active"));
+const filteredIndexes = computed(() => allIndexes.value.filter((index) => inventoryFilter.value === "all" || index.lifecycle === inventoryFilter.value));
+const inventoryCounts = computed(() => ({
+  active: allIndexes.value.filter((item) => item.lifecycle === "active" && item.status === "ready").length,
+  candidate: allIndexes.value.filter((item) => item.lifecycle === "candidate").length,
+  discarded: allIndexes.value.filter((item) => item.lifecycle === "discarded").length,
+}));
 const candidateAlgorithmOptions = computed(() => algorithms.value.filter((item) => item.available && item.key !== "faiss_flat").map((item) => ({ value: item.key, label: item.label })));
 const blockingExperiment = computed(() => experiments.value.find((item) => ["pending", "running", "ready_for_selection"].includes(item.status)) || null);
 const canStartExperiment = computed(() => Boolean(dataset.value?.can_edit && ["processed", "indexed"].includes(dataset.value.status) && !blockingExperiment.value));
@@ -327,6 +388,8 @@ function formatBytes(value?: number | null) { if (!value) return "-"; if (value 
 function algorithmShort(value: string) { return value.replace("hnswlib_", "").replace("faiss_", "").replace(/_/g, " ").toUpperCase(); }
 function paramsSummary(params?: Record<string, unknown>) { const entries = Object.entries(params || {}); return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(", ") : "默认参数"; }
 function selectionText(labels?: string[]) { return labels?.length ? labels.map((label) => recommendationText(label)).join(" · ") : "手动保留"; }
+function lifecycleText(value: string) { return ({ active: "可检索", candidate: "候选", discarded: "已清理" } as Record<string, string>)[value] || value; }
+function lifecycleColor(value: string) { return ({ active: "green", candidate: "blue", discarded: "default" } as Record<string, string>)[value] || "default"; }
 function defaultParams(algorithm: string, overrides: Record<string, number | string> = {}) { return { ...(algorithms.value.find((item) => item.key === algorithm)?.default_params || {}), ...overrides }; }
 
 function resetCandidates() {
@@ -381,8 +444,13 @@ async function loadExperiments() {
   historyLoading.value = true;
   try { experiments.value = (await api.indexExperiments(selectedDatasetId.value)).experiments; } finally { historyLoading.value = false; }
 }
+async function loadIndexInventory() {
+  if (!selectedDatasetId.value) { allIndexes.value = []; return; }
+  allIndexes.value = (await api.datasetStatus(selectedDatasetId.value)).indexes;
+}
 async function loadExperimentDetail(id: number, initializeSelection = false) {
   const data = await api.indexExperiment(id);
+  if (selectedDatasetId.value && data.experiment.dataset_id !== selectedDatasetId.value) throw new Error("该实验不属于当前数据集");
   experimentResult.value = data.experiment;
   const shouldInitialize = initializeSelection || selectionExperimentId !== id || (data.experiment.status === "ready_for_selection" && !selectedRunIds.value.length);
   if (shouldInitialize) {
@@ -391,14 +459,26 @@ async function loadExperimentDetail(id: number, initializeSelection = false) {
   }
 }
 
-async function onDatasetChange() {
+async function loadDatasetWorkspace(preferredExperimentId?: number) {
+  workspaceLoading.value = true;
   experimentResult.value = null;
   selectedRunIds.value = [];
   selectionExperimentId = undefined;
-  if (!selectedDatasetId.value) return;
-  await Promise.all([store.loadDetail(selectedDatasetId.value), loadAlgorithms(), loadExperiments()]);
-  const latestV2 = experiments.value.find((item) => item.workflow_version >= 2);
-  if (latestV2) await loadExperimentDetail(latestV2.id, true);
+  try {
+    if (!selectedDatasetId.value) return;
+    await Promise.all([store.loadDetail(selectedDatasetId.value), loadAlgorithms(), loadExperiments(), loadIndexInventory()]);
+    if (preferredExperimentId) {
+      await loadExperimentDetail(preferredExperimentId, true);
+      return;
+    }
+    const latestV2 = experiments.value.find((item) => item.workflow_version >= 2);
+    if (latestV2) await loadExperimentDetail(latestV2.id, true);
+  } finally {
+    workspaceLoading.value = false;
+  }
+}
+async function selectDataset(value: number) {
+  await router.push({ path: "/index-lab", query: { dataset: String(value) } });
 }
 
 async function startExperiment() {
@@ -426,7 +506,7 @@ async function startExperiment() {
     }, { timeoutMs: 1_800_000 });
     const payload = task.result as { experiment?: IndexExperiment } | null;
     if (payload?.experiment) experimentResult.value = payload.experiment;
-    await Promise.all([loadExperimentDetail(data.experiment_id), loadExperiments(), store.loadDetail(selectedDatasetId.value)]);
+    await Promise.all([loadExperimentDetail(data.experiment_id), loadExperiments(), store.loadDetail(selectedDatasetId.value), loadIndexInventory()]);
     message.success("候选索引构建与真实评估完成");
   } catch (error) {
     message.error((error as Error).message);
@@ -442,7 +522,7 @@ async function finalizeSelection() {
   try {
     await api.finalizeIndexExperiment(experimentResult.value.id, selectedRunIds.value);
     finalizeOpen.value = false;
-    await Promise.all([loadExperimentDetail(experimentResult.value.id, true), loadExperiments(), store.loadDetail(selectedDatasetId.value)]);
+    await Promise.all([loadExperimentDetail(experimentResult.value.id, true), loadExperiments(), store.loadDetail(selectedDatasetId.value), loadIndexInventory()]);
     message.success("最终索引保留集合已生效，其它索引文件已清理");
   } catch (error) {
     message.error((error as Error).message);
@@ -475,16 +555,38 @@ async function retryCleanup() {
     message.success("清理重试完成");
   } catch (error) { message.error((error as Error).message); }
 }
-async function openHistoryExperiment(id: number) { await loadExperimentDetail(id, true); historyOpen.value = false; }
+async function openHistoryExperiment(id: number) {
+  historyOpen.value = false;
+  await router.push({ path: "/index-lab", query: { dataset: String(selectedDatasetId.value), experiment: String(id) } });
+}
+async function openInventoryExperiment(id: number) {
+  indexInventoryOpen.value = false;
+  await router.push({ path: "/index-lab", query: { dataset: String(selectedDatasetId.value), experiment: String(id) } });
+}
+function openIndexInQuery(indexId: number) {
+  if (selectedDatasetId.value) void router.push({ path: "/query-lab", query: { dataset: String(selectedDatasetId.value), index: String(indexId) } });
+}
 function goToQuery() { if (selectedDatasetId.value) router.push(`/query-lab?dataset=${selectedDatasetId.value}`); }
 
 onMounted(async () => {
   await store.loadAll();
   selectedDatasetId.value = Number(route.query.dataset) || store.datasets[0]?.id;
-  if (selectedDatasetId.value) await onDatasetChange();
+  if (selectedDatasetId.value) await loadDatasetWorkspace(Number(route.query.experiment) || undefined);
+  pageReady = true;
   pollingTimer = window.setInterval(() => {
     if (experimentResult.value && ["pending", "running"].includes(experimentResult.value.status)) void loadExperimentDetail(experimentResult.value.id);
   }, 2000);
+});
+watch(() => [route.query.dataset, route.query.experiment], async ([datasetValue, experimentValue]) => {
+  if (!pageReady) return;
+  const nextDatasetId = Number(datasetValue) || store.datasets[0]?.id;
+  const nextExperimentId = Number(experimentValue) || undefined;
+  if (nextDatasetId !== selectedDatasetId.value) {
+    selectedDatasetId.value = nextDatasetId;
+    await loadDatasetWorkspace(nextExperimentId);
+  } else if (nextExperimentId && nextExperimentId !== experimentResult.value?.id) {
+    await loadExperimentDetail(nextExperimentId, true);
+  }
 });
 onBeforeUnmount(() => { if (pollingTimer) window.clearInterval(pollingTimer); });
 </script>
@@ -549,6 +651,11 @@ onBeforeUnmount(() => { if (pollingTimer) window.clearInterval(pollingTimer); })
 .confirm-group { margin-top: 16px; }
 .confirm-group ul { margin: 6px 0 0; padding-left: 22px; color: #475569; }
 .reclaim-total { margin-top: 16px; padding: 10px 12px; border-radius: 8px; background: #eff6ff; color: #1e3a8a; }
+.inventory-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0; }
+.inventory-summary > div { display: grid; gap: 2px; padding: 12px; border: 1px solid #e5eaf2; border-radius: 8px; background: #f8fafc; }
+.inventory-summary span, .muted { color: #64748b; font-size: 12px; }
+.inventory-summary strong { color: #172033; font-size: 20px; }
+.inventory-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 @media (max-width: 1120px) { .config-grid { grid-template-columns: repeat(2, 1fr); } .config-actions { grid-column: 1 / -1; justify-content: flex-end; } .comparison-layout { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .retained-strip, .section-head, .finalize-bar, .completed-panel { align-items: flex-start; flex-direction: column; } .retained-list { justify-content: flex-start; } .config-grid, .baseline-bar, .advanced-grid { grid-template-columns: 1fr; } .candidate-editor-row { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .retained-strip, .section-head, .finalize-bar, .completed-panel { align-items: flex-start; flex-direction: column; } .retained-list { justify-content: flex-start; } .config-grid, .baseline-bar, .advanced-grid, .inventory-summary { grid-template-columns: 1fr; } .candidate-editor-row { grid-template-columns: 1fr; } }
 </style>

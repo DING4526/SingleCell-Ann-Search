@@ -29,7 +29,7 @@ ROUTE_REGISTRY = {
     "overview": {"path": "/overview", "params": set()},
     "datasets": {"path": "/datasets", "params": set()},
     "dataset_detail": {"path": "/datasets/{dataset_id}", "params": {"dataset_id", "access"}},
-    "index_lab": {"path": "/index-lab", "params": {"dataset"}},
+    "index_lab": {"path": "/index-lab", "params": {"dataset", "experiment"}},
     "joint_indexes": {"path": "/joint-indexes", "params": set()},
     "query_lab": {"path": "/query-lab", "params": {"dataset", "history_id", "index", "cell", "top_k", "filter_cell_type"}},
     "access": {"path": "/access", "params": set()},
@@ -375,7 +375,7 @@ def resolve_navigation(target: str | None, params: dict, user: User) -> dict | N
         value = params.get(key)
         if value is None:
             continue
-        clean[key] = int(value) if key in {"dataset_id", "dataset", "history_id", "index", "cell", "top_k", "conversation_id"} else str(value)[:200]
+        clean[key] = int(value) if key in {"dataset_id", "dataset", "experiment", "history_id", "index", "cell", "top_k", "conversation_id"} else str(value)[:200]
     dataset_id = clean.get("dataset_id") or clean.get("dataset")
     if dataset_id:
         dataset = db.session.get(Dataset, int(dataset_id))

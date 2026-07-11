@@ -589,6 +589,8 @@ def _approve_assistant_tool(tool: AiToolCall):
         emit_stream_event(run.id, "action.status", {
             "tool_call_id": tool.id, "status": "success", "result": result,
         })
+        if isinstance(result.get("navigation"), dict):
+            emit_stream_event(run.id, "ui.navigate", result["navigation"])
         emit_stream_event(run.id, "answer.replace", {
             "message_id": run.output_message_id,
             "content": run.output_message.content if run.output_message else "操作已提交。",

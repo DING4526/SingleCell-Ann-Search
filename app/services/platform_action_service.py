@@ -155,6 +155,18 @@ def idempotency_key(run_id: int, user_id: int, action: str, args: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _task_result(task: Task, *, navigation: dict | None = None, next_steps: list[str] | None = None, **extra) -> dict:
+    """Return a consistent action result that the assistant UI can continue from."""
+    result = {
+        "task_id": task.id,
+        "task_type": task.type,
+        "navigation": navigation,
+        "next_steps": next_steps or ["后台任务已经提交，可以在任务中心查看实时进度。"],
+        **extra,
+    }
+    return result
+
+
 def execute_action(action: str, args: dict, user, app) -> dict:
     """Revalidate and submit one approved action. Caller owns transaction state."""
     canonical, _, _ = normalize_action(action, args, user)
@@ -172,7 +184,11 @@ def execute_action(action: str, args: dict, user, app) -> dict:
                      resource_id=canonical["dataset_id"], dataset_id=canonical["dataset_id"], details={"source": "ai_assistant"})
         db.session.commit()
         executor.submit(run_process_task, task.id, canonical["dataset_id"], app)
-        return {"task_id": task.id, "task_type": task.type}
+        return _task_result(
+            task,
+            navigation={"target": "dataset_detail", "path": f"/datasets/{canonical['dataset_id']}", "auto": True},
+            next_steps=["已进入数据集详情；处理完成后即可在索引实验室构建或评估索引。"],
+        )
 
     if action == "submit_index_build":
         task = Task(type="build_index", status="pending", progress=0, message="任务已提交，等待执行...",
@@ -183,7 +199,11 @@ def execute_action(action: str, args: dict, user, app) -> dict:
                      details={"source": "ai_assistant", "algorithm": canonical["algorithm"], "metric": canonical["metric"]})
         db.session.commit()
         executor.submit(run_build_index_task, task.id, canonical["dataset_id"], canonical, app)
-        return {"task_id": task.id, "task_type": task.type}
+        return _task_result(
+            task,
+            navigation={"target": "dataset_detail", "path": f"/datasets/{canonical['dataset_id']}", "auto": True},
+            next_steps=["已进入数据集详情；构建完成后可直接在 Query Lab 使用新索引。"],
+        )
 
     if action == "submit_index_experiment":
         from app.services.index_experiment_service import create_index_experiment
@@ -198,7 +218,20 @@ def execute_action(action: str, args: dict, user, app) -> dict:
         db.session.commit()
         executor.submit(run_index_experiment_task, task.id,
                         {"dataset_id": canonical["dataset_id"], "experiment_id": experiment.id}, app)
-        return {"task_id": task.id, "task_type": task.type, "experiment_id": experiment.id}
+        return _task_result(
+            task,
+            experiment_id=experiment.id,
+            navigation={
+                "target": "index_lab",
+                "path": f"/index-lab?dataset={canonical['dataset_id']}&experiment={experiment.id}",
+                "auto": True,
+            },
+            next_steps=[
+                "已进入本次索引实验，页面会自动刷新构建和评估进度。",
+                "实验完成后可按 Recall、P95 和体积选择 1–3 个索引保留。",
+                "最终清理属于不可撤销操作，仍需你在实验结果页确认。",
+            ],
+        )
 
     if action == "submit_index_evaluation":
         task = Task(type="index_evaluation", status="pending", progress=0,
@@ -209,7 +242,11 @@ def execute_action(action: str, args: dict, user, app) -> dict:
                      resource_id=canonical["index_id"], dataset_id=canonical["dataset_id"], details={"source": "ai_assistant"})
         db.session.commit()
         executor.submit(run_index_evaluation_task, task.id, canonical, app)
-        return {"task_id": task.id, "task_type": task.type}
+        return _task_result(
+            task,
+            navigation={"target": "index_lab", "path": f"/index-lab?dataset={canonical['dataset_id']}", "auto": True},
+            next_steps=["已进入索引实验室；评估完成后可在实验和完整索引清单中查看结果。"],
+        )
 
     if action == "submit_joint_index_build":
         task = Task(type="build_joint_index", status="pending", progress=0,
@@ -219,7 +256,11 @@ def execute_action(action: str, args: dict, user, app) -> dict:
                      details={"source": "ai_assistant", "dataset_ids": canonical["dataset_ids"]})
         db.session.commit()
         executor.submit(run_build_joint_index_task, task.id, canonical, app)
-        return {"task_id": task.id, "task_type": task.type}
+        return _task_result(
+            task,
+            navigation={"target": "joint_indexes", "path": "/joint-indexes", "auto": True},
+            next_steps=["已进入联合索引页面，构建进度会在后台任务中持续更新。"],
+        )
 
     if action == "reindex_knowledge_document":
         document = db.session.get(KnowledgeDocument, canonical["document_id"])
@@ -229,7 +270,12 @@ def execute_action(action: str, args: dict, user, app) -> dict:
         db.session.commit()
         from app.ai.knowledge import submit_document_processing
         submit_document_processing(app, document.id)
-        return {"document_id": document.id, "status": "pending"}
+        return {
+            "document_id": document.id,
+            "status": "pending",
+            "navigation": {"target": "ai_knowledge", "path": "/ai-knowledge", "auto": True},
+            "next_steps": ["知识索引正在后台重建，页面会显示最新状态。"],
+        }
 
     if action == "create_personal_knowledge_note":
         from app.ai.knowledge import create_personal_note, submit_document_processing
@@ -238,7 +284,12 @@ def execute_action(action: str, args: dict, user, app) -> dict:
                      resource_id=document.id, details={"scope": "personal", "source": "ai_assistant"})
         db.session.commit()
         submit_document_processing(app, document.id)
-        return {"document_id": document.id, "status": "pending"}
+        return {
+            "document_id": document.id,
+            "status": "pending",
+            "navigation": {"target": "ai_knowledge", "path": "/ai-knowledge", "auto": True},
+            "next_steps": ["个人知识笔记已创建，正在后台建立检索索引。"],
+        }
 
     raise ActionValidationError("未知操作。")
 

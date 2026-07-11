@@ -227,7 +227,8 @@ def test_spa_processing_index_search_and_scatter_baseline():
             assert experiments.status_code == 200
             assert any(row["id"] == experiment_result["id"] for row in experiments.get_json()["experiments"])
 
-            selected_run_ids = [row["id"] for row in experiment_result["runs"][:2]]
+            # A focused deployment may retain only the single best candidate.
+            selected_run_ids = [experiment_result["runs"][0]["id"]]
             candidate_index_ids = [row["index"]["id"] for row in experiment_result["runs"]]
             candidate_search = client.post(
                 "/api/search",
@@ -240,10 +241,11 @@ def test_spa_processing_index_search_and_scatter_baseline():
             )
             assert finalize.status_code == 200, finalize.get_json()
             finalization = finalize.get_json()["finalization"]
-            selected_candidate_index_ids = set(candidate_index_ids[:2])
+            selected_candidate_index_ids = {candidate_index_ids[0]}
             assert {row["id"] for row in finalization["active_indexes"]} == selected_candidate_index_ids
             assert index_id in finalization["discarded_index_ids"]
             assert rp_index_id in finalization["discarded_index_ids"]
+            assert candidate_index_ids[1] in finalization["discarded_index_ids"]
             assert candidate_index_ids[2] in finalization["discarded_index_ids"]
 
             # Repeating the same finalization is idempotent and does not rebuild indexes.
@@ -255,12 +257,12 @@ def test_spa_processing_index_search_and_scatter_baseline():
             assert {row["id"] for row in repeated_finalize.get_json()["finalization"]["active_indexes"]} == selected_candidate_index_ids
             changed_finalize = client.post(
                 f"/api/index-experiments/{experiment_id}/finalize",
-                data={"selected_run_ids": [selected_run_ids[1], experiment_result["runs"][2]["id"]]},
+                data={"selected_run_ids": [experiment_result["runs"][1]["id"]]},
             )
             assert changed_finalize.status_code == 409
 
             db.session.expire_all()
-            retired = [db.session.get(AnnIndex, value) for value in [index_id, rp_index_id, candidate_index_ids[2]]]
+            retired = [db.session.get(AnnIndex, value) for value in [index_id, rp_index_id, candidate_index_ids[1], candidate_index_ids[2]]]
             assert all(row.lifecycle == "discarded" and row.status == "deleted" for row in retired)
             assert all(not os.path.exists(os.path.join(app.config["INDEX_DIR"], row.index_path)) for row in retired)
             assert all(db.session.get(AnnIndex, value).lifecycle == "active" for value in selected_candidate_index_ids)

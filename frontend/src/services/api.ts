@@ -1,4 +1,4 @@
-import type { AiAssistantBootstrap, AiConversation, AiModelConfig, AiProviderCatalogItem, AiProviderConfig, AiRun, AiSettings, AiToolCall, AiUsage, AnnAlgorithm, AuditEvent, Dataset, DatasetAccess, DatasetPermission, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, KnowledgeDocument, KnowledgeHit, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchHistoryItem, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
+import type { AiAssistantBootstrap, AiConversation, AiModelConfig, AiProviderCatalogItem, AiProviderConfig, AiRun, AiSettings, AiToolCall, AiUsage, AnnAlgorithm, AnnIndex, AuditEvent, Dataset, DatasetAccess, DatasetPermission, EvalMetrics, IndexCandidateConfig, IndexEvaluation, IndexExperiment, JointIndex, KnowledgeDocument, KnowledgeHit, ManagedUser, MultiSearchPayload, PlotlyPayload, SearchHistoryItem, SearchPlotPayload, SearchResult, SingleSearchPayload, TaskRecord, User } from "@/types";
 
 type ApiResponse<T> = T & { ok: boolean; message?: string };
 type ApiRequestInit = RequestInit & { timeoutMs?: number };
@@ -189,7 +189,7 @@ export const api = {
   jointIndex: (id: number) => request<ApiResponse<{ joint_index: JointIndex }>>(`/api/joint-indexes/${id}`),
   buildJointIndexTask: (params: { name: string; dataset_ids: number[]; metric: string; M: number; ef_construction: number; ef_search: number; n_pcs: number; n_top_genes: number; min_common_genes: number }) =>
     request<ApiResponse<{ task_id: number }>>("/api/joint-indexes/build/task", { method: "POST", body: toJointBuildForm(params), timeoutMs: 15000 }),
-  datasetStatus: (id: number) => request<ApiResponse<{ status: string; indexes: unknown[] }>>(`/api/datasets/${id}/status`),
+  datasetStatus: (id: number) => request<ApiResponse<{ status: string; indexes: AnnIndex[] }>>(`/api/datasets/${id}/status`),
   scatter: (id: number) => request<ApiResponse<{ scatter_plot: PlotlyPayload }>>(`/api/datasets/${id}/scatter`),
   cellTypes: (id: number) => request<ApiResponse<{ cell_types: string[] }>>(`/api/datasets/${id}/cell-types`),
   cellMeta: (datasetId: number, cellIndex: number) =>

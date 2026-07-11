@@ -134,7 +134,7 @@ def test_write_action_requires_confirmation_and_is_idempotent(monkeypatch):
     from app.ai.assistant import run_assistant
     from app.ai.schemas import AssistantTurnDecision
     from app.extensions import db
-    from app.models import AiRun, AiToolCall, Dataset, Task, User
+    from app.models import AiRun, AiStreamEvent, AiToolCall, Dataset, Task, User
     import app.ai.knowledge as knowledge
     import app.ai.service as service
     import app.services.platform_action_service as actions
@@ -152,6 +152,7 @@ def test_write_action_requires_confirmation_and_is_idempotent(monkeypatch):
             dataset = Dataset(name="uploaded", file_path="u.h5ad", owner_id=user_id, status="uploaded")
             db.session.add(dataset)
             db.session.commit()
+            target_dataset_id = dataset.id
             run = db.session.get(AiRun, run_id)
             run.page_context_json = '{"path":"/datasets/%s","resources":{"dataset_id":%s}}' % (dataset.id, dataset.id)
             db.session.commit()
@@ -165,11 +166,19 @@ def test_write_action_requires_confirmation_and_is_idempotent(monkeypatch):
             assert Task.query.count() == 0
             tool_id = tool.id
 
-        monkeypatch.setattr(actions, "execute_action", lambda *args, **kwargs: {"status": "submitted"})
+        monkeypatch.setattr(actions, "execute_action", lambda *args, **kwargs: {
+            "status": "submitted",
+            "navigation": {"target": "dataset_detail", "path": f"/datasets/{target_dataset_id}", "auto": True},
+            "next_steps": ["在数据集详情查看处理进度。"],
+        })
         client = app.test_client()
         assert client.post("/api/auth/login", data={"username": "researcher", "password": "pass1234"}).status_code == 200
         approved = client.post(f"/api/ai/tool-calls/{tool_id}/approve")
         assert approved.status_code == 202
+        assert approved.get_json()["tool_call"]["result"]["navigation"]["auto"] is True
+        with app.app_context():
+            events = AiStreamEvent.query.filter_by(run_id=run_id, event_type="ui.navigate").all()
+            assert len(events) == 1 and f"/datasets/{target_dataset_id}" in events[0].payload_json
         duplicate = client.post(f"/api/ai/tool-calls/{tool_id}/approve")
         assert duplicate.status_code == 409
 
